@@ -1,0 +1,46 @@
+{% trans "New Review Received" %}
+
+{% trans "Hello" %}, {{ user.first_name|default:user.email }}!
+
+{% trans "You have received a new review for your service." %}
+
+⭐ {% trans "Review Details" %}:
+{% trans "Service" %}: {{ service.name }}
+{% trans "Client" %}: {{ client.get_full_name|default:client.email }}
+{% trans "Rating" %}: {{ rating }}/5 ⭐
+{% trans "Review date" %}: {{ review_date|date:"d.m.Y H:i" }}
+
+{% if review_text %}
+💬 {% trans "Review Text" %}:
+"{{ review_text }}"
+{% endif %}
+
+{% trans "View Full Review" %}: {{ review_url }}
+{% trans "Respond to Review" %}: {{ response_url }}
+
+📊 {% trans "Your Rating Summary" %}:
+{% trans "Average rating" %}: {{ average_rating }}/5
+{% trans "Total reviews" %}: {{ total_reviews }}
+{% trans "5-star reviews" %}: {{ five_star_count }}
+
+{% if rating >= 4 %}
+🎉 {% trans "Great Job!" %}
+{% trans "Congratulations on receiving a positive review! This helps build trust with potential clients." %}
+{% elif rating <= 2 %}
+⚠️ {% trans "Attention Required" %}
+{% trans "You received a low rating. Consider responding to address any concerns and improve your service." %}
+{% endif %}
+
+💡 {% trans "Tips for responding to reviews" %}:
+• {% trans "Respond promptly and professionally" %}
+• {% trans "Thank the client for their feedback" %}
+• {% trans "Address any specific concerns mentioned" %}
+• {% trans "Show that you value customer feedback" %}
+
+{% trans "Reviews help other pet owners make informed decisions. Thank you for providing quality service!" %}
+
+---
+{% trans "PetCare - Professional Pet Care Services" %}
+{% trans "Email" %}: support@petcare.com
+{% trans "Phone" %}: +1 (555) 123-4567
+{% trans "Website" %}: https://petcare.com 

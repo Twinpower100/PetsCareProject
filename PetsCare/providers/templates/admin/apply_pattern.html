@@ -1,0 +1,17 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block content %}
+  <h1>{% trans "Apply schedule pattern to selected employees" %}</h1>
+  <form method="post">{% csrf_token %}
+    {{ form.as_p }}
+    <h3>{% trans "Selected employees:" %}</h3>
+    <ul>
+      {% for employee in employees %}
+        <li>{{ employee }}</li>
+      {% endfor %}
+    </ul>
+    <input type="submit" name="apply" value="{% trans 'Apply pattern' %}" class="default">
+    <a href="javascript:history.back()" class="button">{% trans 'Cancel' %}</a>
+  </form>
+{% endblock %} 

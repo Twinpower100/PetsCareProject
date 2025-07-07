@@ -1,0 +1,15 @@
+{% load i18n %}
+{% extends "admin/change_list.html" %}
+
+{# Кастомный шаблон для списка провайдеров с кнопкой перехода на отчет #}
+
+{% block object-tools %}
+    {{ block.super }}
+    {% if provider_schedule_export_url %}
+        <li>
+            <a href="{{ provider_schedule_export_url }}" class="button" style="margin-left: 10px;">
+                {% trans "Export schedule (report)" %}
+            </a>
+        </li>
+    {% endif %}
+{% endblock %} 

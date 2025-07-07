@@ -1,0 +1,151 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block extrahead %}
+<style>
+    .reports-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+        gap: 20px;
+        margin: 20px 0;
+    }
+    
+    .report-card {
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    
+    .report-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    }
+    
+    .report-icon {
+        font-size: 2em;
+        margin-bottom: 10px;
+    }
+    
+    .report-title {
+        font-size: 1.2em;
+        font-weight: bold;
+        margin-bottom: 8px;
+        color: #333;
+    }
+    
+    .report-description {
+        color: #666;
+        margin-bottom: 15px;
+        line-height: 1.4;
+    }
+    
+    .report-actions {
+        display: flex;
+        gap: 10px;
+    }
+    
+    .btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 4px;
+        text-decoration: none;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+    }
+    
+    .btn-primary {
+        background-color: #007cba;
+        color: white;
+    }
+    
+    .btn-primary:hover {
+        background-color: #005a87;
+    }
+    
+    .btn-secondary {
+        background-color: #f0f0f1;
+        color: #2c3338;
+        border: 1px solid #8c8f94;
+    }
+    
+    .btn-secondary:hover {
+        background-color: #dcdcde;
+    }
+    
+    .recent-reports {
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 20px;
+        margin-top: 30px;
+    }
+    
+    .recent-reports h3 {
+        margin-top: 0;
+        color: #333;
+    }
+    
+    .report-list {
+        list-style: none;
+        padding: 0;
+    }
+    
+    .report-list li {
+        padding: 10px 0;
+        border-bottom: 1px solid #eee;
+    }
+    
+    .report-list li:last-child {
+        border-bottom: none;
+    }
+    
+    .report-meta {
+        font-size: 12px;
+        color: #666;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="module">
+    <h1>{% trans "Reports Dashboard" %}</h1>
+    
+    <div class="reports-grid">
+        {% for report_type in report_types %}
+        <div class="report-card">
+            <div class="report-icon">{{ report_type.icon }}</div>
+            <div class="report-title">{{ report_type.name }}</div>
+            <div class="report-description">{{ report_type.description }}</div>
+            <div class="report-actions">
+                <a href="{% url 'admin:reports-generate' %}?type={{ report_type.id }}" class="btn btn-primary">
+                    {% trans "Generate" %}
+                </a>
+                <a href="{% url 'admin:reports-export' %}?type={{ report_type.id }}" class="btn btn-secondary">
+                    {% trans "Export" %}
+                </a>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    
+    {% if recent_reports %}
+    <div class="recent-reports">
+        <h3>{% trans "Recent Reports" %}</h3>
+        <ul class="report-list">
+            {% for report in recent_reports %}
+            <li>
+                <div><strong>{{ report.name }}</strong></div>
+                <div class="report-meta">
+                    {{ report.type|title }} • {{ report.created_at|date:"M d, Y H:i" }}
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+</div>
+{% endblock %} 

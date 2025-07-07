@@ -1,0 +1,51 @@
+{% extends "notifications/templates/email/base.html" %}
+
+{% block content %}
+<div class="notification-title">{% trans "Role Invitation Expired" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
+    
+    <p>{% trans "A role invitation you sent has expired." %}</p>
+    
+    <div class="info-box">
+        <h3>⏰ {% trans "Expired Invitation Details" %}</h3>
+        <p><strong>{% trans "Invited person" %}:</strong> {{ invitee.get_full_name|default:invitee.email }}</p>
+        <p><strong>{% trans "Role" %}:</strong> {{ role.name }}</p>
+        <p><strong>{% trans "Organization" %}:</strong> {{ provider.name }}</p>
+        <p><strong>{% trans "Invitation sent" %}:</strong> {{ invite.created_at|date:"d.m.Y H:i" }}</p>
+        <p><strong>{% trans "Expired on" %}:</strong> {{ invite.expires_at|date:"d.m.Y H:i" }}</p>
+    </div>
+    
+    <div class="urgent">
+        <h3>⚠️ {% trans "What happened?" %}</h3>
+        <p>{% trans "The invitation expired because the invited person did not respond within the time limit." %}</p>
+        <p>{% trans "The person will no longer be able to accept this invitation." %}</p>
+    </div>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="{{ new_invite_url }}" class="button">{% trans "Send New Invitation" %}</a>
+        <a href="{{ manage_roles_url }}" class="button" style="background: linear-gradient(135deg, #6c757d 0%, #495057 100%); margin-left: 15px;">{% trans "Manage Roles" %}</a>
+    </div>
+    
+    <div class="info-box">
+        <h3>💡 {% trans "What you can do" %}</h3>
+        <p>• {% trans "Send a new invitation if the person is still interested" %}</p>
+        <p>• {% trans "Contact the person directly to discuss the role" %}</p>
+        <p>• {% trans "Consider if the role is still needed" %}</p>
+        <p>• {% trans "Review your invitation settings" %}</p>
+    </div>
+    
+    <div class="info-box">
+        <h3>📞 {% trans "Contact the invited person" %}</h3>
+        <p><strong>{% trans "Email" %}:</strong> {{ invitee.email }}</p>
+        {% if invitee.phone %}
+        <p><strong>{% trans "Phone" %}:</strong> {{ invitee.phone }}</p>
+        {% endif %}
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "If you need help managing roles and invitations, contact PetCare support." %}
+    </p>
+</div>
+{% endblock %} 

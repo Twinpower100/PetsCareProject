@@ -1,0 +1,37 @@
+{% trans "Role Invitation Expired" %}
+
+{% trans "Hello" %}, {{ user.first_name|default:user.email }}!
+
+{% trans "A role invitation you sent has expired." %}
+
+⏰ {% trans "Expired Invitation Details" %}:
+{% trans "Invited person" %}: {{ invitee.get_full_name|default:invitee.email }}
+{% trans "Role" %}: {{ role.name }}
+{% trans "Organization" %}: {{ provider.name }}
+{% trans "Invitation sent" %}: {{ invite.created_at|date:"d.m.Y H:i" }}
+{% trans "Expired on" %}: {{ invite.expires_at|date:"d.m.Y H:i" }}
+
+⚠️ {% trans "What happened?" %}
+{% trans "The invitation expired because the invited person did not respond within the time limit." %}
+{% trans "The person will no longer be able to accept this invitation." %}
+
+{% trans "Send New Invitation" %}: {{ new_invite_url }}
+{% trans "Manage Roles" %}: {{ manage_roles_url }}
+
+💡 {% trans "What you can do" %}:
+• {% trans "Send a new invitation if the person is still interested" %}
+• {% trans "Contact the person directly to discuss the role" %}
+• {% trans "Consider if the role is still needed" %}
+• {% trans "Review your invitation settings" %}
+
+📞 {% trans "Contact the invited person" %}:
+{% trans "Email" %}: {{ invitee.email }}
+{% if invitee.phone %}{% trans "Phone" %}: {{ invitee.phone }}{% endif %}
+
+{% trans "If you need help managing roles and invitations, contact PetCare support." %}
+
+---
+{% trans "PetCare - Professional Pet Care Services" %}
+{% trans "Email" %}: support@petcare.com
+{% trans "Phone" %}: +1 (555) 123-4567
+{% trans "Website" %}: https://petcare.com 

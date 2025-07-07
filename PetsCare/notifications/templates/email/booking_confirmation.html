@@ -1,0 +1,51 @@
+{% extends "notifications/templates/email/base.html" %}
+
+{% block content %}
+<div class="notification-title">{% trans "Booking Confirmed" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
+    
+    <p>{% trans "Your booking at" %} <strong>{{ provider.name }}</strong> {% trans "has been successfully confirmed!" %}</p>
+    
+    <div class="booking-details">
+        <h3>📅 {% trans "Booking Details" %}</h3>
+        <p><strong>{% trans "Service" %}:</strong> {{ service.name }}</p>
+        <p><strong>{% trans "Date and time" %}:</strong> {{ booking.start_time|date:"d.m.Y H:i" }}</p>
+        <p><strong>{% trans "Duration" %}:</strong> {{ service.duration }} {% trans "minutes" %}</p>
+        <p><strong>{% trans "Cost" %}:</strong> {{ booking.total_price }} {{ booking.currency }}</p>
+        <p><strong>{% trans "Address" %}:</strong> {{ provider.address }}</p>
+    </div>
+    
+    {% if pet %}
+    <div class="pet-info">
+        <h3>🐾 {% trans "Pet" %}</h3>
+        <p><strong>{% trans "Name" %}:</strong> {{ pet.name }}</p>
+        <p><strong>{% trans "Species" %}:</strong> {{ pet.species }}</p>
+        <p><strong>{% trans "Breed" %}:</strong> {{ pet.breed|default:"Not specified" }}</p>
+    </div>
+    {% endif %}
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="{{ booking_url }}" class="button">{% trans "View Booking" %}</a>
+    </div>
+    
+    <div class="info-box">
+        <h3>📋 {% trans "What to bring?" %}</h3>
+        <p>• {% trans "Pet's veterinary passport" %}</p>
+        <p>• {% trans "Information about previous vaccinations" %}</p>
+        <p>• {% trans "Pet's favorite toys (optional)" %}</p>
+        <p>• {% trans "Leash and muzzle (if required)" %}</p>
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "If you have questions or need to change your booking, contact us." %}
+    </p>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        <strong>{% trans "Contact information" %}:</strong><br>
+        {% trans "Phone" %}: {{ provider.phone|default:"Not specified" }}<br>
+        {% trans "Email" %}: {{ provider.email|default:"Not specified" }}
+    </p>
+</div>
+{% endblock %} 

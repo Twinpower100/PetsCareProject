@@ -1,0 +1,62 @@
+{% extends "notifications/templates/email/base.html" %}
+
+{% block content %}
+<div class="notification-title">{% trans "New Review Received" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
+    
+    <p>{% trans "You have received a new review for your service." %}</p>
+    
+    <div class="info-box">
+        <h3>⭐ {% trans "Review Details" %}</h3>
+        <p><strong>{% trans "Service" %}:</strong> {{ service.name }}</p>
+        <p><strong>{% trans "Client" %}:</strong> {{ client.get_full_name|default:client.email }}</p>
+        <p><strong>{% trans "Rating" %}:</strong> {{ rating }}/5 ⭐</p>
+        <p><strong>{% trans "Review date" %}:</strong> {{ review_date|date:"d.m.Y H:i" }}</p>
+    </div>
+    
+    {% if review_text %}
+    <div class="booking-details">
+        <h3>💬 {% trans "Review Text" %}</h3>
+        <p style="font-style: italic; color: #555;">"{{ review_text }}"</p>
+    </div>
+    {% endif %}
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="{{ review_url }}" class="button">{% trans "View Full Review" %}</a>
+        <a href="{{ response_url }}" class="button" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); margin-left: 15px;">{% trans "Respond to Review" %}</a>
+    </div>
+    
+    <div class="info-box">
+        <h3>📊 {% trans "Your Rating Summary" %}</h3>
+        <p><strong>{% trans "Average rating" %}:</strong> {{ average_rating }}/5</p>
+        <p><strong>{% trans "Total reviews" %}:</strong> {{ total_reviews }}</p>
+        <p><strong>{% trans "5-star reviews" %}:</strong> {{ five_star_count }}</p>
+    </div>
+    
+    {% if rating >= 4 %}
+    <div class="info-box">
+        <h3>🎉 {% trans "Great Job!" %}</h3>
+        <p>{% trans "Congratulations on receiving a positive review! This helps build trust with potential clients." %}</p>
+    </div>
+    {% elif rating <= 2 %}
+    <div class="urgent">
+        <h3>⚠️ {% trans "Attention Required" %}</h3>
+        <p>{% trans "You received a low rating. Consider responding to address any concerns and improve your service." %}</p>
+    </div>
+    {% endif %}
+    
+    <div class="info-box">
+        <h3>💡 {% trans "Tips for responding to reviews" %}</h3>
+        <p>• {% trans "Respond promptly and professionally" %}</p>
+        <p>• {% trans "Thank the client for their feedback" %}</p>
+        <p>• {% trans "Address any specific concerns mentioned" %}</p>
+        <p>• {% trans "Show that you value customer feedback" %}</p>
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "Reviews help other pet owners make informed decisions. Thank you for providing quality service!" %}
+    </p>
+</div>
+{% endblock %} 

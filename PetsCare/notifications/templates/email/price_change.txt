@@ -1,0 +1,46 @@
+{% trans "Service Price Change" %}
+
+{% trans "Hello" %}, {{ user.first_name|default:user.email }}!
+
+{% trans "We would like to inform you about a price change for a service you have used." %}
+
+💰 {% trans "Price Change Details" %}:
+{% trans "Service" %}: {{ service.name }}
+{% trans "Provider" %}: {{ provider.name }}
+{% trans "Old price" %}: {{ old_price }} {{ currency }}
+{% trans "New price" %}: {{ new_price }} {{ currency }}
+{% trans "Change date" %}: {{ change_date|date:"d.m.Y" }}
+{% if change_percentage %}{% trans "Change" %}: {{ change_percentage }}%{% endif %}
+
+{% if reason %}
+📝 {% trans "Reason for change" %}:
+{{ reason }}
+{% endif %}
+
+{% trans "View Service" %}: {{ service_url }}
+{% trans "Book Appointment" %}: {{ booking_url }}
+
+💡 {% trans "What this means for you" %}:
+{% if new_price > old_price %}
+• {% trans "The service price has increased" %}
+• {% trans "Future bookings will be charged at the new rate" %}
+• {% trans "Existing bookings are not affected" %}
+{% else %}
+• {% trans "The service price has decreased" %}
+• {% trans "Future bookings will benefit from the lower rate" %}
+• {% trans "You can book at the new, lower price" %}
+{% endif %}
+
+📞 {% trans "Questions?" %}
+{% trans "If you have questions about the price change:" %}
+• {% trans "Contact the provider directly" %}: {{ provider.phone|default:"Not specified" }}
+• {% trans "Email the provider" %}: {{ provider.email|default:"Not specified" }}
+• {% trans "Contact PetCare support" %}: support@petcare.com
+
+{% trans "Thank you for choosing PetCare for your pet care needs." %}
+
+---
+{% trans "PetCare - Professional Pet Care Services" %}
+{% trans "Email" %}: support@petcare.com
+{% trans "Phone" %}: +1 (555) 123-4567
+{% trans "Website" %}: https://petcare.com 

@@ -1,0 +1,43 @@
+{% extends "notifications/templates/email/base.html" %}
+
+{% block content %}
+<div class="notification-title">{% trans "Role Invitation" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ invitee.first_name|default:invitee.email }}!</p>
+    
+    <p>{% trans "You are invited to join the team" %} <strong>{{ provider.name }}</strong> {% trans "in the PetCare system." %}</p>
+    
+    <div class="info-box">
+        <p><strong>{% trans "Inviting organization" %}:</strong> {{ provider.name }}</p>
+        <p><strong>{% trans "Role" %}:</strong> {{ role.name }}</p>
+        <p><strong>{% trans "Invited by" %}:</strong> {{ inviter.get_full_name|default:inviter.email }}</p>
+        <p><strong>{% trans "Invitation date" %}:</strong> {{ invite.created_at|date:"d.m.Y H:i" }}</p>
+    </div>
+    
+    <p>{% trans "Role description" %}: {{ role.description|default:"Role in PetCare system" }}</p>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="{{ accept_url }}" class="button" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); margin-right: 15px;">{% trans "Accept Invitation" %}</a>
+        <a href="{{ decline_url }}" class="button" style="background: linear-gradient(135deg, #dc3545 0%, #e74c3c 100%);">{% trans "Decline" %}</a>
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "If buttons don't work, use these links:" %}<br>
+        <a href="{{ accept_url }}" style="color: #28a745;">{% trans "Accept" %}: {{ accept_url }}</a><br>
+        <a href="{{ decline_url }}" style="color: #dc3545;">{% trans "Decline" %}: {{ decline_url }}</a>
+    </p>
+    
+    <div class="info-box">
+        <h3>{% trans "What does this role provide?" %}</h3>
+        <p>• {% trans "Access to manage services and schedules" %}</p>
+        <p>• {% trans "Ability to view and process requests" %}</p>
+        <p>• {% trans "Manage client pet information" %}</p>
+        <p>• {% trans "Access to financial reports (depending on role)" %}</p>
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "The invitation is valid until" %} {{ invite.expires_at|date:"d.m.Y H:i" }}.
+    </p>
+</div>
+{% endblock %} 

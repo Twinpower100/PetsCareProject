@@ -1,0 +1,30 @@
+Django>=5.0.3
+djangorestframework==3.14.0
+django-cors-headers==4.3.1
+psycopg2-binary==2.9.9
+python-decouple==3.8
+django-filter==23.5
+django-allauth==0.58.2
+django-modeltranslation==0.18.11
+Pillow==10.2.0
+celery==5.3.6
+redis==5.0.1
+googlemaps==4.10.0
+geopy==2.4.1
+qrcode==7.4.2
+django-push-notifications==3.0.0
+pywebpush==1.14.0
+djangorestframework-simplejwt==5.3.1
+drf-yasg==1.21.10
+django-filter==23.5
+django-cacheops==7.1
+
+# External APIs
+firebase-admin==6.2.0
+python-dotenv==1.0.0
+
+# Additional dependencies
+requests==2.31.0
+django-celery-results==2.5.1
+openpyxl>=3.1.2
+

@@ -1,0 +1,60 @@
+{% extends "notifications/templates/email/base.html" %}
+
+{% block content %}
+<div class="notification-title">{% trans "Service Price Change" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
+    
+    <p>{% trans "We would like to inform you about a price change for a service you have used." %}</p>
+    
+    <div class="info-box">
+        <h3>💰 {% trans "Price Change Details" %}</h3>
+        <p><strong>{% trans "Service" %}:</strong> {{ service.name }}</p>
+        <p><strong>{% trans "Provider" %}:</strong> {{ provider.name }}</p>
+        <p><strong>{% trans "Old price" %}:</strong> {{ old_price }} {{ currency }}</p>
+        <p><strong>{% trans "New price" %}:</strong> {{ new_price }} {{ currency }}</p>
+        <p><strong>{% trans "Change date" %}:</strong> {{ change_date|date:"d.m.Y" }}</p>
+        {% if change_percentage %}
+        <p><strong>{% trans "Change" %}:</strong> {{ change_percentage }}%</p>
+        {% endif %}
+    </div>
+    
+    {% if reason %}
+    <div class="info-box">
+        <h3>📝 {% trans "Reason for change" %}</h3>
+        <p>{{ reason }}</p>
+    </div>
+    {% endif %}
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="{{ service_url }}" class="button">{% trans "View Service" %}</a>
+        <a href="{{ booking_url }}" class="button" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); margin-left: 15px;">{% trans "Book Appointment" %}</a>
+    </div>
+    
+    <div class="info-box">
+        <h3>💡 {% trans "What this means for you" %}</h3>
+        {% if new_price > old_price %}
+        <p>• {% trans "The service price has increased" %}</p>
+        <p>• {% trans "Future bookings will be charged at the new rate" %}</p>
+        <p>• {% trans "Existing bookings are not affected" %}</p>
+        {% else %}
+        <p>• {% trans "The service price has decreased" %}</p>
+        <p>• {% trans "Future bookings will benefit from the lower rate" %}</p>
+        <p>• {% trans "You can book at the new, lower price" %}</p>
+        {% endif %}
+    </div>
+    
+    <div class="info-box">
+        <h3>📞 {% trans "Questions?" %}</h3>
+        <p>{% trans "If you have questions about the price change:" %}</p>
+        <p>• {% trans "Contact the provider directly" %}: {{ provider.phone|default:"Not specified" }}</p>
+        <p>• {% trans "Email the provider" %}: {{ provider.email|default:"Not specified" }}</p>
+        <p>• {% trans "Contact PetCare support" %}: support@petcare.com</p>
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "Thank you for choosing PetCare for your pet care needs." %}
+    </p>
+</div>
+{% endblock %} 

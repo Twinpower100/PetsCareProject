@@ -1,0 +1,128 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block extrahead %}{{ block.super }}
+<script type="text/javascript" src="{% url 'admin:jsi18n' %}"></script>
+{{ form.media }}
+{% endblock %}
+
+{% block extrastyle %}{{ block.super }}
+<link rel="stylesheet" type="text/css" href="{% static "admin/css/forms.css" %}">
+<style>
+    .planning-form {
+        max-width: 800px;
+        margin: 20px auto;
+        padding: 20px;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+    .form-row {
+        margin-bottom: 15px;
+    }
+    .form-row label {
+        display: block;
+        font-weight: bold;
+        margin-bottom: 5px;
+    }
+    .form-row input, .form-row select {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+    .help-text {
+        font-size: 12px;
+        color: #666;
+        margin-top: 5px;
+    }
+    .submit-row {
+        margin-top: 20px;
+        text-align: right;
+    }
+    .submit-row input {
+        background: #79aec8;
+        color: #fff;
+        padding: 10px 15px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+    .submit-row input:hover {
+        background: #417690;
+    }
+    .provider-info {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+    }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url 'admin:scheduling_staffingrequirement_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; {% trans 'Plan Schedule' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="planning-form">
+        <h1>{{ title }}</h1>
+        
+        <div class="provider-info">
+            <h3>{% trans 'Provider Information' %}</h3>
+            <p><strong>{% trans 'Name' %}:</strong> {{ provider.name }}</p>
+            <p><strong>{% trans 'Address' %}:</strong> {{ provider.address }}</p>
+            <p><strong>{% trans 'Phone' %}:</strong> {{ provider.phone_number }}</p>
+        </div>
+        
+        <form method="post">
+            {% csrf_token %}
+            
+            <div class="form-row">
+                <label for="{{ form.start_date.id_for_label }}">{{ form.start_date.label }}</label>
+                {{ form.start_date }}
+                {% if form.start_date.help_text %}
+                    <div class="help-text">{{ form.start_date.help_text }}</div>
+                {% endif %}
+                {% if form.start_date.errors %}
+                    <div class="errors">{{ form.start_date.errors }}</div>
+                {% endif %}
+            </div>
+            
+            <div class="form-row">
+                <label for="{{ form.end_date.id_for_label }}">{{ form.end_date.label }}</label>
+                {{ form.end_date }}
+                {% if form.end_date.help_text %}
+                    <div class="help-text">{{ form.end_date.help_text }}</div>
+                {% endif %}
+                {% if form.end_date.errors %}
+                    <div class="errors">{{ form.end_date.errors }}</div>
+                {% endif %}
+            </div>
+            
+            <div class="form-row">
+                <label for="{{ form.optimize_preferences.id_for_label }}">
+                    {{ form.optimize_preferences }}
+                    {{ form.optimize_preferences.label }}
+                </label>
+                {% if form.optimize_preferences.help_text %}
+                    <div class="help-text">{{ form.optimize_preferences.help_text }}</div>
+                {% endif %}
+                {% if form.optimize_preferences.errors %}
+                    <div class="errors">{{ form.optimize_preferences.errors }}</div>
+                {% endif %}
+            </div>
+            
+            <div class="submit-row">
+                <input type="submit" value="{% trans 'Plan Schedule' %}" class="default">
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %} 

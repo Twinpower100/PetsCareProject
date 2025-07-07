@@ -1,0 +1,48 @@
+{% trans "Pet Sitting Update" %}
+
+{% trans "Hello" %}, {{ user.first_name|default:user.email }}!
+
+{% trans "Update regarding your pet sitting request." %}
+
+🐾 {% trans "Pet" %}:
+{% trans "Name" %}: {{ pet.name }}
+{% trans "Species" %}: {{ pet.species }}
+{% trans "Breed" %}: {{ pet.breed|default:"Not specified" }}
+
+📋 {% trans "Sitting Details" %}:
+{% trans "Status" %}: {{ status|title }}
+{% trans "Start date" %}: {{ start_date|date:"d.m.Y" }}
+{% trans "End date" %}: {{ end_date|date:"d.m.Y" }}
+{% trans "Sitter" %}: {{ sitter.get_full_name|default:sitter.email }}
+{% if address %}{% trans "Address" %}: {{ address }}{% endif %}
+
+{% if status == 'confirmed' %}
+✅ {% trans "Confirmed!" %}
+{% trans "Your pet sitting request has been confirmed. The sitter will contact you soon to discuss details." %}
+{% elif status == 'in_progress' %}
+🔄 {% trans "In Progress" %}
+{% trans "Pet sitting has started. You can contact the sitter if needed." %}
+{% elif status == 'completed' %}
+🎉 {% trans "Completed" %}
+{% trans "Pet sitting has been completed. Please leave a review for the sitter." %}
+{% elif status == 'cancelled' %}
+❌ {% trans "Cancelled" %}
+{% trans "Your pet sitting request has been cancelled." %}
+{% if reason %}{% trans "Reason" %}: {{ reason }}{% endif %}
+{% endif %}
+
+{% trans "View Details" %}: {{ sitting_url }}
+{% if status == 'completed' %}{% trans "Leave Review" %}: {{ review_url }}{% endif %}
+
+📞 {% trans "Contact Information" %}:
+{% trans "Sitter" %}: {{ sitter.get_full_name|default:sitter.email }}
+{% trans "Phone" %}: {{ sitter.phone|default:"Not specified" }}
+{% trans "Email" %}: {{ sitter.email }}
+
+{% trans "If you have any questions, contact PetCare support." %}
+
+---
+{% trans "PetCare - Professional Pet Care Services" %}
+{% trans "Email" %}: support@petcare.com
+{% trans "Phone" %}: +1 (555) 123-4567
+{% trans "Website" %}: https://petcare.com 

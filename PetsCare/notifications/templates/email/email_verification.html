@@ -1,0 +1,31 @@
+{% extends "notifications/templates/email/base.html" %}
+
+{% block content %}
+<div class="notification-title">{% trans "Verify Your Email Address" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
+    
+    <p>{% trans "Welcome to PetCare! To complete your registration and activate your account, please verify your email address." %}</p>
+    
+    <div class="info-box">
+        <p><strong>{% trans "Your email" %}:</strong> {{ user.email }}</p>
+        <p><strong>{% trans "Registration date" %}:</strong> {{ user.date_joined|date:"d.m.Y H:i" }}</p>
+    </div>
+    
+    <p>{% trans "Click the button below to verify your email address:" %}</p>
+    
+    <div style="text-align: center;">
+        <a href="{{ verification_url }}" class="button">{% trans "Verify Email" %}</a>
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "If the button doesn't work, copy and paste this link into your browser:" %}<br>
+        <a href="{{ verification_url }}" style="color: #667eea; word-break: break-all;">{{ verification_url }}</a>
+    </p>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "The link is valid for 24 hours. If you didn't register for PetCare, simply ignore this email." %}
+    </p>
+</div>
+{% endblock %} 

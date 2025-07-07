@@ -1,0 +1,43 @@
+{% extends "notifications/templates/email/base.html" %}
+
+{% block content %}
+<div class="notification-title">{% trans "Booking Cancelled" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
+    
+    <p>{% trans "Your booking at" %} <strong>{{ provider.name }}</strong> {% trans "has been cancelled." %}</p>
+    
+    <div class="booking-details">
+        <h3>📅 {% trans "Cancelled Booking" %}</h3>
+        <p><strong>{% trans "Service" %}:</strong> {{ service.name }}</p>
+        <p><strong>{% trans "Date and time" %}:</strong> {{ booking.start_time|date:"d.m.Y H:i" }}</p>
+        <p><strong>{% trans "Cancellation reason" %}:</strong> {{ reason|default:"Not specified" }}</p>
+    </div>
+    
+    {% if refund_amount %}
+    <div class="info-box">
+        <h3>💰 {% trans "Refund" %}</h3>
+        <p><strong>{% trans "Amount to refund" %}:</strong> {{ refund_amount }} {{ booking.currency }}</p>
+        <p><strong>{% trans "Refund method" %}:</strong> {{ refund_method|default:"To the card used for payment" }}</p>
+        <p><strong>{% trans "Refund time" %}:</strong> {% trans "3-5 business days" %}</p>
+    </div>
+    {% endif %}
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="{{ new_booking_url }}" class="button">{% trans "Book New Time" %}</a>
+    </div>
+    
+    <div class="info-box">
+        <h3>📞 {% trans "Contact Us" %}</h3>
+        <p>{% trans "If you have questions about cancellation or refund:" %}</p>
+        <p>• {% trans "Phone" %}: {{ provider.phone|default:"Not specified" }}</p>
+        <p>• {% trans "Email" %}: {{ provider.email|default:"Not specified" }}</p>
+        <p>• {% trans "PetCare Support" %}: support@petcare.com</p>
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "We apologize for the inconvenience. We would be happy to help you book a new time." %}
+    </p>
+</div>
+{% endblock %} 

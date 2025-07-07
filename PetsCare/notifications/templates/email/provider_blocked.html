@@ -1,0 +1,54 @@
+{% extends "notifications/templates/email/base.html" %}
+
+{% block content %}
+<div class="notification-title">{% trans "Provider Blocked" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
+    
+    <p>{% trans "Your provider" %} <strong>{{ provider.name }}</strong> {% trans "has been blocked in the PetCare system." %}</p>
+    
+    <div class="urgent">
+        <h3>⚠️ {% trans "Block reason" %}</h3>
+        <p><strong>{% trans "Block type" %}:</strong> {{ block_type|default:"Not specified" }}</p>
+        <p><strong>{% trans "Reason" %}:</strong> {{ reason|default:"Not specified" }}</p>
+        <p><strong>{% trans "Block date" %}:</strong> {{ blocked_at|date:"d.m.Y H:i" }}</p>
+        {% if debt_amount %}
+        <p><strong>{% trans "Debt amount" %}:</strong> {{ debt_amount }} {{ currency }}</p>
+        {% endif %}
+    </div>
+    
+    <div class="info-box">
+        <h3>🚫 {% trans "What does this mean?" %}</h3>
+        <p>• {% trans "Provider is temporarily unavailable for new bookings" %}</p>
+        <p>• {% trans "Existing bookings may be cancelled" %}</p>
+        <p>• {% trans "Access to administrative functions is limited" %}</p>
+        <p>• {% trans "Payments and financial operations are suspended" %}</p>
+    </div>
+    
+    <div class="info-box">
+        <h3>✅ {% trans "How to unblock?" %}</h3>
+        {% if debt_amount %}
+        <p>1. {% trans "Pay off the debt of" %} {{ debt_amount }} {{ currency }}</p>
+        <p>2. {% trans "Contact PetCare financial department" %}</p>
+        {% endif %}
+        <p>3. {% trans "Provide necessary documents" %}</p>
+        <p>4. {% trans "Wait for verification and unblocking" %}</p>
+    </div>
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="{{ support_url }}" class="button">{% trans "Contact Support" %}</a>
+    </div>
+    
+    <div class="info-box">
+        <h3>📞 {% trans "Support contacts" %}</h3>
+        <p>• {% trans "Email" %}: support@petcare.com</p>
+        <p>• {% trans "Phone" %}: +7 (XXX) XXX-XX-XX</p>
+        <p>• {% trans "Working hours" %}: {% trans "Mon-Fri 9:00-18:00" %}</p>
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "We are ready to help you resolve the issues and restore the provider's operation." %}
+    </p>
+</div>
+{% endblock %} 

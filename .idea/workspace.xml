@@ -1,30 +1,309 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
   <component name="ChangeListManager">
-    <list default="true" id="3115a50f-57f9-42d9-b8ae-da8d3f8809a0" name="Changes" comment="" />
+    <list default="true" id="3115a50f-57f9-42d9-b8ae-da8d3f8809a0" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/API_KEYS_SETUP.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/GAP_ANALYSIS_UPDATED.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/.cursorrules" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/.env" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/access/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/access/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/access/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/access/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/access/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/access/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/access/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/analytics/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/analytics/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/asgi.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/management/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/management/commands/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/management/commands/audit_statistics.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/management/commands/cleanup_old_logs.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/management/commands/export_audit_data.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/signals.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/tests.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/audit/utils.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/admin_reports.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/logging.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/management/commands/check_keys.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/middleware.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/tasks.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/tests.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/billing/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/management/commands/auto_complete_bookings.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/permissions.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/signals.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/tests.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/tests/test_auto_booking.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/utils.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/booking/views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/tests.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/translation.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/catalog/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/celery.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/custom_admin/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/custom_admin/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/custom_admin/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/docs/AUTO_BOOKING_API.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/docs/GEOLOCATION_API.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/docs/GEOLOCATION_SEARCH_API.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/docs/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/docs/api_documentation.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/forms.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/management/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/management/commands/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/management/commands/cleanup_geolocation_cache.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/management/commands/create_geospatial_indexes.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/management/commands/validate_addresses.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/signals.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/tests.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/tests/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/tests/test_search_apis.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/utils.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/geolocation/views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/management/commands/export_api_docs.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/management/commands/validate_api_docs.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/celery.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/management/commands/cleanup_notifications.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/management/commands/export_notifications.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/management/commands/send_debt_reminders.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/management/commands/send_price_change_notifications.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/management/commands/send_system_maintenance_notifications.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/management/commands/send_test_notification.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/migrations/0001_initial.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/migrations/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/permissions.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/signals.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/tasks.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/base.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/booking_cancellation.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/booking_confirmation.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/booking_reminder.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/email_verification.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/email_verification.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/new_review.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/new_review.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/password_reset.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/password_reset.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/pet_reminder.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/pet_sitting.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/pet_sitting.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/price_change.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/price_change.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/provider_blocked.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/role_invite.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/role_invite_expired.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/templates/email/role_invite_expired.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/tests.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/tests/test_new_tasks.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/notifications/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/pets/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/pets/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/pets/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/pets/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/pets/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/pets/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/pets/tests.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/pets/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/admin_reports.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/permissions.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/provider_services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/templates/admin/apply_pattern.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/templates/admin/providers/provider_schedule_export.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/tests.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/providers/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/management/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/management/commands/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/management/commands/detect_suspicious_activity.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/management/commands/recalculate_ratings.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/signals.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/ratings/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/admin_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/templates/admin/reports/dashboard.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/templates/admin/reports/generate.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/reports/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/booking_integration.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/extended_services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/reports.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/services.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/templates/admin/scheduling/staffingrequirement/planning_form.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/scheduling/templates/admin/scheduling/staffingrequirement/planning_results.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/services/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/services/blocking.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/services/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/settings.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/settings/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/settings/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/sitters/admin.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/sitters/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/sitters/apps.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/sitters/models.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/sitters/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/sitters/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/swagger_config.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/templates/admin/index.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/templates/admin/providers/provider/change_list.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/templates/api_documentation.html" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/test.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/test_role_logic.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/tests/test_api_documentation.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/users/api_views.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/users/migrations/0001_initial.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/users/migrations/__init__.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/users/permissions.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/users/serializers.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/users/urls.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare/wsgi.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/PetsCare_Описание_продукта.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/Project description" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ROLE_MODEL.md" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/ТЗ.txt" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/PetsCare/__init__.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/PetsCare/asgi.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/PetsCare/settings.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/PetsCare/urls.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/PetsCare/wsgi.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/manage.py" beforeDir="false" afterPath="$PROJECT_DIR$/PetsCare/manage.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/users/admin.py" beforeDir="false" afterPath="$PROJECT_DIR$/PetsCare/users/admin.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/users/apps.py" beforeDir="false" afterPath="$PROJECT_DIR$/PetsCare/users/apps.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/users/models.py" beforeDir="false" afterPath="$PROJECT_DIR$/PetsCare/users/models.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/users/tests.py" beforeDir="false" afterPath="$PROJECT_DIR$/PetsCare/users/tests.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/PetsCare/users/views.py" beforeDir="false" afterPath="$PROJECT_DIR$/PetsCare/audit/views.py" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
     <option name="LAST_RESOLUTION" value="IGNORE" />
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 0
-}]]></component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;Twinpower100&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/Twinpower100/PetCare.git&quot;,
+    &quot;accountId&quot;: &quot;c0ce6cf8-563a-486f-bc7c-24fd812a663b&quot;
+  }
+}</component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 0
+}</component>
   <component name="ProjectId" id="2wBOr9TYWENdL8aYiGXK9VQhkSS" />
-  <component name="ProjectLevelVcsManager" settingsEditedManually="true" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
-    "RunOnceActivity.ShowReadmeOnStart": "true"
+    "ASKED_MARK_IGNORED_FILES_AS_EXCLUDED": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "master",
+    "ignore.virus.scanning.warn.message": "true",
+    "last_opened_file_path": "C:/Users/andre/OneDrive/Documents/Code It/Python/!Projects/PetCare",
+    "run.code.analysis.last.selected.profile": "aDefault",
+    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\andre\OneDrive\Documents\Code It\Python\!Projects\PetCare\PetsCare" />
+      <recent name="C:\Users\andre\OneDrive\Documents\Code It\Python\!Projects\PetCare" />
+    </key>
+  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-4f4e415b4190-aa17d162503b-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-243.26053.29" />
+        <option value="bundled-python-sdk-dfff61a61320-9cdd278e9d02-com.jetbrains.pycharm.community.sharedIndexes.bundled-PC-251.25410.159" />
       </set>
     </attachedChunks>
   </component>

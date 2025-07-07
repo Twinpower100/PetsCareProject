@@ -1,0 +1,254 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls static admin_modify %}
+
+{% block extrahead %}{{ block.super }}
+<script type="text/javascript" src="{% url 'admin:jsi18n' %}"></script>
+{% endblock %}
+
+{% block extrastyle %}{{ block.super }}
+<link rel="stylesheet" type="text/css" href="{% static "admin/css/forms.css" %}">
+<style>
+    .results-container {
+        max-width: 1200px;
+        margin: 20px auto;
+        padding: 20px;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+    .summary-stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 15px;
+        margin-bottom: 30px;
+    }
+    .stat-card {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 4px;
+        text-align: center;
+    }
+    .stat-number {
+        font-size: 24px;
+        font-weight: bold;
+        color: #007bff;
+    }
+    .stat-label {
+        font-size: 14px;
+        color: #666;
+        margin-top: 5px;
+    }
+    .schedule-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+    }
+    .schedule-table th,
+    .schedule-table td {
+        border: 1px solid #ddd;
+        padding: 8px;
+        text-align: left;
+    }
+    .schedule-table th {
+        background: #f8f9fa;
+        font-weight: bold;
+    }
+    .day-header {
+        background: #e9ecef;
+        font-weight: bold;
+        text-align: center;
+    }
+    .employee-schedule {
+        background: #f8f9fa;
+    }
+    .service-assignment {
+        background: #e7f3ff;
+        border-left: 3px solid #007bff;
+    }
+    .conflict {
+        background: #ffe6e6;
+        border-left: 3px solid #dc3545;
+    }
+    .unassigned {
+        background: #fff3cd;
+        border-left: 3px solid #ffc107;
+    }
+    .action-buttons {
+        margin-top: 20px;
+        text-align: center;
+    }
+    .action-buttons a {
+        display: inline-block;
+        margin: 0 10px;
+        padding: 10px 20px;
+        background: #79aec8;
+        color: #fff;
+        text-decoration: none;
+        border-radius: 4px;
+    }
+    .action-buttons a:hover {
+        background: #417690;
+    }
+    .provider-info {
+        background: #f8f9fa;
+        padding: 15px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+    }
+    .planning-period {
+        background: #e7f3ff;
+        padding: 15px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+    }
+</style>
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+    <a href="{% url 'admin:index' %}">{% trans 'Home' %}</a>
+    &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+    &rsaquo; <a href="{% url 'admin:scheduling_staffingrequirement_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+    &rsaquo; {% trans 'Planning Results' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="results-container">
+        <h1>{{ title }}</h1>
+        
+        <div class="provider-info">
+            <h3>{% trans 'Provider Information' %}</h3>
+            <p><strong>{% trans 'Name' %}:</strong> {{ provider.name }}</p>
+            <p><strong>{% trans 'Address' %}:</strong> {{ provider.address }}</p>
+            <p><strong>{% trans 'Phone' %}:</strong> {{ provider.phone_number }}</p>
+        </div>
+        
+        <div class="planning-period">
+            <h3>{% trans 'Planning Period' %}</h3>
+            <p><strong>{% trans 'Start Date' %}:</strong> {{ start_date }}</p>
+            <p><strong>{% trans 'End Date' %}:</strong> {{ end_date }}</p>
+        </div>
+        
+        {% if result %}
+            <div class="summary-stats">
+                <div class="stat-card">
+                    <div class="stat-number">{{ result.total_days }}</div>
+                    <div class="stat-label">{% trans 'Days Planned' %}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">{{ result.total_assignments }}</div>
+                    <div class="stat-label">{% trans 'Total Assignments' %}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">{{ result.conflicts|length }}</div>
+                    <div class="stat-label">{% trans 'Conflicts' %}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">{{ result.unassigned_services|length }}</div>
+                    <div class="stat-label">{% trans 'Unassigned Services' %}</div>
+                </div>
+            </div>
+            
+            {% if result.schedule %}
+                <h3>{% trans 'Schedule Details' %}</h3>
+                <table class="schedule-table">
+                    <thead>
+                        <tr>
+                            <th>{% trans 'Date' %}</th>
+                            <th>{% trans 'Day of Week' %}</th>
+                            <th>{% trans 'Employee' %}</th>
+                            <th>{% trans 'Service' %}</th>
+                            <th>{% trans 'Workplace' %}</th>
+                            <th>{% trans 'Time Slot' %}</th>
+                            <th>{% trans 'Status' %}</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for day, assignments in result.schedule.items %}
+                            {% for assignment in assignments %}
+                                <tr class="{% if assignment.conflict %}conflict{% elif assignment.unassigned %}unassigned{% else %}service-assignment{% endif %}">
+                                    <td>{{ day }}</td>
+                                    <td>{{ day|date:"l" }}</td>
+                                    <td>
+                                        {% if assignment.employee %}
+                                            {{ assignment.employee.user.get_full_name }}
+                                        {% else %}
+                                            <em>{% trans 'Unassigned' %}</em>
+                                        {% endif %}
+                                    </td>
+                                    <td>{{ assignment.service.name }}</td>
+                                    <td>
+                                        {% if assignment.workplace %}
+                                            {{ assignment.workplace.name }}
+                                        {% else %}
+                                            <em>{% trans 'Any' %}</em>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if assignment.start_time and assignment.end_time %}
+                                            {{ assignment.start_time|time:"H:i" }} - {{ assignment.end_time|time:"H:i" }}
+                                        {% else %}
+                                            <em>{% trans 'Flexible' %}</em>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if assignment.conflict %}
+                                            <span style="color: #dc3545;">{% trans 'Conflict' %}</span>
+                                        {% elif assignment.unassigned %}
+                                            <span style="color: #ffc107;">{% trans 'Unassigned' %}</span>
+                                        {% else %}
+                                            <span style="color: #28a745;">{% trans 'Assigned' %}</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% endif %}
+            
+            {% if result.conflicts %}
+                <h3>{% trans 'Conflicts Found' %}</h3>
+                <ul>
+                    {% for conflict in result.conflicts %}
+                        <li>{{ conflict }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+            
+            {% if result.unassigned_services %}
+                <h3>{% trans 'Unassigned Services' %}</h3>
+                <ul>
+                    {% for service in result.unassigned_services %}
+                        <li>{{ service.name }} - {{ service.reason }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+            
+            {% if result.recommendations %}
+                <h3>{% trans 'Recommendations' %}</h3>
+                <ul>
+                    {% for recommendation in result.recommendations %}
+                        <li>{{ recommendation }}</li>
+                    {% endfor %}
+                </ul>
+            {% endif %}
+        {% else %}
+            <div class="alert alert-warning">
+                <p>{% trans 'No schedule data available' %}</p>
+            </div>
+        {% endif %}
+        
+        <div class="action-buttons">
+            <a href="{% url 'admin:scheduling_staffingrequirement_changelist' %}">
+                {% trans 'Back to Requirements' %}
+            </a>
+            <a href="{% url 'admin:scheduling_staffingrequirement_plan_schedule' provider.id %}">
+                {% trans 'Plan Again' %}
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %} 

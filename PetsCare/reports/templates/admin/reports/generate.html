@@ -1,0 +1,211 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block extrahead %}
+<style>
+    .form-container {
+        max-width: 800px;
+        margin: 20px auto;
+        background: white;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 30px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .form-group {
+        margin-bottom: 20px;
+    }
+    
+    .form-group label {
+        display: block;
+        margin-bottom: 5px;
+        font-weight: bold;
+        color: #333;
+    }
+    
+    .form-control {
+        width: 100%;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        font-size: 14px;
+    }
+    
+    .form-control:focus {
+        outline: none;
+        border-color: #007cba;
+        box-shadow: 0 0 0 2px rgba(0, 124, 186, 0.2);
+    }
+    
+    .date-inputs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 15px;
+    }
+    
+    .providers-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 10px;
+        max-height: 200px;
+        overflow-y: auto;
+        border: 1px solid #ddd;
+        padding: 10px;
+        border-radius: 4px;
+    }
+    
+    .provider-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    
+    .btn {
+        padding: 12px 24px;
+        border: none;
+        border-radius: 4px;
+        text-decoration: none;
+        font-size: 14px;
+        cursor: pointer;
+        transition: background-color 0.2s;
+        margin-right: 10px;
+    }
+    
+    .btn-primary {
+        background-color: #007cba;
+        color: white;
+    }
+    
+    .btn-primary:hover {
+        background-color: #005a87;
+    }
+    
+    .btn-secondary {
+        background-color: #f0f0f1;
+        color: #2c3338;
+        border: 1px solid #8c8f94;
+    }
+    
+    .btn-secondary:hover {
+        background-color: #dcdcde;
+    }
+    
+    .format-options {
+        display: flex;
+        gap: 15px;
+    }
+    
+    .format-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="form-container">
+    <h1>{% trans "Generate Report" %}</h1>
+    
+    <form method="post">
+        {% csrf_token %}
+        
+        <div class="form-group">
+            <label for="report_type">{% trans "Report Type" %}</label>
+            <select name="report_type" id="report_type" class="form-control" required>
+                <option value="">{% trans "Select report type" %}</option>
+                <option value="income" {% if report_type == 'income' %}selected{% endif %}>
+                    {% trans "Income Report" %}
+                </option>
+                <option value="workload" {% if report_type == 'workload' %}selected{% endif %}>
+                    {% trans "Employee Workload Report" %}
+                </option>
+                <option value="debt" {% if report_type == 'debt' %}selected{% endif %}>
+                    {% trans "Debt Report" %}
+                </option>
+                <option value="activity" {% if report_type == 'activity' %}selected{% endif %}>
+                    {% trans "Activity Report" %}
+                </option>
+                <option value="payment" {% if report_type == 'payment' %}selected{% endif %}>
+                    {% trans "Payment Report" %}
+                </option>
+                <option value="cancellation" {% if report_type == 'cancellation' %}selected{% endif %}>
+                    {% trans "Cancellation Report" %}
+                </option>
+            </select>
+        </div>
+        
+        <div class="form-group">
+            <label for="date_range">{% trans "Date Range" %}</label>
+            <select name="date_range" id="date_range" class="form-control" required>
+                <option value="">{% trans "Select date range" %}</option>
+                {% for option in date_range_options %}
+                <option value="{{ option.value }}">{{ option.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        
+        <div class="form-group" id="custom_dates" style="display: none;">
+            <label>{% trans "Custom Date Range" %}</label>
+            <div class="date-inputs">
+                <div>
+                    <label for="start_date">{% trans "Start Date" %}</label>
+                    <input type="date" name="start_date" id="start_date" class="form-control">
+                </div>
+                <div>
+                    <label for="end_date">{% trans "End Date" %}</label>
+                    <input type="date" name="end_date" id="end_date" class="form-control">
+                </div>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <label>{% trans "Providers (optional)" %}</label>
+            <div class="providers-grid">
+                {% for provider in providers %}
+                <div class="provider-checkbox">
+                    <input type="checkbox" name="providers" value="{{ provider.id }}" id="provider_{{ provider.id }}">
+                    <label for="provider_{{ provider.id }}">{{ provider.name }}</label>
+                </div>
+                {% endfor %}
+            </div>
+            <small>{% trans "Leave empty to include all providers" %}</small>
+        </div>
+        
+        <div class="form-group">
+            <label>{% trans "Output Format" %}</label>
+            <div class="format-options">
+                <div class="format-option">
+                    <input type="radio" name="format" value="json" id="format_json" checked>
+                    <label for="format_json">{% trans "JSON" %}</label>
+                </div>
+                <div class="format-option">
+                    <input type="radio" name="format" value="excel" id="format_excel">
+                    <label for="format_excel">{% trans "Excel" %}</label>
+                </div>
+            </div>
+        </div>
+        
+        <div class="form-group">
+            <button type="submit" class="btn btn-primary">{% trans "Generate Report" %}</button>
+            <a href="{% url 'admin:reports-dashboard' %}" class="btn btn-secondary">{% trans "Cancel" %}</a>
+        </div>
+    </form>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const dateRangeSelect = document.getElementById('date_range');
+    const customDatesDiv = document.getElementById('custom_dates');
+    
+    dateRangeSelect.addEventListener('change', function() {
+        if (this.value === 'custom') {
+            customDatesDiv.style.display = 'block';
+        } else {
+            customDatesDiv.style.display = 'none';
+        }
+    });
+});
+</script>
+{% endblock %} 
