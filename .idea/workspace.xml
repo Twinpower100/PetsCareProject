@@ -4,7 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="3115a50f-57f9-42d9-b8ae-da8d3f8809a0" name="Changes" comment="">
+    <list default="true" id="3115a50f-57f9-42d9-b8ae-da8d3f8809a0" name="Changes" comment="1st Commit BackEnd">
       <change afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/API_KEYS_SETUP.md" afterDir="false" />
       <change afterPath="$PROJECT_DIR$/GAP_ANALYSIS_UPDATED.md" afterDir="false" />
@@ -316,6 +316,19 @@
       <option name="presentableId" value="Default" />
       <updated>1745511696194</updated>
     </task>
+    <task id="LOCAL-00001" summary="1st Commit BackEnd">
+      <option name="closed" value="true" />
+      <created>1751870200250</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1751870200250</updated>
+    </task>
+    <option name="localTasksCounter" value="2" />
     <servers />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="1st Commit BackEnd" />
+    <option name="LAST_COMMIT_MESSAGE" value="1st Commit BackEnd" />
   </component>
 </project>
