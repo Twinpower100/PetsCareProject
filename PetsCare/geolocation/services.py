@@ -47,7 +47,7 @@ class GoogleMapsService:
         params = {
             'address': address,
             'key': self.api_key,
-            'language': 'ru'  # Russian language for better results
+            'language': getattr(settings, 'ADDRESS_VALIDATION_SETTINGS', {}).get('DEFAULT_LANGUAGE', 'en')
         }
         
         if country:
@@ -87,7 +87,7 @@ class GoogleMapsService:
         params = {
             'input': input_text,
             'key': self.api_key,
-            'language': 'ru',
+            'language': 'en',
             'types': types
         }
         
@@ -197,7 +197,7 @@ class GoogleMapsService:
         params = {
             'latlng': f"{latitude},{longitude}",
             'key': self.api_key,
-            'language': 'ru'
+            'language': 'en'
         }
         
         try:

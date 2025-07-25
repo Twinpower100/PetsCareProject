@@ -43,7 +43,7 @@ class UserManager(BaseUserManager):
             email (str): Email пользователя
             password (str): Пароль пользователя
             **extra_fields: Дополнительные поля
-            
+        
         Returns:
             User: Созданный пользователь
         """
@@ -64,7 +64,7 @@ class UserManager(BaseUserManager):
             email (str): Email пользователя
             password (str): Пароль пользователя
             **extra_fields: Дополнительные поля
-            
+        
         Returns:
             User: Созданный суперпользователь
         """
@@ -217,7 +217,7 @@ class User(AbstractUser):
         verbose_name=_('User Types'),
         help_text=_('Roles of the user in the system.'),
     )
-    
+
     # Настройки аутентификации
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['username']

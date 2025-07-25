@@ -208,7 +208,7 @@ def send_password_reset_task(user_id: int, reset_token: str):
     try:
         from django.contrib.auth import get_user_model
         from django.urls import reverse
-        from django.conf import settings
+from django.conf import settings
         
         User = get_user_model()
         user = User.objects.get(id=user_id)
@@ -359,9 +359,9 @@ def process_reminders_task():
                 )
                 
                 # Обновляем время последнего уведомления и следующего
-                reminder.last_notified = now
-                reminder.next_notification = reminder.calculate_next_notification()
-                reminder.save()
+        reminder.last_notified = now
+        reminder.next_notification = reminder.calculate_next_notification()
+        reminder.save()
                 
                 logger.info(f"Reminder notification sent for reminder {reminder.id}")
                 
@@ -415,10 +415,10 @@ def send_booking_cancellation_task(booking_id: int, reason: str = None):
         reason: Причина отмены
     """
     try:
-        from booking.models import Booking
-        
-        booking = Booking.objects.get(id=booking_id)
-        
+    from booking.models import Booking
+
+    booking = Booking.objects.get(id=booking_id)
+
         message = _('Your booking has been cancelled')
         if reason:
             message += f": {reason}"
@@ -501,7 +501,7 @@ def send_price_change_notification_task(service_id: int, old_price: float, new_p
         for user in users:
             try:
                 notification = notification_service.send_notification(
-                    user=user,
+        user=user,
                     notification_type='system',
                     title=_('Service Price Changed'),
                     message=_('The price for ') + service.name + _(' has changed.'),
@@ -510,7 +510,7 @@ def send_price_change_notification_task(service_id: int, old_price: float, new_p
                     data={
                         'service_id': service.id,
                         'service_name': service.name,
-                        'old_price': old_price,
+            'old_price': old_price,
                         'new_price': new_price,
                         'currency': currency,
                         'change_percentage': round(((new_price - old_price) / old_price) * 100, 1)
@@ -700,7 +700,7 @@ def send_refund_notification_task(refund_id: int):
             message=_('Your refund has been processed and will be credited to your account.'),
             channels=['email', 'push', 'in_app'],
             priority='medium',
-            data={
+        data={
                 'refund_id': refund.id,
                 'amount': refund.amount,
                 'currency': refund.currency,

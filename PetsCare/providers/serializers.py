@@ -13,6 +13,7 @@ from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
 from .models import Provider, Employee, EmployeeProvider, Schedule, ProviderService, ProviderSchedule, EmployeeWorkSlot, EmployeeJoinRequest
 from catalog.serializers import ServiceSerializer
+from catalog.models import Service
 from users.serializers import UserSerializer
 from users.models import EmployeeSpecialization, User
 from django.db.models import Q
@@ -414,12 +415,16 @@ class ProviderServiceSerializer(serializers.ModelSerializer):
     Сериализатор для услуги учреждения.
     """
     provider = ProviderSerializer(read_only=True)
-    service = ServiceSerializer(read_only=True)
+    service = serializers.PrimaryKeyRelatedField(
+        queryset=Service.objects.filter(is_active=True),
+        help_text=_('Select service from catalog')
+    )
 
     class Meta:
         model = ProviderService
         fields = [
-            'id', 'provider', 'service', 'price', 'is_active',
+            'id', 'provider', 'service', 'price', 'duration_minutes', 
+            'tech_break_minutes', 'base_price', 'is_active',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
@@ -433,6 +438,21 @@ class ProviderServiceSerializer(serializers.ModelSerializer):
                 _("Price cannot be negative")
             )
         return value
+
+    def validate(self, data):
+        """
+        Проверяет корректность данных услуги учреждения.
+        """
+        # Проверяем, что базовая цена не меньше основной цены
+        base_price = data.get('base_price')
+        price = data.get('price')
+        
+        if base_price and price and base_price < price:
+            raise serializers.ValidationError(
+                _("Base price cannot be less than main price")
+            )
+        
+        return data
 
 
 class ProviderScheduleSerializer(serializers.ModelSerializer):

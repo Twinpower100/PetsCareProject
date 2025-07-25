@@ -145,6 +145,7 @@ LANGUAGES = [
     ('en', _('English')),
     ('ru', _('Russian')),
     ('me', _('Montenegrian')),
+    ('de', _('German')),
 ]
 
 LOCALE_PATHS = [
@@ -215,7 +216,7 @@ ADDRESS_VALIDATION_SETTINGS = {
     'MAX_RETRIES': 3,  # Максимальное количество попыток
     'RETRY_DELAY_SECONDS': 1,  # Задержка между попытками
     'MIN_CONFIDENCE_SCORE': 0.8,  # Минимальный уровень уверенности
-    'DEFAULT_LANGUAGE': 'ru',  # Язык по умолчанию для API
+    'DEFAULT_LANGUAGE': 'en',  # Язык по умолчанию для API
     'ENABLE_CACHING': True,  # Включить кэширование
     'CLEANUP_EXPIRED_CACHE_DAYS': 7,  # Очистка истекшего кэша каждые N дней
 }

@@ -33,7 +33,7 @@ msgstr ""
 
 #: .\pets\admin.py:41
 msgid "Details"
-msgstr ""
+msgstr "Детали"
 
 #: .\pets\admin.py:44
 msgid "Additional Information"
