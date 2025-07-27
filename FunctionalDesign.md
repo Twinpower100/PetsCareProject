@@ -928,11 +928,79 @@ PetCare - это комплексная система управления ве
 
 ### 12.2 Аудит системы
 
-**Логирование действий:**
-- Все действия пользователей
-- Изменения в системе
-- Ошибки и исключения
-- Доступ к конфиденциальным данным
+**Система логирования действий:**
+- **Автоматическое логирование HTTP запросов:**
+  - IP-адрес, User-Agent, HTTP метод, URL
+  - Статус код ответа, размер контента
+  - Время выполнения запроса
+  - Сессия пользователя
+
+- **Логирование действий пользователей:**
+  - Создание, изменение, удаление объектов
+  - Вход/выход в систему
+  - Просмотр данных, экспорт/импорт
+  - Блокировка/разблокировка аккаунтов
+  - Приглашения, принятие/отклонение
+  - Передача прав, платежи, возвраты
+  - Бронирования, отмены, отзывы, жалобы
+  - Системные операции
+
+- **Логирование изменений в системе:**
+  - Автоматическое отслеживание через сигналы Django
+  - Изменения пользователей, питомцев, бронирований
+  - Изменения контрактов, платежей, приглашений
+  - Блокировка учреждений и пользователей
+
+- **Логирование ошибок и исключений:**
+  - Стандартное логирование Django
+  - Уровни логирования (DEBUG, INFO, WARNING, ERROR)
+
+**Специализированный аудит безопасности:**
+- **Критически важные операции:**
+  - Изменения ролей и прав доступа
+  - Управление приглашениями
+  - Финансовые операции
+  - Операции блокировки/разблокировки
+  - Передача прав владения питомцами
+  - Подозрительная активность
+  - Изменения конфигурации системы
+
+- **Отслеживание изменений:**
+  - Сохранение старых и новых значений
+  - Причина изменения
+  - Флаг критичности операции
+  - Статус проверки и кто проверил
+
+**Настройки системы аудита:**
+- **Глобальные настройки:**
+  - Включение/выключение логирования
+  - Включение/выключение аудита безопасности
+  - Периоды хранения логов (обычные и безопасности)
+  - Автоматическая очистка старых логов
+  - Уведомления о критических операциях
+  - Минимальный уровень логирования
+
+- **Детальные настройки:**
+  - Логирование HTTP запросов
+  - Логирование изменений в базе данных
+  - Логирование бизнес-операций
+  - Логирование системных событий
+
+**Инструменты управления логами:**
+- **Команды управления:**
+  - Просмотр статистики аудита
+  - Экспорт данных аудита в файлы
+  - Автоматическая очистка старых логов
+
+- **Декораторы для разработчиков:**
+  - Логирование действий пользователей
+  - Аудит критических операций
+  - Логирование бизнес-операций
+  - Аудит финансовых операций
+  - Логирование изменений в БД
+  - Аудит изменений ролей
+  - Логирование API запросов
+  - Аудит подозрительной активности
 
 **Мониторинг безопасности:**
 - Подозрительная активность
@@ -940,71 +1008,244 @@ PetCare - это комплексная система управления ве
 - Нарушения политик безопасности
 - Аудит доступа к данным
 
-### 12.3 Резервное копирование
 
-**Стратегия резервного копирования:**
-- Ежедневные полные копии
-- Почасовые инкрементальные копии
-- Хранение копий в разных локациях
-- Тестирование восстановления
 
 ## 13. ИНТЕГРАЦИИ И API
 
 ### 13.1 REST API
 
-**Основные эндпоинты:**
-- Управление пользователями
-- Работа с питомцами
-- Бронирование услуг
-- Поиск учреждений
-- Система платежей
+**Реализованные API эндпоинты:**
+
+**Аутентификация и пользователи (`/api/`):**
+- `POST /api/register/` - Регистрация нового пользователя
+- `POST /api/login/` - Вход в систему
+- `GET /api/profile/` - Профиль пользователя
+- `POST /api/google-auth/` - Аутентификация через Google
+- `POST /api/token/refresh/` - Обновление JWT токена
+- `POST /api/token/blacklist/` - Черный список токенов
+- `POST /assign-role/` - Назначение роли пользователю
+- `POST /deactivate/<user_id>/` - Деактивация пользователя
+- `GET/POST /provider-forms/` - Управление заявками учреждений
+- `POST /provider-forms/approve/` - Одобрение заявки учреждения
+- `POST /employees/deactivate/<employee_id>/` - Деактивация сотрудника
+- `DELETE /me/delete/` - Самоудаление пользователя
+- `GET /search/distance/` - Поиск пользователей по расстоянию
+- `GET /search/sitters/distance/` - Поиск ситтеров по расстоянию
+- `POST /users/bulk-role-assignment/` - Массовое назначение ролей
+- `POST /users/bulk-deactivation/` - Массовая деактивация
+- `POST /users/bulk-activation/` - Массовая активация
+- `GET/POST /role-invites/` - Управление инвайтами ролей
+- `GET/PUT/PATCH/DELETE /role-invites/<pk>/` - Детали инвайта
+- `POST /role-invites/accept/` - Принятие инвайта
+- `POST /role-invites/decline/` - Отклонение инвайта
+- `GET /role-invites/token/<token>/` - Инвайт по токену
+- `GET /role-invites/<invite_id>/qr-code/` - QR-код инвайта
+- `GET /role-invites/pending/` - Ожидающие инвайты
+- `POST /role-invites/cleanup/` - Очистка инвайтов
+- `POST /role-termination/` - Прекращение роли
+
+**Питомцы (`/api/`):**
+- `GET/POST /pets/` - Список и создание питомцев
+- `GET/PUT/PATCH/DELETE /pets/<pk>/` - Управление питомцем
+- `DELETE /pets/<pk>/delete/` - Удаление питомца
+- `GET/POST /medical-records/` - Медицинские записи
+- `GET/PUT/PATCH/DELETE /medical-records/<pk>/` - Управление медзаписью
+- `GET/POST /records/` - Записи о питомце
+- `GET/PUT/PATCH/DELETE /records/<pk>/` - Управление записью
+- `POST /records/<record_id>/upload_file/` - Загрузка файла
+- `GET/POST /access/` - Доступ к питомцам
+- `GET/PUT/PATCH/DELETE /access/<pk>/` - Управление доступом
+- `POST /pets/<pet_id>/invite/` - Приглашение к питомцу
+- `POST /pets/accept-invite/` - Принятие приглашения
+- `GET /pets/invite/<token>/qr/` - QR-код приглашения
+- `GET /documents/<document_id>/download/` - Скачивание документа
+- `GET /documents/<document_id>/preview/` - Просмотр документа
+
+**Учреждения (`/api/`):**
+- `GET/POST/PUT/PATCH/DELETE /providers/` - CRUD учреждений
+- `GET/POST/PUT/PATCH/DELETE /employees/` - CRUD сотрудников
+- `GET/POST/PUT/PATCH/DELETE /schedules/` - CRUD расписаний
+- `GET/POST/PUT/PATCH/DELETE /provider-services/` - CRUD услуг учреждения
+- `GET /search/` - Поиск учреждений
+- `GET /search/distance/` - Поиск по расстоянию
+- `GET /search/sitters/advanced/` - Расширенный поиск ситтеров
+- `PUT /employees/<employee_id>/update/` - Обновление сотрудника
+- `POST /employees/<employee_id>/deactivate/` - Деактивация сотрудника
+- `POST /join-requests/` - Заявка на вступление
+- `POST /join-requests/approve/` - Одобрение заявки
+- `POST /join-requests/confirm/` - Подтверждение заявки
+- `POST /employees/delete-notify/` - Уведомление об удалении
+- `POST /work-slots/bulk/` - Массовые операции со слотами
+- `POST /schedule-patterns/apply/` - Применение шаблона расписания
+
+**Бронирования (`/api/`):**
+- `GET/POST/PUT/PATCH/DELETE /bookings/` - CRUD бронирований
+- `GET/POST/PUT/PATCH/DELETE /booking-statuses/` - CRUD статусов
+- `GET/POST/PUT/PATCH/DELETE /booking-reviews/` - CRUD отзывов
+- `POST /auto-book-employee/` - Автобронирование сотрудника
+- `GET /available-employees/` - Доступные сотрудники
+- `POST /bookings/<booking_id>/cancel/` - Отмена бронирования
+- `POST /bookings/<booking_id>/complete/` - Завершение бронирования
+- `POST /bookings/<booking_id>/no-show/` - Отметка неявки
+- `GET /bookings/<booking_id>/time-slots/` - Доступные слоты
+
+**Биллинг (`/`):**
+- `GET/POST/PUT/PATCH/DELETE /contract-types/` - CRUD типов контрактов
+- `GET/POST/PUT/PATCH/DELETE /payments/` - CRUD платежей
+- `GET/POST/PUT/PATCH/DELETE /invoices/` - CRUD счетов
+- `GET/POST/PUT/PATCH/DELETE /refunds/` - CRUD возвратов
+- `GET/POST/PUT/PATCH/DELETE /contracts/` - CRUD контрактов
+- `GET/POST /blocking-rules/` - Правила блокировки
+- `GET/PUT/PATCH/DELETE /blocking-rules/<pk>/` - Управление правилом
+- `GET /provider-blockings/` - Блокировки учреждений
+- `GET /provider-blockings/<pk>/` - Детали блокировки
+- `POST /provider-blockings/<blocking_id>/resolve/` - Разрешение блокировки
+- `GET /providers/<provider_id>/blocking-status/` - Статус блокировки
+- `GET /providers/<provider_id>/blocking-history/` - История блокировок
+- `GET /blocking-notifications/` - Уведомления о блокировках
+- `POST /blocking-notifications/<notification_id>/retry/` - Повтор уведомления
+
+**Каталог услуг (`/`):**
+- `GET/POST/PUT/PATCH/DELETE /services/` - CRUD услуг
+- `GET/POST /categories/` - Категории услуг
+- `GET/PUT/PATCH/DELETE /categories/<pk>/` - Управление категорией
+- `GET/POST /services/` - Список и создание услуг
+- `GET/PUT/PATCH/DELETE /services/<pk>/` - Управление услугой
+- `POST /services/search/` - Расширенный поиск услуг с фильтрацией (name, category_id, min_price, max_price, sort_by)
+
+**Уведомления (`/api/`):**
+- `GET/POST/PUT/PATCH/DELETE /notifications/` - CRUD уведомлений
+- `GET/POST/PUT/PATCH/DELETE /preferences/` - CRUD предпочтений
+- `GET/POST/PUT/PATCH/DELETE /settings/` - CRUD настроек
+- `GET /notifications/unread-count/` - Количество непрочитанных
+- `POST /notifications/<pk>/mark-as-read/` - Отметить как прочитанное
+- `POST /notifications/mark-all-as-read/` - Отметить все как прочитанные
+- `GET /notifications/statistics/` - Статистика уведомлений
+- `POST /notifications/test/` - Тестовое уведомление
+- `GET /preferences/all/` - Все предпочтения
+- `POST /preferences/reset/` - Сброс предпочтений
+- `POST /settings/bulk-update/` - Массовое обновление настроек
+- `GET /settings/available-options/` - Доступные опции
+- `GET /notifications/` - Получение уведомлений
+- `POST /notifications/<notification_id>/read/` - Отметить как прочитанное
+- `POST /notifications/read-all/` - Отметить все как прочитанные
+- `DELETE /notifications/<notification_id>/delete/` - Удаление уведомления
+- `DELETE /notifications/delete-all/` - Удаление всех уведомлений
+- `GET /notifications/stats/` - Статистика
+- `POST /notifications/preferences/` - Обновление предпочтений
+- `GET /notifications/templates/` - Шаблоны уведомлений
+- `POST /notifications/test/` - Тестовое уведомление
+- `GET /notifications/history/` - История уведомлений
+- `POST /notifications/push-token/` - Обновление push-токена
+- `GET /admin/notifications/` - Админские уведомления
+- `POST /admin/notifications/send/` - Отправка уведомления
+- `POST /admin/notifications/bulk-send/` - Массовая отправка
+- `GET /admin/notifications/analytics/` - Аналитика уведомлений
+
+**Рейтинги (`/api/`):**
+- `GET/POST/PUT/PATCH/DELETE /ratings/` - CRUD рейтингов
+- `GET/POST/PUT/PATCH/DELETE /reviews/` - CRUD отзывов
+- `GET/POST/PUT/PATCH/DELETE /complaints/` - CRUD жалоб
+- `GET/POST/PUT/PATCH/DELETE /complaint-responses/` - CRUD ответов на жалобы
+- `GET/POST/PUT/PATCH/DELETE /suspicious-activities/` - CRUD подозрительной активности
+
+**Аудит (`/api/`):**
+- `GET /audit/logs/` - Логи аудита
+- `GET /audit/logs/export/` - Экспорт логов
+- `GET /audit/user-activity/<user_id>/` - Активность пользователя
+- `GET /audit/system-events/` - Системные события
+- `GET /audit/statistics/` - Статистика аудита
+- `GET /audit/logs/filter/` - Фильтрация логов
+- `GET /audit/logs/search/` - Поиск в логах
+- `POST /audit/logs/cleanup/` - Очистка логов
+
+**Аналитика (`/api/`):**
+- `GET /analytics/user-growth/` - Рост пользователей
+- `GET /analytics/provider-performance/` - Производительность учреждений
+- `GET /analytics/revenue-trends/` - Тренды выручки
+- `GET /analytics/behavioral/` - Поведенческая аналитика
+
+**Геолокация (`/api/`):**
+- `GET/POST/PUT/PATCH/DELETE /addresses/` - CRUD адресов
+- `GET/POST/PUT/PATCH/DELETE /validations/` - CRUD валидаций
+- `GET/POST/PUT/PATCH/DELETE /cache/` - CRUD кэша
+- `GET /autocomplete/` - Автодополнение адресов
+- `GET /geocode/` - Геокодирование
+- `GET /reverse-geocode/` - Обратное геокодирование
+- `POST /validate-bulk/` - Массовая валидация
+- `GET /user-location/` - Местоположение пользователя
+- `POST /device-location/` - Сохранение местоположения устройства
+- `POST /map-location/` - Сохранение местоположения с карты
+- `GET /location-info/` - Информация о местоположении
+- `POST /clear-location/` - Очистка местоположения
+- `GET /check-address-requirement/` - Проверка требований к адресу
+- `GET /validate-location-for-role/` - Валидация местоположения для роли
+
+**Системные настройки (`/api/`):**
+- `GET/POST /settings/system/` - Системные настройки
+- `GET/POST /settings/features/` - Настройки функций
+- `GET/POST /settings/security/` - Настройки безопасности
+- `GET /settings/health/` - Проверка здоровья системы
+
+**Отчеты (`/api/`):**
+- `GET /income/` - Отчет по доходам
+- `GET /workload/` - Отчет по загрузке
+- `GET /debt/` - Отчет по задолженностям
+- `GET /activity/` - Отчет по активности
+- `GET /payment/` - Отчет по платежам
+- `GET /cancellation/` - Отчет по отменам
+
+**Доступ (`/`):**
+- `GET/POST/PUT/PATCH/DELETE /accesses/` - CRUD доступа
+- `GET/POST/PUT/PATCH/DELETE /logs/` - CRUD логов доступа
+
+**Передержка (`/`):**
+- `GET/POST/PUT/PATCH/DELETE /profiles/` - CRUD профилей передержки
+- `GET/POST/PUT/PATCH/DELETE /ads/` - CRUD объявлений
+- `GET/POST/PUT/PATCH/DELETE /responses/` - CRUD откликов
+- `GET/POST/PUT/PATCH/DELETE /pet-sitting/` - CRUD передержки
+- `GET/POST/PUT/PATCH/DELETE /reviews/` - CRUD отзывов
 
 **Аутентификация API:**
 - JWT токены
 - OAuth 2.0 для внешних приложений
-- API ключи для партнеров
 - Ограничение частоты запросов
 
-### 13.2 Интеграция с платежными системами
+## 14. ПЕРИОДИЧЕСКИЕ ЗАДАЧИ
 
-**Поддерживаемые системы:**
-- Банковские карты (Visa, MasterCard)
-- Электронные кошельки
-- Мобильные платежи
-- Криптовалюты (опционально)
+### 14.1 Система валют
 
-**Безопасность платежей:**
-- Шифрование данных карт
-- Соответствие PCI DSS
-- 3D Secure аутентификация
-- Мониторинг подозрительных транзакций
+**Обновление курсов валют:**
+- Автоматическое обновление курсов валют через внешний API (exchangeratesapi.io)
+- Периодичность: ежедневно в 00:00
+- Поддерживаемые валюты: USD (базовая), EUR, RUB
+- Обработка ошибок и логирование неудачных попыток обновления
+- Fallback на последние известные курсы при недоступности API
 
-## 14. МОБИЛЬНАЯ ВЕРСИЯ
+### 14.2 Уведомления
 
-### 14.1 Адаптивный дизайн
+**Запланированные уведомления:**
+- Обработка запланированных уведомлений: каждую минуту
+- Обработка напоминаний: каждый час
+- Очистка старых уведомлений: ежедневно в 02:00
+- Отправка напоминаний о задолженности: ежедневно в 09:00
+- Проверка истечения инвайтов ролей: ежедневно в 08:00
+- Статистика уведомлений администраторам: ежедневно в 18:00
+- Очистка неактивных push-токенов: еженедельно по воскресеньям в 03:00
+- Напоминания о предстоящих бронированиях: каждые 15 минут (индивидуально для каждого пользователя)
 
-**Принципы адаптивности:**
-- Responsive дизайн для всех устройств
-- Оптимизация для мобильных экранов
-- Touch-friendly интерфейс
-- Быстрая загрузка на медленных соединениях
 
-**Особенности мобильной версии:**
-- Упрощенная навигация
-- Большие кнопки и элементы
-- Оптимизированные формы
-- Геолокация в реальном времени
+**Система напоминаний о бронированиях:**
+- **Глобальная настройка:** Время напоминания по умолчанию (например, за 2 часа до бронирования)
+- **Индивидуальная настройка:** Пользователь может изменить время напоминания в своих настройках
+- **Логика работы:** Система проверяет каждые 15 минут, какие бронирования требуют напоминания
+- **Индивидуальное время:** Каждый пользователь получает напоминание за свое настроенное время до бронирования
+- **Множественные напоминания:** Поддержка нескольких напоминаний (например, за 1 день и за 2 часа)
 
-### 14.2 PWA (Progressive Web App)
+### 14.3 Система блокировок
 
-**Возможности PWA:**
-- Установка на домашний экран
-- Работа офлайн
-- Push-уведомления
-- Быстрый доступ к основным функциям
-
-**Технические требования:**
-- Service Worker для кэширования
-- Web App Manifest
-- HTTPS соединение
-- Оптимизация производительности 
+**Проверка блокировок:**
+- Автоматическая проверка задолженности учреждений: ежедневно в 02:00 (настраивается)
+- Применение правил блокировки согласно настройкам
+- Автоматическое снятие блокировок при погашении задолженности
+- Отправка уведомлений о блокировке/разблокировке
