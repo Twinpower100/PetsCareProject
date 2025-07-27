@@ -26,6 +26,7 @@ router = DefaultRouter()
 router.register(r'notifications', api_views.NotificationViewSet, basename='notification')
 router.register(r'preferences', api_views.NotificationPreferenceViewSet, basename='notification-preference')
 router.register(r'settings', api_views.UserNotificationSettingsViewSet, basename='notification-settings')
+router.register(r'notification-rules', api_views.NotificationRuleViewSet, basename='notification-rule')
 
 app_name = 'notifications'
 

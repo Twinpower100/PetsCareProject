@@ -15,7 +15,7 @@ from providers.serializers import ProviderServiceSerializer
 from django.utils.translation import gettext as _
 from .models import (
     NotificationType, NotificationTemplate, NotificationPreference,
-    UserNotificationSettings
+    UserNotificationSettings, NotificationRule
 )
 
 class NotificationTypeSerializer(serializers.ModelSerializer):
@@ -353,4 +353,107 @@ class NotificationTestSerializer(serializers.Serializer):
         choices=Notification.PRIORITY_CHOICES,
         default='low',
         help_text=_('Test notification priority')
-    ) 
+    )
+
+
+class NotificationRuleSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для правил уведомлений.
+    """
+    event_type_display = serializers.CharField(
+        source='get_event_type_display',
+        read_only=True
+    )
+    priority_display = serializers.CharField(
+        source='get_priority_display',
+        read_only=True
+    )
+    inheritance_display = serializers.CharField(
+        source='get_inheritance_display',
+        read_only=True
+    )
+    template_name = serializers.CharField(
+        source='template.name',
+        read_only=True
+    )
+    created_by_username = serializers.CharField(
+        source='created_by.username',
+        read_only=True
+    )
+    
+    class Meta:
+        model = NotificationRule
+        fields = [
+            'id', 'event_type', 'event_type_display', 'condition', 'template',
+            'template_name', 'priority', 'priority_display', 'channels',
+            'is_active', 'inheritance', 'inheritance_display', 'user',
+            'created_by', 'created_by_username', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'updated_at']
+    
+    def validate(self, data):
+        """
+        Валидация данных правила уведомления.
+        
+        Args:
+            data: Данные для валидации
+            
+        Returns:
+            dict: Валидированные данные
+            
+        Raises:
+            serializers.ValidationError: Если данные невалидны
+        """
+        # Проверяем, что пользователь указан для пользовательских правил
+        inheritance = data.get('inheritance')
+        user = data.get('user')
+        
+        if inheritance == 'user_specific' and not user:
+            raise serializers.ValidationError(
+                _('User must be specified for user-specific rules')
+            )
+        
+        if inheritance == 'global' and user:
+            raise serializers.ValidationError(
+                _('User should not be specified for global rules')
+            )
+        
+        # Проверяем, что каналы указаны
+        channels = data.get('channels', [])
+        if not channels:
+            raise serializers.ValidationError(
+                _('At least one channel must be specified')
+            )
+        
+        # Проверяем валидность каналов
+        valid_channels = ['email', 'push', 'in_app']
+        for channel in channels:
+            if channel not in valid_channels:
+                raise serializers.ValidationError(
+                    _('Invalid channel: {}').format(channel)
+                )
+        
+        return data
+    
+    def validate_condition(self, value):
+        """
+        Валидация условия правила.
+        
+        Args:
+            value: Условие для валидации
+            
+        Returns:
+            str: Валидированное условие
+            
+        Raises:
+            serializers.ValidationError: Если условие невалидно
+        """
+        if not value:
+            raise serializers.ValidationError(
+                _('Condition cannot be empty')
+            )
+        
+        # Здесь можно добавить дополнительную валидацию синтаксиса Python
+        # Например, проверку на безопасность выражения
+        
+        return value 

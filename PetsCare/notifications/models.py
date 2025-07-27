@@ -517,3 +517,200 @@ class Reminder(models.Model):
         if self.is_active and not self.next_notification:
             self.next_notification = self.calculate_next_notification()
         super().save(*args, **kwargs)
+
+
+class NotificationRule(models.Model):
+    """
+    Модель для гибких правил уведомлений.
+    Позволяет администраторам создавать настраиваемые связи между событиями и уведомлениями.
+    
+    Атрибуты:
+        event_type (str): Тип события (booking_created, booking_cancelled, etc.)
+        condition (str): Условие срабатывания (Python-выражение)
+        template (ForeignKey): Шаблон уведомления
+        priority (str): Приоритет правила (low, medium, high, critical)
+        channels (list): Каналы доставки (email, push, in_app)
+        is_active (bool): Активность правила
+        inheritance (str): Наследование (global, user_specific)
+        created_by (ForeignKey): Создатель правила
+        created_at (DateTime): Дата создания
+        updated_at (DateTime): Дата обновления
+    """
+    EVENT_TYPES = [
+        ('booking_created', _('Booking Created')),
+        ('booking_cancelled', _('Booking Cancelled')),
+        ('booking_updated', _('Booking Updated')),
+        ('booking_completed', _('Booking Completed')),
+        ('price_changed', _('Price Changed')),
+        ('review_added', _('Review Added')),
+        ('payment_received', _('Payment Received')),
+        ('payment_failed', _('Payment Failed')),
+        ('provider_blocked', _('Provider Blocked')),
+        ('provider_unblocked', _('Provider Unblocked')),
+        ('role_invite_sent', _('Role Invite Sent')),
+        ('role_invite_accepted', _('Role Invite Accepted')),
+        ('role_invite_expired', _('Role Invite Expired')),
+        ('pet_sitting_request', _('Pet Sitting Request')),
+        ('pet_sitting_accepted', _('Pet Sitting Accepted')),
+        ('pet_sitting_completed', _('Pet Sitting Completed')),
+    ]
+    
+    PRIORITY_CHOICES = [
+        ('low', _('Low')),
+        ('medium', _('Medium')),
+        ('high', _('High')),
+        ('critical', _('Critical')),
+    ]
+    
+    INHERITANCE_CHOICES = [
+        ('global', _('Global')),
+        ('user_specific', _('User Specific')),
+    ]
+    
+    event_type = models.CharField(
+        _('Event Type'),
+        max_length=50,
+        choices=EVENT_TYPES,
+        help_text=_('Type of event that triggers the notification')
+    )
+    condition = models.TextField(
+        _('Condition'),
+        help_text=_('Python expression for evaluating when to trigger the notification')
+    )
+    template = models.ForeignKey(
+        NotificationTemplate,
+        on_delete=models.CASCADE,
+        verbose_name=_('Template'),
+        help_text=_('Notification template to use')
+    )
+    priority = models.CharField(
+        _('Priority'),
+        max_length=10,
+        choices=PRIORITY_CHOICES,
+        default='medium',
+        help_text=_('Priority level of the notification')
+    )
+    channels = models.JSONField(
+        _('Channels'),
+        default=list,
+        help_text=_('List of delivery channels (email, push, in_app)')
+    )
+    is_active = models.BooleanField(
+        _('Is Active'),
+        default=True,
+        help_text=_('Whether the rule is active')
+    )
+    inheritance = models.CharField(
+        _('Inheritance'),
+        max_length=15,
+        choices=INHERITANCE_CHOICES,
+        default='global',
+        help_text=_('Global rule or user-specific override')
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        verbose_name=_('User'),
+        help_text=_('User for user-specific rules (null for global rules)')
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        verbose_name=_('Created By'),
+        related_name='created_notification_rules'
+    )
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+    
+    class Meta:
+        verbose_name = _('Notification Rule')
+        verbose_name_plural = _('Notification Rules')
+        ordering = ['priority', '-created_at']
+        indexes = [
+            models.Index(fields=['event_type', 'is_active']),
+            models.Index(fields=['priority']),
+            models.Index(fields=['inheritance', 'user']),
+        ]
+        unique_together = [
+            ('event_type', 'condition', 'template', 'inheritance', 'user'),
+        ]
+    
+    def __str__(self):
+        """
+        Возвращает строковое представление правила уведомления.
+        Returns:
+            str: Описание правила
+        """
+        if self.user:
+            return f"{self.get_event_type_display()} -> {self.template.name} (User: {self.user})"
+        return f"{self.get_event_type_display()} -> {self.template.name} (Global)"
+    
+    def evaluate_condition(self, context):
+        """
+        Оценивает условие правила с заданным контекстом.
+        
+        Args:
+            context (dict): Контекст для оценки условия
+            
+        Returns:
+            bool: True если условие выполняется, False иначе
+            
+        Raises:
+            Exception: При ошибке в оценке условия
+        """
+        try:
+            # Безопасная оценка Python-выражения
+            # Ограничиваем доступ только к безопасным переменным
+            safe_vars = {
+                'user': context.get('user'),
+                'booking': context.get('booking'),
+                'service': context.get('service'),
+                'provider': context.get('provider'),
+                'pet': context.get('pet'),
+                'amount': context.get('amount'),
+                'hours_before_start': context.get('hours_before_start'),
+                'price_increase_percent': context.get('price_increase_percent'),
+                'True': True,
+                'False': False,
+                'None': None,
+            }
+            
+            # Выполняем условие в безопасном контексте
+            result = eval(self.condition, {"__builtins__": {}}, safe_vars)
+            return bool(result)
+            
+        except Exception as e:
+            # Логируем ошибку и возвращаем False
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Error evaluating notification rule condition: {e}")
+            return False
+    
+    def get_channels(self):
+        """
+        Возвращает список каналов доставки.
+        Returns:
+            list: Список каналов
+        """
+        if isinstance(self.channels, list):
+            return self.channels
+        return []
+    
+    def is_global(self):
+        """
+        Проверяет, является ли правило глобальным.
+        Returns:
+            bool: True если правило глобальное
+        """
+        return self.inheritance == 'global' and self.user is None
+    
+    def is_user_specific(self):
+        """
+        Проверяет, является ли правило пользовательским.
+        Returns:
+            bool: True если правило пользовательское
+        """
+        return self.inheritance == 'user_specific' and self.user is not None

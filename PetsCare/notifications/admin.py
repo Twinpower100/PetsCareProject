@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from .models import (
     NotificationType, NotificationTemplate,
-    NotificationPreference, Notification, Reminder, UserNotificationSettings
+    NotificationPreference, Notification, Reminder, UserNotificationSettings, NotificationRule
 )
 from custom_admin import custom_admin_site
 
@@ -84,9 +84,59 @@ class UserNotificationSettingsAdmin(admin.ModelAdmin):
     )
 
 
+class NotificationRuleAdmin(admin.ModelAdmin):
+    """
+    Админский интерфейс для управления правилами уведомлений.
+    """
+    list_display = ('event_type', 'template', 'priority', 'inheritance', 'is_active', 'created_by')
+    list_filter = ('event_type', 'priority', 'inheritance', 'is_active', 'created_at')
+    search_fields = ('event_type', 'template__name', 'condition', 'created_by__username')
+    readonly_fields = ('created_at', 'updated_at')
+    
+    fieldsets = (
+        (_('Основные настройки'), {
+            'fields': ('event_type', 'template', 'priority', 'is_active')
+        }),
+        (_('Условия и каналы'), {
+            'fields': ('condition', 'channels'),
+            'description': _('Условие - Python-выражение для оценки контекста события. '
+                           'Доступные переменные: user, booking, service, provider, pet, amount, '
+                           'hours_before_start, price_increase_percent')
+        }),
+        (_('Наследование'), {
+            'fields': ('inheritance', 'user'),
+            'description': _('Глобальные правила применяются ко всем пользователям. '
+                           'Пользовательские правила переопределяют глобальные.')
+        }),
+        (_('Метаданные'), {
+            'fields': ('created_by', 'created_at', 'updated_at'),
+            'classes': ('collapse',)
+        })
+    )
+    
+    def save_model(self, request, obj, form, change):
+        """
+        Автоматически устанавливает создателя правила при сохранении.
+        """
+        if not change:  # Только при создании
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
+    
+    def get_queryset(self, request):
+        """
+        Фильтрует правила в зависимости от прав пользователя.
+        """
+        qs = super().get_queryset(request)
+        if request.user.is_superuser:
+            return qs
+        # Обычные администраторы видят только глобальные правила
+        return qs.filter(inheritance='global')
+
+
 custom_admin_site.register(NotificationType, NotificationTypeAdmin)
 custom_admin_site.register(NotificationTemplate, NotificationTemplateAdmin)
 custom_admin_site.register(NotificationPreference, NotificationPreferenceAdmin)
 custom_admin_site.register(Notification, NotificationAdmin)
 custom_admin_site.register(Reminder, ReminderAdmin)
 custom_admin_site.register(UserNotificationSettings, UserNotificationSettingsAdmin)
+custom_admin_site.register(NotificationRule, NotificationRuleAdmin)

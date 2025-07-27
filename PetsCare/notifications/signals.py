@@ -29,7 +29,7 @@ from .tasks import (
     send_role_invite_expired_task,
     send_debt_reminder_task
 )
-from .services import PreferenceService, NotificationService
+from .services import PreferenceService, NotificationService, NotificationRuleService
 from django.utils import timezone
 
 User = get_user_model()
@@ -51,9 +51,9 @@ def create_user_notification_preferences(sender, instance, created, **kwargs):
         try:
             preference_service = PreferenceService()
             preference_service.create_default_preferences(instance)
-            logger.info(f"Created default notification preferences for user {instance.id}")
+            logger.info(_("Created default notification preferences for user {}").format(instance.id))
         except Exception as e:
-            logger.error(f"Failed to create notification preferences for user {instance.id}: {e}")
+            logger.error(_("Failed to create notification preferences for user {}: {}").format(instance.id, e))
 
 
 @receiver(post_save, sender=User)
@@ -80,17 +80,17 @@ def send_email_verification_on_registration(sender, instance, created, **kwargs)
             # Отправляем задачу на верификацию email
             send_email_verification_task.delay(instance.id, f"{uid}-{token}")
             
-            logger.info(f"Email verification task queued for user {instance.id}")
+            logger.info(_("Email verification task queued for user {}").format(instance.id))
             
         except Exception as e:
-            logger.error(f"Failed to queue email verification for user {instance.id}: {e}")
+            logger.error(_("Failed to queue email verification for user {}: {}").format(instance.id, e))
 
 
 # Сигналы для бронирований
 @receiver(post_save, sender='booking.Booking')
 def handle_booking_notifications(sender, instance, created, **kwargs):
     """
-    Обрабатывает уведомления о бронированиях.
+    Обрабатывает уведомления о бронированиях через гибкую систему правил.
     
     Args:
         sender: Модель отправителя сигнала
@@ -99,23 +99,37 @@ def handle_booking_notifications(sender, instance, created, **kwargs):
         **kwargs: Дополнительные аргументы
     """
     try:
+        # Определяем тип события
         if created:
-            # Отправляем подтверждение бронирования
-            send_booking_confirmation_task.delay(instance.id)
-            
-            # Планируем напоминания о бронировании
-            schedule_booking_reminders_task.delay(instance.id)
-            
-            logger.info(f"Booking notification tasks queued for booking {instance.id}")
-            
+            event_type = 'booking_created'
+        else:
+            event_type = 'booking_updated'
+        
+        # Создаем контекст события
+        context = {
+            'user': instance.user,
+            'booking': instance,
+            'service': instance.service,
+            'provider': instance.provider,
+            'pet': instance.pet,
+            'amount': instance.total_amount,
+            'hours_before_start': (instance.start_time - timezone.now()).total_seconds() / 3600,
+        }
+        
+        # Обрабатываем событие через систему правил
+        rule_service = NotificationRuleService()
+        rule_service.process_event(event_type, context, instance.user)
+        
+        logger.info(_("Processed {} event for booking {}").format(event_type, instance.id))
+        
     except Exception as e:
-        logger.error(f"Failed to handle booking notifications for booking {instance.id}: {e}")
+        logger.error(_("Error processing booking notification rules: {}").format(e))
 
 
 @receiver(post_delete, sender='booking.Booking')
 def handle_booking_cancellation_notification(sender, instance, **kwargs):
     """
-    Обрабатывает уведомления об отмене бронирования.
+    Обрабатывает уведомления об отмене бронирования через гибкую систему правил.
     
     Args:
         sender: Модель отправителя сигнала
@@ -123,20 +137,31 @@ def handle_booking_cancellation_notification(sender, instance, **kwargs):
         **kwargs: Дополнительные аргументы
     """
     try:
-        # Отправляем уведомление об отмене
-        send_booking_cancellation_task.delay(instance.id, _("Booking was cancelled"))
+        # Создаем контекст события
+        context = {
+            'user': instance.user,
+            'booking': instance,
+            'service': instance.service,
+            'provider': instance.provider,
+            'pet': instance.pet,
+            'amount': instance.total_amount,
+        }
         
-        logger.info(f"Booking cancellation notification queued for booking {instance.id}")
+        # Обрабатываем событие через систему правил
+        rule_service = NotificationRuleService()
+        rule_service.process_event('booking_cancelled', context, instance.user)
+        
+        logger.info(_("Processed booking_cancelled event for booking {}").format(instance.id))
         
     except Exception as e:
-        logger.error(f"Failed to handle booking cancellation notification for booking {instance.id}: {e}")
+        logger.error(_("Error processing booking cancellation notification rules: {}").format(e))
 
 
 # Сигналы для приглашений ролей
 @receiver(post_save, sender='users.RoleInvite')
 def handle_role_invite_notifications(sender, instance, created, **kwargs):
     """
-    Обрабатывает уведомления о приглашениях ролей.
+    Обрабатывает уведомления о приглашениях ролей через гибкую систему правил.
     
     Args:
         sender: Модель отправителя сигнала
@@ -146,19 +171,28 @@ def handle_role_invite_notifications(sender, instance, created, **kwargs):
     """
     try:
         if created:
-            # Отправляем уведомление о новом приглашении
-            send_role_invite_task.delay(instance.id)
+            # Создаем контекст события
+            context = {
+                'user': instance.invited_user,
+                'invite': instance,
+                'role': instance.role,
+                'invited_by': instance.invited_by,
+            }
             
-            logger.info(f"Role invite notification queued for invite {instance.id}")
+            # Обрабатываем событие через систему правил
+            rule_service = NotificationRuleService()
+            rule_service.process_event('role_invite_sent', context, instance.invited_user)
+            
+            logger.info(f"Processed role_invite_sent event for invite {instance.id}")
             
     except Exception as e:
-        logger.error(f"Failed to handle role invite notification for invite {instance.id}: {e}")
+        logger.error(f"Error processing role invite notification rules: {e}")
 
 
 @receiver(post_save, sender='users.RoleInvite')
 def handle_role_invite_response_notifications(sender, instance, **kwargs):
     """
-    Обрабатывает уведомления о принятии/отклонении приглашений ролей.
+    Обрабатывает уведомления о принятии/отклонении приглашений ролей через гибкую систему правил.
     
     Args:
         sender: Модель отправителя сигнала
@@ -170,16 +204,29 @@ def handle_role_invite_response_notifications(sender, instance, **kwargs):
         if instance.pk:
             old_instance = sender.objects.get(pk=instance.pk)
             if old_instance.status != instance.status and instance.status in ['accepted', 'declined']:
-                # Отправляем уведомление о принятии/отклонении
-                send_role_invite_response_task.delay(instance.id, instance.status == 'accepted')
+                # Определяем тип события
+                event_type = 'role_invite_accepted' if instance.status == 'accepted' else 'role_invite_declined'
                 
-                logger.info(f"Role invite response notification queued for invite {instance.id}")
+                # Создаем контекст события
+                context = {
+                    'user': instance.invited_by,  # Уведомляем того, кто приглашал
+                    'invite': instance,
+                    'role': instance.role,
+                    'invited_user': instance.invited_user,
+                    'status': instance.status,
+                }
+                
+                # Обрабатываем событие через систему правил
+                rule_service = NotificationRuleService()
+                rule_service.process_event(event_type, context, instance.invited_by)
+                
+                logger.info(f"Processed {event_type} event for invite {instance.id}")
                 
     except sender.DoesNotExist:
         # Это новое приглашение, обрабатывается в другом сигнале
         pass
     except Exception as e:
-        logger.error(f"Failed to handle role invite response notification for invite {instance.id}: {e}")
+        logger.error(f"Error processing role invite response notification rules: {e}")
 
 
 # Сигналы для блокировок учреждений

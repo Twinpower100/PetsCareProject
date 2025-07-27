@@ -17,15 +17,16 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
-from .models import Notification, NotificationPreference, UserNotificationSettings, NotificationTemplate
+from .models import Notification, NotificationPreference, UserNotificationSettings, NotificationTemplate, NotificationRule
 from .serializers import (
     NotificationSerializer,
     NotificationPreferenceSerializer,
     UserNotificationSettingsSerializer,
     NotificationListSerializer,
-    NotificationTemplateSerializer
+    NotificationTemplateSerializer,
+    NotificationRuleSerializer
 )
-from .services import NotificationService, PreferenceService
+from .services import NotificationService, PreferenceService, NotificationRuleService
 from django.utils import timezone
 from django.core.paginator import Paginator
 from django.db.models import Count
@@ -786,4 +787,130 @@ def get_notification_history(request):
         return Response({
             'success': False,
             'message': _('Failed to get notification history')
-        }, status=500) 
+        }, status=500)
+
+
+class NotificationRuleViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet для управления правилами уведомлений (только для администраторов).
+    
+    Предоставляет endpoints для:
+    - Создания и редактирования правил уведомлений
+    - Тестирования правил
+    - Получения статистики правил
+    """
+    serializer_class = NotificationRuleSerializer
+    permission_classes = [permissions.IsAdminUser]
+    
+    def get_queryset(self):
+        """
+        Возвращает queryset правил уведомлений.
+        
+        Returns:
+            QuerySet: Правила уведомлений
+        """
+        return NotificationRule.objects.all()
+    
+    @action(detail=True, methods=['post'])
+    def test(self, request, pk=None):
+        """
+        Тестирует правило с тестовым контекстом.
+        
+        Args:
+            request: HTTP запрос
+            pk: ID правила
+            
+        Returns:
+            Response: Результат тестирования
+        """
+        try:
+            rule = self.get_object()
+            test_context = request.data.get('context', {})
+            
+            rule_service = NotificationRuleService()
+            result = rule_service.test_rule(rule, test_context)
+            
+            return Response({
+                'success': True,
+                'rule_id': rule.id,
+                'test_result': result,
+                'message': _('Rule would trigger') if result else _('Rule would not trigger')
+            })
+            
+        except Exception as e:
+            logger.error(f"Error testing notification rule {pk}: {e}")
+            return Response({
+                'success': False,
+                'message': _('Failed to test rule')
+            }, status=500)
+    
+    @action(detail=True, methods=['get'])
+    def statistics(self, request, pk=None):
+        """
+        Получает статистику использования правила.
+        
+        Args:
+            request: HTTP запрос
+            pk: ID правила
+            
+        Returns:
+            Response: Статистика правила
+        """
+        try:
+            rule = self.get_object()
+            rule_service = NotificationRuleService()
+            stats = rule_service.get_rule_statistics(rule)
+            
+            return Response({
+                'success': True,
+                'statistics': stats
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting statistics for rule {pk}: {e}")
+            return Response({
+                'success': False,
+                'message': _('Failed to get rule statistics')
+            }, status=500)
+    
+    @action(detail=False, methods=['get'])
+    def event_types(self, request):
+        """
+        Получает список доступных типов событий.
+        
+        Returns:
+            Response: Список типов событий
+        """
+        event_types = [
+            {'value': choice[0], 'label': choice[1]} 
+            for choice in NotificationRule.EVENT_TYPES
+        ]
+        
+        return Response({
+            'success': True,
+            'event_types': event_types
+        })
+    
+    @action(detail=False, methods=['get'])
+    def templates(self, request):
+        """
+        Получает список доступных шаблонов уведомлений.
+        
+        Returns:
+            Response: Список шаблонов
+        """
+        templates = NotificationTemplate.objects.filter(is_active=True)
+        template_data = [
+            {
+                'id': template.id,
+                'name': template.name,
+                'code': template.code,
+                'channel': template.channel
+            }
+            for template in templates
+        ]
+        
+        return Response({
+            'success': True,
+            'templates': template_data
+        }) 

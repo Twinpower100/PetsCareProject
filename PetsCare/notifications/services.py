@@ -9,7 +9,7 @@
 """
 
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from datetime import timedelta
 from django.utils import timezone
 from django.utils.translation import gettext as _
@@ -19,7 +19,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from .models import (
     Notification, NotificationType, NotificationPreference, 
-    UserNotificationSettings, NotificationTemplate
+    UserNotificationSettings, NotificationTemplate, NotificationRule
 )
 from push_notifications.models import GCMDevice, APNSDevice, WebPushDevice
 
@@ -44,7 +44,7 @@ class NotificationService:
     
     def send_notification(
         self,
-        user: User,
+        user,
         notification_type: str,
         title: str,
         message: str,
@@ -53,7 +53,7 @@ class NotificationService:
         pet=None,
         data: Dict[str, Any] = None,
         scheduled_for: Optional[timezone.datetime] = None
-    ) -> Notification:
+    ) -> "Notification":
         """
         Отправляет уведомление пользователю.
         
@@ -97,19 +97,19 @@ class NotificationService:
                 return notification
                 
         except Exception as e:
-            logger.error(f"Failed to create notification for user {user.id}: {e}")
+            logger.error(_("Failed to create notification for user {}: {}").format(user.id, e))
             raise
     
     def send_bulk_notifications(
         self,
-        users: List[User],
+        users: List[Any],
         notification_type: str,
         title: str,
         message: str,
         channels: List[str] = None,
         priority: str = 'medium',
         data: Dict[str, Any] = None
-    ) -> List[Notification]:
+    ) -> List["Notification"]:
         """
         Отправляет уведомления группе пользователей.
         
@@ -140,12 +140,12 @@ class NotificationService:
                 )
                 notifications.append(notification)
             except Exception as e:
-                logger.error(f"Failed to send bulk notification to user {user.id}: {e}")
+                logger.error(_("Failed to send bulk notification to user {}: {}").format(user.id, e))
                 continue
         
         return notifications
     
-    def _get_user_channels(self, user: User, notification_type: str) -> List[str]:
+    def _get_user_channels(self, user, notification_type: str) -> List[str]:
         """
         Получает каналы доставки для пользователя и типа уведомления.
         
@@ -186,7 +186,7 @@ class NotificationService:
         
         return channels
     
-    def _send_notification(self, notification: Notification, channels: List[str]):
+    def _send_notification(self, notification: "Notification", channels: List[str]):
         """
         Отправляет уведомление через указанные каналы.
         
@@ -209,20 +209,20 @@ class NotificationService:
                 notification.sent_at = timezone.now()
                 notification.save()
                 
-                logger.info(f"Successfully sent notification {notification.id}")
+                logger.info(_("Successfully sent notification {}").format(notification.id))
                 break
                 
             except Exception as e:
-                logger.error(f"Attempt {attempt + 1} failed for notification {notification.id}: {e}")
+                logger.error(_("Attempt {} failed for notification {}: {}").format(attempt + 1, notification.id, e))
                 
                 if attempt < self.max_retries - 1:
                     # Ждем перед повторной попыткой
                     import time
                     time.sleep(self.retry_delay)
                 else:
-                    logger.error(f"Failed to send notification {notification.id} after {self.max_retries} attempts")
+                    logger.error(_("Failed to send notification {} after {} attempts").format(notification.id, self.max_retries))
     
-    def _send_email(self, notification: Notification):
+    def _send_email(self, notification: "Notification"):
         """
         Отправляет email уведомление.
         
@@ -230,7 +230,7 @@ class NotificationService:
             notification: Уведомление для отправки
         """
         if not notification.user.email:
-            logger.warning(f"User {notification.user.id} has no email address")
+            logger.warning(_("User {} has no email address").format(notification.user.id))
             return
         
         try:
@@ -255,13 +255,13 @@ class NotificationService:
                 fail_silently=False,
             )
             
-            logger.info(f"Email sent to {notification.user.email}")
+            logger.info(_("Email sent to {}").format(notification.user.email))
             
         except Exception as e:
-            logger.error(f"Failed to send email to {notification.user.email}: {e}")
+            logger.error(_("Failed to send email to {}: {}").format(notification.user.email, e))
             raise
     
-    def _send_push(self, notification: Notification):
+    def _send_push(self, notification: "Notification"):
         """
         Отправляет push-уведомление.
         
@@ -277,7 +277,7 @@ class NotificationService:
                     title=notification.title,
                     extra=notification.data
                 )
-                logger.info(f"Push notification sent to {android_devices.count()} Android devices")
+                logger.info(_("Push notification sent to {} Android devices").format(android_devices.count()))
             
             # iOS (APNS)
             ios_devices = APNSDevice.objects.filter(user=notification.user, active=True)
@@ -287,7 +287,7 @@ class NotificationService:
                     title=notification.title,
                     extra=notification.data
                 )
-                logger.info(f"Push notification sent to {ios_devices.count()} iOS devices")
+                logger.info(_("Push notification sent to {} iOS devices").format(ios_devices.count()))
             
             # Web Push
             web_devices = WebPushDevice.objects.filter(user=notification.user, active=True)
@@ -297,13 +297,13 @@ class NotificationService:
                     title=notification.title,
                     extra=notification.data
                 )
-                logger.info(f"Push notification sent to {web_devices.count()} Web devices")
+                logger.info(_("Push notification sent to {} Web devices").format(web_devices.count()))
                 
         except Exception as e:
-            logger.error(f"Failed to send push notification: {e}")
+            logger.error(_("Failed to send push notification: {}").format(e))
             raise
     
-    def _send_in_app(self, notification: Notification):
+    def _send_in_app(self, notification: "Notification"):
         """
         Отправляет in-app уведомление.
         
@@ -312,7 +312,7 @@ class NotificationService:
         """
         # In-app уведомления уже сохранены в базе данных
         # Клиент получает их через API
-        logger.info(f"In-app notification {notification.id} ready for delivery")
+        logger.info(_("In-app notification {} ready for delivery").format(notification.id))
 
 
 class PreferenceService:
@@ -320,7 +320,7 @@ class PreferenceService:
     Сервис для управления настройками уведомлений пользователей.
     """
     
-    def get_user_preferences(self, user: User) -> Dict[str, Any]:
+    def get_user_preferences(self, user) -> Dict[str, Any]:
         """
         Получает все настройки уведомлений пользователя.
         
@@ -356,12 +356,12 @@ class PreferenceService:
     
     def update_user_preferences(
         self,
-        user: User,
+        user,
         event_type: str,
         channel: str,
         notification_time: str,
         is_enabled: bool
-    ) -> UserNotificationSettings:
+    ) -> "UserNotificationSettings":
         """
         Обновляет настройки уведомлений пользователя.
         
@@ -390,7 +390,7 @@ class PreferenceService:
             
             return settings_obj
     
-    def create_default_preferences(self, user: User):
+    def create_default_preferences(self, user=None):
         """
         Создает настройки по умолчанию для нового пользователя.
         
@@ -436,7 +436,7 @@ class SchedulerService:
     
     def schedule_notification(
         self,
-        user: User,
+        user,
         notification_type: str,
         title: str,
         message: str,
@@ -445,7 +445,7 @@ class SchedulerService:
         priority: str = 'medium',
         pet=None,
         data: Dict[str, Any] = None
-    ) -> Notification:
+    ) -> "Notification":
         """
         Планирует отложенное уведомление.
         
@@ -494,9 +494,9 @@ class SchedulerService:
             try:
                 channels = notification.channel.split(',') if notification.channel != 'all' else ['all']
                 notification_service._send_notification(notification, channels)
-                logger.info(f"Processed scheduled notification {notification.id}")
+                logger.info(_("Processed scheduled notification {}").format(notification.id))
             except Exception as e:
-                logger.error(f"Failed to process scheduled notification {notification.id}: {e}")
+                logger.error(_("Failed to process scheduled notification {}: {}").format(notification.id, e))
     
     def schedule_booking_reminders(self, booking):
         """
@@ -560,4 +560,245 @@ class SchedulerService:
         if reminder_time in time_mapping:
             return event_time - time_mapping[reminder_time]
         
-        return event_time 
+        return event_time
+
+
+class NotificationRuleService:
+    """
+    Сервис для обработки гибких правил уведомлений.
+    
+    Обеспечивает:
+    - Оценку условий правил
+    - Применение правил к событиям
+    - Наследование правил (глобальные → пользовательские)
+    - Логирование срабатываний правил
+    """
+    
+    def __init__(self):
+        self.notification_service = NotificationService()
+    
+    def process_event(self, event_type: str, context: Dict[str, Any], user=None):
+        """
+        Обрабатывает событие и применяет соответствующие правила уведомлений.
+        
+        Args:
+            event_type: Тип события
+            context: Контекст события (объекты, данные)
+            user: Пользователь (для пользовательских правил)
+        """
+        try:
+            with transaction.atomic():
+                # Получаем все активные правила для данного типа события
+                rules = self._get_active_rules(event_type, user)
+                
+                # Сортируем правила по приоритету
+                rules = self._sort_rules_by_priority(rules)
+                
+                # Применяем каждое правило
+                for rule in rules:
+                    self._apply_rule(rule, context, user)
+                    
+        except Exception as e:
+            logger.error(f"Error processing notification rules for event {event_type}: {e}")
+    
+    def _get_active_rules(self, event_type: str, user=None) -> List["NotificationRule"]:
+        """
+        Получает активные правила для типа события.
+        
+        Args:
+            event_type: Тип события
+            user: Пользователь (для пользовательских правил)
+            
+        Returns:
+            List[NotificationRule]: Список активных правил
+        """
+        # Получаем глобальные правила
+        global_rules = NotificationRule.objects.filter(
+            event_type=event_type,
+            is_active=True,
+            inheritance='global'
+        )
+        
+        # Получаем пользовательские правила (если указан пользователь)
+        user_rules = []
+        if user:
+            user_rules = NotificationRule.objects.filter(
+                event_type=event_type,
+                is_active=True,
+                inheritance='user_specific',
+                user=user
+            )
+        
+        # Объединяем правила (пользовательские имеют приоритет)
+        all_rules = list(global_rules) + list(user_rules)
+        
+        return all_rules
+    
+    def _sort_rules_by_priority(self, rules: List["NotificationRule"]) -> List["NotificationRule"]:
+        """
+        Сортирует правила по приоритету.
+        
+        Args:
+            rules: Список правил
+            
+        Returns:
+            List[NotificationRule]: Отсортированный список правил
+        """
+        priority_order = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+        
+        return sorted(rules, key=lambda rule: priority_order.get(rule.priority, 2))
+    
+    def _apply_rule(self, rule: "NotificationRule", context: Dict[str, Any], user=None):
+        """
+        Применяет правило уведомления.
+        
+        Args:
+            rule: Правило уведомления
+            context: Контекст события
+            user: Пользователь
+        """
+        try:
+            # Оцениваем условие правила
+            if not rule.evaluate_condition(context):
+                return
+            
+            # Определяем получателя уведомления
+            target_user = user or context.get('user')
+            if not target_user:
+                logger.warning(f"No target user found for notification rule {rule.id}")
+                return
+            
+            # Получаем каналы доставки
+            channels = rule.get_channels()
+            if not channels:
+                channels = ['email', 'push', 'in_app']
+            
+            # Создаем уведомление через шаблон
+            notification = self._create_notification_from_template(
+                rule, target_user, context, channels
+            )
+            
+            # Логируем срабатывание правила
+            self._log_rule_execution(rule, context, notification)
+            
+        except Exception as e:
+            logger.error(f"Error applying notification rule {rule.id}: {e}")
+    
+    def _create_notification_from_template(
+        self, 
+        rule: "NotificationRule", 
+        user, 
+        context: Dict[str, Any], 
+        channels: List[str]
+    ) -> "Notification":
+        """
+        Создает уведомление на основе шаблона правила.
+        
+        Args:
+            rule: Правило уведомления
+            user: Пользователь-получатель
+            context: Контекст события
+            channels: Каналы доставки
+            
+        Returns:
+            Notification: Созданное уведомление
+        """
+        template = rule.template
+        
+        # Заполняем шаблон данными из контекста
+        title = self._render_template(template.subject, context)
+        message = self._render_template(template.body, context)
+        
+        # Создаем уведомление
+        notification = self.notification_service.send_notification(
+            user=user,
+            notification_type=rule.event_type,
+            title=title,
+            message=message,
+            channels=channels,
+            priority=rule.priority,
+            data=context
+        )
+        
+        return notification
+    
+    def _render_template(self, template_text: str, context: Dict[str, Any]) -> str:
+        """
+        Рендерит шаблон с данными из контекста.
+        
+        Args:
+            template_text: Текст шаблона
+            context: Контекст для подстановки
+            
+        Returns:
+            str: Обработанный текст
+        """
+        try:
+            # Простая подстановка переменных в формате {{variable}}
+            result = template_text
+            
+            for key, value in context.items():
+                placeholder = f"{{{{{key}}}}}"
+                if placeholder in result:
+                    result = result.replace(placeholder, str(value))
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error rendering template: {e}")
+            return template_text
+    
+    def _log_rule_execution(self, rule: "NotificationRule", context: Dict[str, Any], notification: "Notification"):
+        """
+        Логирует срабатывание правила.
+        
+        Args:
+            rule: Правило уведомления
+            context: Контекст события
+            notification: Созданное уведомление
+        """
+        logger.info(
+            f"Notification rule {rule.id} executed: "
+            f"event_type={rule.event_type}, "
+            f"priority={rule.priority}, "
+            f"user={notification.user.id}, "
+            f"notification_id={notification.id}"
+        )
+    
+    def test_rule(self, rule: "NotificationRule", test_context: Dict[str, Any]) -> bool:
+        """
+        Тестирует правило с тестовым контекстом.
+        
+        Args:
+            rule: Правило для тестирования
+            test_context: Тестовый контекст
+            
+        Returns:
+            bool: True если правило сработает, False иначе
+        """
+        try:
+            return rule.evaluate_condition(test_context)
+        except Exception as e:
+            logger.error(f"Error testing rule {rule.id}: {e}")
+            return False
+    
+    def get_rule_statistics(self, rule: "NotificationRule") -> Dict[str, Any]:
+        """
+        Получает статистику использования правила.
+        
+        Args:
+            rule: Правило уведомления
+            
+        Returns:
+            Dict[str, Any]: Статистика правила
+        """
+        # Здесь можно добавить логику для сбора статистики
+        # Например, количество срабатываний, успешных доставок и т.д.
+        return {
+            'rule_id': rule.id,
+            'event_type': rule.event_type,
+            'priority': rule.priority,
+            'is_active': rule.is_active,
+            'created_at': rule.created_at,
+            'updated_at': rule.updated_at,
+        } 
