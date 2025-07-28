@@ -30,6 +30,7 @@ schema_view = get_schema_view(
         - Управление питомцами и их документами
         - Медицинские записи
         - Система доступа к картам питомцев
+        - Самостоятельное снятие обязанностей совладельца
         
         ### Учреждения и сотрудники
         - Управление учреждениями
@@ -351,80 +352,131 @@ LOG_USER_ID = True
 # Настройки для документации ошибок
 ERROR_DOCUMENTATION = {
     '400': {
-        'description': 'Ошибка валидации данных',
+        'description': 'Data validation error',
         'examples': {
             'validation_error': {
-                'summary': 'Ошибка валидации',
+                'summary': 'Validation error',
                 'value': {
                     'error': 'VALIDATION_ERROR',
-                    'message': 'Данные не прошли валидацию',
+                    'message': 'Data validation failed',
                     'details': {
-                        'email': ['Это поле обязательно'],
-                        'password': ['Пароль должен содержать минимум 8 символов']
+                        'email': ['This field is required'],
+                        'password': ['Password must contain at least 8 characters']
                     }
                 }
             }
         }
     },
     '401': {
-        'description': 'Не авторизован',
+        'description': 'Unauthorized',
         'examples': {
             'unauthorized': {
-                'summary': 'Токен отсутствует или недействителен',
+                'summary': 'Token missing or invalid',
                 'value': {
                     'error': 'AUTHENTICATION_FAILED',
-                    'message': 'Требуется аутентификация'
+                    'message': 'Authentication required'
                 }
             }
         }
     },
     '403': {
-        'description': 'Доступ запрещен',
+        'description': 'Access denied',
         'examples': {
             'permission_denied': {
-                'summary': 'Недостаточно прав',
+                'summary': 'Insufficient permissions',
                 'value': {
                     'error': 'PERMISSION_DENIED',
-                    'message': 'У вас нет прав для выполнения этого действия'
+                    'message': 'You do not have permission to perform this action'
                 }
             }
         }
     },
     '404': {
-        'description': 'Ресурс не найден',
+        'description': 'Resource not found',
         'examples': {
             'not_found': {
-                'summary': 'Ресурс не найден',
+                'summary': 'Resource not found',
                 'value': {
                     'error': 'RESOURCE_NOT_FOUND',
-                    'message': 'Запрашиваемый ресурс не найден'
+                    'message': 'The requested resource was not found'
                 }
             }
         }
     },
     '429': {
-        'description': 'Превышен лимит запросов',
+        'description': 'Rate limit exceeded',
         'examples': {
             'rate_limit': {
-                'summary': 'Слишком много запросов',
+                'summary': 'Too many requests',
                 'value': {
                     'error': 'RATE_LIMIT_EXCEEDED',
-                    'message': 'Превышен лимит запросов. Попробуйте позже.',
+                    'message': 'Rate limit exceeded. Please try again later.',
                     'retry_after': 3600
                 }
             }
         }
     },
     '500': {
-        'description': 'Внутренняя ошибка сервера',
+        'description': 'Internal server error',
         'examples': {
             'internal_error': {
-                'summary': 'Внутренняя ошибка',
+                'summary': 'Internal error',
                 'value': {
                     'error': 'INTERNAL_ERROR',
-                    'message': 'Произошла внутренняя ошибка сервера'
+                    'message': 'An internal server error occurred'
                 }
             }
         }
     }
+}
+
+# Документация для новых endpoints
+COOWNER_REMOVAL_DOCUMENTATION = {
+    'title': 'Self-removal of co-owner responsibilities',
+    'description': """
+    ## Endpoint: POST /api/pets/{pet_id}/remove_myself_as_coowner/
+    
+    Allows a co-owner to voluntarily remove themselves from the pet's ownership.
+    
+    ### Requirements:
+    - User must be a co-owner of the pet (not the main owner)
+    - No active pet sittings for this pet and user
+    
+    ### Responses:
+    
+    #### Success response (200):
+    ```json
+    {
+        "message": "You have successfully removed yourself as a co-owner of this pet.",
+        "pet_id": 123,
+        "removed_user_id": 456
+    }
+    ```
+    
+    #### Error - main owner (400):
+    ```json
+    {
+        "error": "You are the main owner of this pet. To transfer ownership, please use the transfer function."
+    }
+    ```
+    
+    #### Error - not owner (403):
+    ```json
+    {
+        "error": "You do not have access to this pet."
+    }
+    ```
+    
+    #### Error - active pet sittings (400):
+    ```json
+    {
+        "error": "You cannot remove yourself as co-owner while you have active pet sitting responsibilities. Please complete or cancel any ongoing pet sitting arrangements first."
+    }
+    ```
+    
+    ### Additional actions:
+    - Automatically notifies the main owner via email
+    - Logs the action in the audit system
+    - Removes all temporary user access to the pet
+    """
 } 

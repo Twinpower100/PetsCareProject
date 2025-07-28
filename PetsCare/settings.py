@@ -141,6 +141,8 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 # Настройки интернационализации
+# ВАЖНО: При добавлении нового языка не забудьте проверить поддержку в Google Perspective API
+# и добавить соответствующий код языка в GOOGLE_PERSPECTIVE_LANGUAGES ниже
 LANGUAGES = [
     ('en', _('English')),
     ('ru', _('Russian')),
@@ -209,6 +211,20 @@ ACCOUNT_UNIQUE_EMAIL = True
 # Google Maps API settings
 GOOGLE_MAPS_API_KEY = config('GOOGLE_MAPS_API_KEY')
 
+# Google Perspective API settings for review moderation
+# ВАЖНО: При добавлении нового языка в LANGUAGES проверьте поддержку в Google Perspective API
+# и добавьте соответствующий код языка в этот список
+GOOGLE_PERSPECTIVE_API_KEY = config('GOOGLE_PERSPECTIVE_API_KEY', default='')
+GOOGLE_SERVICE_ACCOUNT_FILE = config('GOOGLE_SERVICE_ACCOUNT_FILE', default='')
+GOOGLE_PERSPECTIVE_LANGUAGES = [
+    'en',  # English
+    'ru',  # Russian
+    'de',  # German
+    # 'me',  # Montenegrin - требует проверки поддержки
+    # 'sr',  # Serbian - требует проверки поддержки
+    # Добавьте другие языки по мере необходимости
+]
+
 # Настройки валидации адресов
 ADDRESS_VALIDATION_SETTINGS = {
     'CACHE_DURATION_DAYS': 30,  # Длительность кэша в днях
@@ -221,8 +237,21 @@ ADDRESS_VALIDATION_SETTINGS = {
     'CLEANUP_EXPIRED_CACHE_DAYS': 7,  # Очистка истекшего кэша каждые N дней
 }
 
-# Настройки email (Gmail SMTP для разработки и тестирования)
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# Настройки email (Gmail API с OAuth2 для продакшена, SMTP для fallback)
+USE_GMAIL_API = config('USE_GMAIL_API', default=True, cast=bool)  # Использовать Gmail API
+GMAIL_API_FALLBACK_TO_SMTP = config('GMAIL_API_FALLBACK_TO_SMTP', default=True, cast=bool)  # Fallback на SMTP
+
+# Gmail API настройки
+GMAIL_CREDENTIALS_FILE = config('GMAIL_CREDENTIALS_FILE', default='credentials.json')  # Файл с учетными данными OAuth2
+GMAIL_TOKEN_FILE = config('GMAIL_TOKEN_FILE', default='token.json')  # Файл с токеном доступа
+
+# Email backend (автоматический выбор между Gmail API и SMTP)
+if USE_GMAIL_API:
+    EMAIL_BACKEND = 'notifications.gmail_api_backend.GmailAPIBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+# SMTP настройки (для fallback или основного использования)
 EMAIL_HOST = 'smtp.gmail.com'  # Gmail SMTP сервер
 EMAIL_PORT = 587  # Порт для TLS
 EMAIL_USE_TLS = True  # Использовать TLS шифрование

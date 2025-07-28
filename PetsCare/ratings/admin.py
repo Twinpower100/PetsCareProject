@@ -21,7 +21,7 @@ from .models import (
 )
 from .services import (
     RatingCalculationService, ComplaintProcessingService,
-    SuspiciousActivityDetectionService, ReviewModerationService
+    SuspiciousActivityDetectionService, GooglePerspectiveModerationService
 )
 
 
@@ -110,7 +110,7 @@ class ReviewAdmin(admin.ModelAdmin):
     """
     list_display = [
         'author', 'content_object', 'rating', 'title', 
-        'is_approved', 'is_suspicious', 'created_at'
+        'is_approved', 'is_suspicious', 'moderation_reason', 'created_at'
     ]
     list_filter = [
         'rating', 'is_approved', 'is_suspicious', 'created_at', 'content_type'
@@ -120,7 +120,8 @@ class ReviewAdmin(admin.ModelAdmin):
         'title', 'text'
     ]
     readonly_fields = [
-        'content_type', 'object_id', 'author', 'created_at', 'updated_at'
+        'content_type', 'object_id', 'author', 'moderation_reason', 
+        'toxicity_scores', 'created_at', 'updated_at'
     ]
     actions = ['approve_reviews', 'reject_reviews', 'mark_suspicious', 'moderate_reviews']
     
@@ -130,6 +131,10 @@ class ReviewAdmin(admin.ModelAdmin):
         }),
         (_('Status'), {
             'fields': ('is_approved', 'is_suspicious')
+        }),
+        (_('Moderation'), {
+            'fields': ('moderation_reason', 'toxicity_scores'),
+            'classes': ('collapse',)
         }),
         (_('Timestamps'), {
             'fields': ('created_at', 'updated_at'),
@@ -168,7 +173,7 @@ class ReviewAdmin(admin.ModelAdmin):
         """
         Модерирует выбранные отзывы.
         """
-        service = ReviewModerationService()
+        service = GooglePerspectiveModerationService()
         count = 0
         
         for review in queryset:

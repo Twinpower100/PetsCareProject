@@ -704,7 +704,7 @@ class BlockingSystemSettingsAdmin(admin.ModelAdmin):
             'description': _('Configure notification settings.')
         }),
         (_('Auto Resolution'), {
-            'fields': ('auto_resolve_threshold_days', 'auto_resolve_on_payment'),
+            'fields': ('auto_resolve_on_payment',),
             'description': _('Configure automatic blocking resolution.')
         }),
         (_('Working Days'), {

@@ -37,4 +37,10 @@ urlpatterns = [
     
     path('blocking-notifications/', api_views.BlockingNotificationListAPIView.as_view(), name='blocking-notifications-list'),
     path('blocking-notifications/<int:notification_id>/retry/', api_views.BlockingNotificationRetryAPIView.as_view(), name='blocking-notifications-retry'),
+    
+    # API для workflow согласования контрактов
+    path('contracts/<int:contract_id>/submit-for-approval/', api_views.submit_contract_for_approval, name='submit-contract-for-approval'),
+    path('contracts/<int:contract_id>/approve/', api_views.approve_contract, name='approve-contract'),
+    path('contracts/<int:contract_id>/reject/', api_views.reject_contract, name='reject-contract'),
+    path('contracts/<int:contract_id>/activate/', api_views.activate_contract, name='activate-contract'),
 ] 

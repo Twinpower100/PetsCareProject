@@ -8,6 +8,10 @@
 4. Сервис модерации отзывов
 """
 
+import os
+import logging
+from typing import Dict, Any, Optional
+from django.conf import settings
 from django.db import models, transaction
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -19,6 +23,12 @@ from .models import Rating, Review, Complaint, SuspiciousActivity
 from booking.models import Booking
 from sitters.models import PetSitting
 from pets.models import Pet
+from googleapiclient.discovery import build
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.auth import default
+
+logger = logging.getLogger(__name__)
 
 
 class RatingCalculationService:
@@ -250,7 +260,7 @@ class ReviewService:
         )
         
         # Запускаем модерацию
-        moderation_service = ReviewModerationService()
+        moderation_service = GooglePerspectiveModerationService()
         moderation_service.moderate_review(review)
         
         # Пересчитываем рейтинг объекта
@@ -610,19 +620,50 @@ class SuspiciousActivityDetectionService:
         )
 
 
-class ReviewModerationService:
+class GooglePerspectiveModerationService:
     """
-    Сервис для модерации отзывов.
+    Сервис для модерации отзывов с использованием Google Perspective API.
     
     Основные функции:
-    - Автоматическая модерация отзывов
-    - Проверка подозрительных отзывов
-    - Управление статусом отзывов
+    - Автоматическая модерация отзывов через Google Perspective API
+    - Проверка токсичности контента
+    - Управление статусом отзывов на основе результатов API
     """
     
-    def moderate_review(self, review):
+    def __init__(self):
         """
-        Модерирует отзыв.
+        Инициализирует сервис модерации.
+        """
+        self.api_key = getattr(settings, 'GOOGLE_PERSPECTIVE_API_KEY', None)
+        self.service_account_file = getattr(settings, 'GOOGLE_SERVICE_ACCOUNT_FILE', None)
+        self.client = None
+        self._initialize_client()
+    
+    def _initialize_client(self):
+        """
+        Инициализирует клиент Google Perspective API.
+        """
+        try:
+            if self.service_account_file and os.path.exists(self.service_account_file):
+                # Используем service account для OAuth2
+                credentials = service_account.Credentials.from_service_account_file(
+                    self.service_account_file,
+                    scopes=['https://www.googleapis.com/auth/cloud-platform']
+                )
+                self.client = build('commentanalyzer', 'v1alpha1', credentials=credentials)
+            elif self.api_key:
+                # Используем API ключ (для тестирования)
+                self.client = build('commentanalyzer', 'v1alpha1', developerKey=self.api_key)
+            else:
+                logger.error('Google Perspective API credentials not configured')
+                self.client = None
+        except Exception as e:
+            logger.error(f'Failed to initialize Google Perspective API client: {e}')
+            self.client = None
+    
+    def moderate_review(self, review) -> 'Review':
+        """
+        Модерирует отзыв с использованием Google Perspective API.
         
         Args:
             review: Отзыв для модерации
@@ -630,82 +671,175 @@ class ReviewModerationService:
         Returns:
             Review: Обновленный отзыв
         """
-        # Проверяем подозрительность отзыва
-        is_suspicious = self._check_review_suspicious(review)
-        
-        if is_suspicious:
-            review.is_suspicious = True
-            review.is_approved = False
+        try:
+            if not self.client:
+                logger.warning('Google Perspective API client not available, using fallback moderation')
+                return self._fallback_moderation(review)
+            
+            # Анализируем токсичность
+            toxicity_scores = self._analyze_toxicity(review.text)
+            
+            # Принимаем решение на основе результатов
+            is_approved, is_suspicious, moderation_reason = self._make_moderation_decision(
+                toxicity_scores, review
+            )
+            
+            # Обновляем отзыв
+            review.is_approved = is_approved
+            review.is_suspicious = is_suspicious
+            review.moderation_reason = moderation_reason
+            review.toxicity_scores = toxicity_scores
             review.save()
             
-            # Создаем запись о подозрительной активности
-            detection_service = SuspiciousActivityDetectionService()
-            detection_service._create_suspicious_activity(
-                review.author,
-                'suspicious_patterns',
-                f'Suspicious review detected: {review.id}'
-            )
-        else:
-            review.is_approved = True
-            review.is_suspicious = False
-            review.save()
+            # Создаем запись о подозрительной активности если необходимо
+            if is_suspicious:
+                detection_service = SuspiciousActivityDetectionService()
+                detection_service._create_suspicious_activity(
+                    review.author,
+                    'toxic_content',
+                    f'Toxic content detected by Google Perspective API: {review.id}'
+                )
+            
+            logger.info(f'Review {review.id} moderated successfully. Approved: {is_approved}, Suspicious: {is_suspicious}')
+            
+        except Exception as e:
+            logger.error(f'Error moderating review {review.id}: {e}')
+            # В случае ошибки используем fallback
+            return self._fallback_moderation(review)
         
         return review
     
-    def _check_review_suspicious(self, review):
+    def _analyze_toxicity(self, text: str) -> Dict[str, float]:
         """
-        Проверяет подозрительность отзыва.
+        Анализирует токсичность текста через Google Perspective API.
         
         Args:
-            review: Отзыв для проверки
+            text: Текст для анализа
             
         Returns:
-            bool: True если отзыв подозрительный
+            Dict[str, float]: Словарь с оценками токсичности по различным аспектам
         """
-        # Проверяем длину текста
-        if len(review.text) < 10 and review.rating in [1, 5]:
-            return True
-        
-        # Проверяем повторяющиеся символы
-        if self._has_repeating_characters(review.text):
-            return True
-        
-        # Проверяем капс
-        if self._is_all_caps(review.text):
-            return True
-        
-        return False
+        try:
+            # Подготавливаем запрос к API
+            analyze_request = {
+                'comment': {
+                    'text': text
+                },
+                'requestedAttributes': {
+                    'TOXICITY': {},
+                    'SEVERE_TOXICITY': {},
+                    'IDENTITY_ATTACK': {},
+                    'INSULT': {},
+                    'PROFANITY': {},
+                    'THREAT': {},
+                    'SEXUALLY_EXPLICIT': {},
+                    'FLIRTATION': {}
+                },
+                'languages': getattr(settings, 'GOOGLE_PERSPECTIVE_LANGUAGES', ['en', 'ru', 'de'])  # Языки из настроек
+            }
+            
+            # Отправляем запрос
+            response = self.client.comments().analyze(body=analyze_request).execute()
+            
+            # Извлекаем результаты
+            toxicity_scores = {}
+            for attribute_name, attribute_data in response.get('attributeScores', {}).items():
+                toxicity_scores[attribute_name.lower()] = attribute_data.get('summaryScore', {}).get('value', 0.0)
+            
+            return toxicity_scores
+            
+        except Exception as e:
+            logger.error(f'Error analyzing toxicity: {e}')
+            return {}
     
-    def _has_repeating_characters(self, text):
+    def _make_moderation_decision(self, toxicity_scores: Dict[str, float], review) -> tuple:
         """
-        Проверяет наличие повторяющихся символов.
+        Принимает решение о модерации на основе результатов анализа токсичности.
+        
+        Args:
+            toxicity_scores: Результаты анализа токсичности
+            review: Отзыв для модерации
+            
+        Returns:
+            tuple: (is_approved, is_suspicious, moderation_reason)
+        """
+        # Пороговые значения для различных типов токсичности
+        thresholds = {
+            'toxicity': 0.7,
+            'severe_toxicity': 0.5,
+            'identity_attack': 0.6,
+            'insult': 0.7,
+            'profanity': 0.8,
+            'threat': 0.5,
+            'sexually_explicit': 0.6,
+            'flirtation': 0.8
+        }
+        
+        # Проверяем каждый аспект токсичности
+        violations = []
+        for aspect, threshold in thresholds.items():
+            score = toxicity_scores.get(aspect, 0.0)
+            if score > threshold:
+                violations.append(f'{aspect}: {score:.2f}')
+        
+        # Принимаем решение
+        if violations:
+            # Есть нарушения - отзыв подозрительный
+            reason = f'Toxic content detected: {", ".join(violations)}'
+            return False, True, reason
+        else:
+            # Нарушений нет - отзыв одобрен
+            return True, False, 'Content approved by Google Perspective API'
+    
+    def _fallback_moderation(self, review) -> 'Review':
+        """
+        Fallback модерация в случае недоступности Google Perspective API.
+        
+        Args:
+            review: Отзыв для модерации
+            
+        Returns:
+            Review: Обновленный отзыв
+        """
+        # Простые проверки как fallback
+        is_suspicious = self._check_basic_suspicious_patterns(review.text)
+        
+        if is_suspicious:
+            review.is_approved = False
+            review.is_suspicious = True
+            review.moderation_reason = 'Fallback moderation: suspicious patterns detected'
+        else:
+            review.is_approved = True
+            review.is_suspicious = False
+            review.moderation_reason = 'Fallback moderation: no suspicious patterns'
+        
+        review.save()
+        return review
+    
+    def _check_basic_suspicious_patterns(self, text: str) -> bool:
+        """
+        Проверяет базовые подозрительные паттерны (fallback).
         
         Args:
             text: Текст для проверки
             
         Returns:
-            bool: True если есть повторяющиеся символы
-        """
-        if len(text) < 3:
-            return False
-        
-        for i in range(len(text) - 2):
-            if text[i] == text[i+1] == text[i+2]:
-                return True
-        
-        return False
-    
-    def _is_all_caps(self, text):
-        """
-        Проверяет, написан ли текст заглавными буквами.
-        
-        Args:
-            text: Текст для проверки
-            
-        Returns:
-            bool: True если текст заглавными буквами
+            bool: True если обнаружены подозрительные паттерны
         """
         if not text:
             return False
         
-        return text.isupper() and len(text) > 10 
+        # Проверяем длину текста
+        if len(text) < 10:
+            return True
+        
+        # Проверяем повторяющиеся символы
+        for i in range(len(text) - 2):
+            if text[i] == text[i+1] == text[i+2]:
+                return True
+        
+        # Проверяем капс
+        if text.isupper() and len(text) > 10:
+            return True
+        
+        return False 

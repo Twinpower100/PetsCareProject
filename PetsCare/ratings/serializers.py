@@ -75,13 +75,15 @@ class ReviewSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'content_type', 'object_id', 'content_object_info',
             'author', 'author_name', 'author_email', 'rating', 'title', 'text',
-            'is_approved', 'is_suspicious', 'created_at', 'updated_at',
-            'user', 'user_name', 'pet', 'pet_name', 'service', 'service_name'
+            'is_approved', 'is_suspicious', 'moderation_reason', 'toxicity_scores',
+            'created_at', 'updated_at', 'user', 'user_name', 'pet', 'pet_name', 
+            'service', 'service_name'
         ]
         read_only_fields = [
             'id', 'content_type', 'object_id', 'author', 'author_name', 
-            'author_email', 'is_approved', 'is_suspicious', 'created_at', 'updated_at',
-            'user', 'user_name', 'pet', 'pet_name', 'service', 'service_name'
+            'author_email', 'is_approved', 'is_suspicious', 'moderation_reason',
+            'toxicity_scores', 'created_at', 'updated_at', 'user', 'user_name', 
+            'pet', 'pet_name', 'service', 'service_name'
         ]
     
     def get_content_object_info(self, obj):

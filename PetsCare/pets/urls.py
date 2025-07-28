@@ -7,7 +7,9 @@ from .api_views import (
     PetRecordListCreateAPIView, PetRecordRetrieveUpdateDestroyAPIView,
     PetAccessListCreateAPIView, PetAccessRetrieveUpdateDestroyAPIView,
     PetDeleteAPIView, PetInviteAPIView, PetAcceptInviteAPIView, PetInviteQRCodeAPIView,
-    PetRecordFileUploadAPIView, PetDocumentDownloadAPIView, PetDocumentPreviewAPIView
+    PetRecordFileUploadAPIView, PetDocumentDownloadAPIView, PetDocumentPreviewAPIView,
+    PetSearchAPIView, PetTypeSearchAPIView, BreedSearchAPIView, 
+    PetRecommendationsAPIView, PetStatisticsAPIView
 )
 
 router = DefaultRouter()
@@ -16,6 +18,8 @@ router.register(r'medical-records', api_views.MedicalRecordViewSet)
 router.register(r'pet-records', api_views.PetRecordViewSet)
 router.register(r'pet-access', api_views.PetAccessViewSet)
 router.register(r'document-types', api_views.DocumentTypeViewSet)
+router.register(r'incapacity', api_views.PetOwnerIncapacityViewSet)
+router.register(r'incapacity-notifications', api_views.PetIncapacityNotificationViewSet)
 
 app_name = 'pets'
 
@@ -48,4 +52,11 @@ urlpatterns = [
     # Document endpoints
     path('documents/<int:document_id>/download/', PetDocumentDownloadAPIView.as_view(), name='document-download'),
     path('documents/<int:document_id>/preview/', PetDocumentPreviewAPIView.as_view(), name='document-preview'),
+    
+    # Pet search endpoints
+    path('search/', PetSearchAPIView.as_view(), name='pet-search'),
+    path('pet-types/search/', PetTypeSearchAPIView.as_view(), name='pet-type-search'),
+    path('breeds/search/', BreedSearchAPIView.as_view(), name='breed-search'),
+    path('recommendations/', PetRecommendationsAPIView.as_view(), name='pet-recommendations'),
+    path('statistics/', PetStatisticsAPIView.as_view(), name='pet-statistics'),
 ]

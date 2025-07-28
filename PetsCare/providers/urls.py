@@ -37,6 +37,14 @@ urlpatterns = [
     path('api/search/distance/', api_views.ProviderSearchByDistanceAPIView.as_view(), name='provider-search-distance'),
     path('api/search/sitters/advanced/', api_views.SitterAdvancedSearchByDistanceAPIView.as_view(), name='sitter-advanced-search'),
     
+    # Маршруты для проверки доступности и цен
+    path('api/providers/<int:provider_id>/availability/', 
+         api_views.check_provider_availability, 
+         name='provider-availability'),
+    path('api/providers/<int:provider_id>/prices/', 
+         api_views.get_provider_prices, 
+         name='provider-prices'),
+    
     # Маршруты для управления сотрудниками
     path('api/employees/<int:employee_id>/update/', 
          api_views.EmployeeProviderUpdateAPIView.as_view(), 
@@ -68,6 +76,10 @@ urlpatterns = [
     path('api/schedule-patterns/apply/', 
          api_views.SchedulePatternApplyAPIView.as_view(), 
          name='schedule-pattern-apply'),
+
+    # New API endpoints for GAPs #1 and #2
+    path('api/providers/<int:provider_id>/available-slots/', api_views.get_provider_available_slots, name='provider-available-slots'),
+    path('api/providers/search/map/availability/', api_views.search_providers_map_availability, name='providers-map-availability'),
 ]
 
 # Добавляем namespace для приложения

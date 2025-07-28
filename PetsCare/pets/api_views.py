@@ -8,6 +8,7 @@ from django.utils import timezone
 from datetime import timedelta
 from users.models import User
 from rest_framework.parsers import MultiPartParser, FormParser
+from django.db import transaction
 from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetOwnershipInvite, PetRecordFile, DocumentType
 from .serializers import (
     PetSerializer,
@@ -16,7 +17,11 @@ from .serializers import (
     PetAccessSerializer,
     PetRecordFileSerializer,
     PetOwnershipInviteSerializer,
-    DocumentTypeSerializer
+    DocumentTypeSerializer,
+    PetOwnerIncapacitySerializer,
+    PetIncapacityNotificationSerializer,
+    PetTypeSerializer,
+    BreedSerializer
 )
 from providers.models import EmployeeProvider
 from django.core.mail import send_mail
@@ -26,6 +31,19 @@ import qrcode
 from io import BytesIO
 import base64
 from django.core.exceptions import ValidationError
+from .services import PetOwnerIncapacityService
+from .models import PetOwnerIncapacity, PetIncapacityNotification
+from django.db import models
+import logging
+from .filters import PetFilter, PetTypeFilter, BreedFilter
+from .models import PetType, Breed
+from rest_framework.filters import OrderingFilter
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework.pagination import PageNumberPagination
+from django.db.models import Q
+
+
+logger = logging.getLogger(__name__)
 
 
 class PetViewSet(viewsets.ModelViewSet):
@@ -51,6 +69,146 @@ class PetViewSet(viewsets.ModelViewSet):
         pets = self.get_queryset()
         serializer = self.get_serializer(pets, many=True)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def remove_myself_as_coowner(self, request, pk=None):
+        """
+        Самостоятельное снятие обязанностей совладельца.
+        
+        Позволяет совладельцу самостоятельно отказаться от роли совладельца питомца.
+        Проверяет, что пользователь является совладельцем (не основным владельцем).
+        Уведомляет основного владельца о снятии роли.
+        """
+        pet = self.get_object()
+        user = request.user
+        
+        # Проверяем, что пользователь является совладельцем
+        if pet.main_owner == user:
+            return Response({
+                'error': _('You are the main owner of this pet. To transfer ownership, please use the transfer function.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if user not in pet.owners.all():
+            return Response({
+                'error': _('You do not have access to this pet.')
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Проверяем, нет ли активных передержек или критических операций
+        if self._has_active_pet_sittings(pet, user):
+            return Response({
+                'error': _('You cannot remove yourself as co-owner while you have active pet sitting responsibilities. Please complete or cancel any ongoing pet sitting arrangements first.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                # Удаляем пользователя из списка владельцев
+                pet.owners.remove(user)
+                
+                # Логируем действие
+                self._log_coowner_removal(pet, user)
+                
+                # Уведомляем основного владельца
+                if pet.main_owner:
+                    self._notify_main_owner(pet, user)
+                
+                return Response({
+                    'message': _('You have successfully removed yourself as a co-owner of this pet.'),
+                    'pet_id': pet.id,
+                    'removed_user_id': user.id
+                }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            return Response({
+                'error': _('Unable to process your request at this time. Please try again later.')
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def _has_active_pet_sittings(self, pet, user):
+        """
+        Проверяет, есть ли активные передержки для данного питомца и пользователя.
+        
+        Args:
+            pet: Объект питомца
+            user: Пользователь для проверки
+            
+        Returns:
+            bool: True если есть активные передержки
+        """
+        try:
+            from sitters.models import PetSitting
+            
+            # Проверяем активные передержки где пользователь является ситтером
+            active_sittings = PetSitting.objects.filter(
+                pet=pet,
+                sitter=user,
+                status__in=['waiting_start', 'in_progress']
+            ).exists()
+            
+            return active_sittings
+            
+        except ImportError:
+            # Если модуль sitters недоступен, считаем что активных передержек нет
+            return False
+    
+    def _log_coowner_removal(self, pet, user):
+        """
+        Логирует снятие совладельца.
+        
+        Args:
+            pet: Объект питомца
+            user: Пользователь, который снял себя как совладельца
+        """
+        try:
+            from audit.models import AuditLog
+            
+            AuditLog.objects.create(
+                user=user,
+                action='coowner_self_removal',
+                object_type='Pet',
+                object_id=pet.id,
+                details={
+                    'pet_name': pet.name,
+                    'pet_id': pet.id,
+                    'removed_user_id': user.id,
+                    'removed_user_email': user.email,
+                    'timestamp': timezone.now().isoformat()
+                }
+            )
+        except ImportError:
+            # Если модуль audit недоступен, пропускаем логирование
+            pass
+    
+    def _notify_main_owner(self, pet, removed_user):
+        """
+        Уведомляет основного владельца о снятии совладельца.
+        
+        Args:
+            pet: Объект питомца
+            removed_user: Пользователь, который снял себя как совладельца
+        """
+        if not pet.main_owner or not pet.main_owner.email:
+            return
+        
+        try:
+            subject = _('Co-owner removed themselves from pet')
+            message = _(
+                'User {email} has removed themselves as a co-owner of your pet {pet_name}. '
+                'They will no longer have access to the pet\'s information and records.'
+            ).format(
+                email=removed_user.email,
+                pet_name=pet.name
+            )
+            
+            send_mail(
+                subject=subject,
+                message=message,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[pet.main_owner.email],
+                fail_silently=True
+            )
+            
+        except Exception as e:
+            # Логируем ошибку отправки уведомления, но не прерываем основную операцию
+            pass
 
 
 class MedicalRecordViewSet(viewsets.ModelViewSet):
@@ -801,3 +959,447 @@ class PetDocumentPreviewAPIView(APIView):
                 {'error': _('Error loading image')},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             ) 
+
+
+class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
+    """
+    API для управления случаями недееспособности владельцев питомцев.
+    
+    Особенности:
+    - Создание отчетов о недееспособности
+    - Подтверждение статуса питомца
+    - Просмотр истории случаев
+    """
+    serializer_class = PetOwnerIncapacitySerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """Возвращает queryset в зависимости от роли пользователя."""
+        user = self.request.user
+        
+        if user.is_staff:
+            # Администраторы видят все случаи
+            return PetOwnerIncapacity.objects.all()
+        else:
+            # Обычные пользователи видят только случаи с их питомцами
+            return PetOwnerIncapacity.objects.filter(
+                models.Q(pet__main_owner=user) | 
+                models.Q(pet__owners=user) |
+                models.Q(reported_by=user)
+            ).distinct()
+    
+    @action(detail=False, methods=['post'])
+    def report_pet_lost(self, request):
+        """
+        Сообщает о потере питомца.
+        
+        Args:
+            pet_id: ID питомца
+            reason: Причина потери (опционально)
+        """
+        pet_id = request.data.get('pet_id')
+        reason = request.data.get('reason', '')
+        
+        if not pet_id:
+            return Response({
+                'error': _('Pet ID is required.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            pet = Pet.objects.get(id=pet_id)
+        except Pet.DoesNotExist:
+            return Response({
+                'error': _('Pet not found.')
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Проверяем права доступа
+        user = request.user
+        if not (pet.main_owner == user or user in pet.owners.all()):
+            return Response({
+                'error': _('You do not have access to this pet.')
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Проверяем, что нет активных случаев недееспособности
+        if pet.incapacity_records.filter(status='pending_confirmation').exists():
+            return Response({
+                'error': _('There is already an active incapacity case for this pet.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            service = PetOwnerIncapacityService()
+            incapacity_record = service.report_pet_lost(pet, user, reason)
+            
+            return Response({
+                'message': _('Pet lost report submitted successfully.'),
+                'incapacity_record_id': incapacity_record.id
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            logger.error(f"Error reporting pet lost: {str(e)}")
+            return Response({
+                'error': _('Unable to process your request at this time. Please try again later.')
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def report_owner_incapacity(self, request):
+        """
+        Сообщает о недееспособности основного владельца.
+        
+        Args:
+            pet_id: ID питомца
+            reason: Причина недееспособности
+        """
+        pet_id = request.data.get('pet_id')
+        reason = request.data.get('reason', '')
+        
+        if not pet_id:
+            return Response({
+                'error': _('Pet ID is required.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if not reason:
+            return Response({
+                'error': _('Reason for incapacity is required.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            pet = Pet.objects.get(id=pet_id)
+        except Pet.DoesNotExist:
+            return Response({
+                'error': _('Pet not found.')
+            }, status=status.HTTP_404_NOT_FOUND)
+        
+        # Проверяем права доступа (только совладельцы могут сообщать о недееспособности)
+        user = request.user
+        if pet.main_owner == user:
+            return Response({
+                'error': _('You cannot report incapacity for yourself.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        if user not in pet.owners.all():
+            return Response({
+                'error': _('You do not have access to this pet.')
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Проверяем, что нет активных случаев недееспособности
+        if pet.incapacity_records.filter(status='pending_confirmation').exists():
+            return Response({
+                'error': _('There is already an active incapacity case for this pet.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            service = PetOwnerIncapacityService()
+            incapacity_record = service.report_owner_incapacity(pet, user, reason)
+            
+            return Response({
+                'message': _('Owner incapacity report submitted successfully.'),
+                'incapacity_record_id': incapacity_record.id
+            }, status=status.HTTP_201_CREATED)
+            
+        except Exception as e:
+            logger.error(f"Error reporting owner incapacity: {str(e)}")
+            return Response({
+                'error': _('Unable to process your request at this time. Please try again later.')
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=True, methods=['post'])
+    def confirm_pet_status(self, request, pk=None):
+        """
+        Подтверждает статус питомца.
+        
+        Args:
+            pet_is_ok: True если питомец в порядке, False если потерян/умер
+            notes: Дополнительные заметки (опционально)
+        """
+        incapacity_record = self.get_object()
+        pet_is_ok = request.data.get('pet_is_ok')
+        notes = request.data.get('notes', '')
+        
+        if pet_is_ok is None:
+            return Response({
+                'error': _('Pet status confirmation is required.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Проверяем права доступа
+        user = request.user
+        if not (incapacity_record.pet.main_owner == user or user in incapacity_record.pet.owners.all()):
+            return Response({
+                'error': _('You do not have access to this pet.')
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # Проверяем статус записи
+        if incapacity_record.status != 'pending_confirmation':
+            return Response({
+                'error': _('This incapacity case cannot be confirmed.')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            service = PetOwnerIncapacityService()
+            success = service.confirm_pet_status(incapacity_record, user, pet_is_ok, notes)
+            
+            if success:
+                return Response({
+                    'message': _('Pet status confirmed successfully.'),
+                    'status': incapacity_record.status
+                }, status=status.HTTP_200_OK)
+            else:
+                return Response({
+                    'error': _('Unable to confirm pet status. Please try again later.')
+                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                
+        except Exception as e:
+            logger.error(f"Error confirming pet status: {str(e)}")
+            return Response({
+                'error': _('Unable to process your request at this time. Please try again later.')
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def my_cases(self, request):
+        """Возвращает случаи недееспособности, связанные с пользователем."""
+        user = request.user
+        
+        # Получаем случаи, где пользователь является основным владельцем или совладельцем
+        cases = PetOwnerIncapacity.objects.filter(
+            models.Q(pet__main_owner=user) | 
+            models.Q(pet__owners=user) |
+            models.Q(reported_by=user)
+        ).distinct().order_by('-created_at')
+        
+        page = self.paginate_queryset(cases)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(cases, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def notifications(self, request, pk=None):
+        """Возвращает уведомления для случая недееспособности."""
+        incapacity_record = self.get_object()
+        
+        # Проверяем права доступа
+        user = request.user
+        if not (incapacity_record.pet.main_owner == user or user in incapacity_record.pet.owners.all()):
+            return Response({
+                'error': _('You do not have access to this case.')
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        notifications = incapacity_record.notifications.filter(recipient=user).order_by('-created_at')
+        
+        page = self.paginate_queryset(notifications)
+        if page is not None:
+            serializer = PetIncapacityNotificationSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = PetIncapacityNotificationSerializer(notifications, many=True)
+        return Response(serializer.data)
+
+
+class PetIncapacityNotificationViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    API для просмотра уведомлений о недееспособности владельцев.
+    """
+    serializer_class = PetIncapacityNotificationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """Возвращает уведомления пользователя."""
+        return PetIncapacityNotification.objects.filter(recipient=self.request.user).order_by('-created_at')
+    
+    @action(detail=True, methods=['post'])
+    def mark_as_read(self, request, pk=None):
+        """Отмечает уведомление как прочитанное."""
+        notification = self.get_object()
+        
+        # Проверяем, что уведомление принадлежит пользователю
+        if notification.recipient != request.user:
+            return Response({
+                'error': _('You do not have access to this notification.')
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        # В данной реализации просто возвращаем успех
+        # В будущем можно добавить поле is_read в модель
+        return Response({
+            'message': _('Notification marked as read.')
+        }, status=status.HTTP_200_OK) 
+
+
+class PetSearchPagination(PageNumberPagination):
+    """Пагинация для результатов поиска питомцев."""
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+
+class PetSearchAPIView(generics.ListAPIView):
+    """
+    API для расширенного поиска питомцев.
+    
+    Поддерживает:
+    - Фильтрацию по типу, породе, возрасту, весу
+    - Фильтрацию по медицинским условиям и особым потребностям
+    - Фильтрацию по геолокации
+    - Сортировку по различным параметрам
+    - Пагинацию результатов
+    """
+    serializer_class = PetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_class = PetFilter
+    pagination_class = PetSearchPagination
+    ordering_fields = [
+        'name', 'birth_date', 'weight', 'created_at', 'updated_at',
+        'pet_type__name', 'breed__name'
+    ]
+    ordering = ['-created_at']
+    
+    def get_queryset(self):
+        """Возвращает queryset с учетом прав доступа пользователя."""
+        user = self.request.user
+        
+        if user.is_staff:
+            # Администраторы видят всех питомцев
+            return Pet.objects.all()
+        else:
+            # Обычные пользователи видят только своих питомцев
+            return Pet.objects.filter(owners=user)
+    
+    def get_serializer_context(self):
+        """Добавляет контекст для сериализатора."""
+        context = super().get_serializer_context()
+        context['include_medical_info'] = self.request.query_params.get('include_medical_info', 'false').lower() == 'true'
+        context['include_records_count'] = self.request.query_params.get('include_records_count', 'false').lower() == 'true'
+        return context
+
+
+class PetTypeSearchAPIView(generics.ListAPIView):
+    """
+    API для поиска типов питомцев.
+    """
+    serializer_class = PetTypeSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_class = PetTypeFilter
+    ordering_fields = ['name', 'code']
+    ordering = ['name']
+    
+    def get_queryset(self):
+        """Возвращает активные типы питомцев."""
+        return PetType.objects.all()
+
+
+class BreedSearchAPIView(generics.ListAPIView):
+    """
+    API для поиска пород питомцев.
+    """
+    serializer_class = BreedSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, OrderingFilter]
+    filterset_class = BreedFilter
+    ordering_fields = ['name', 'code', 'pet_type__name']
+    ordering = ['pet_type__name', 'name']
+    
+    def get_queryset(self):
+        """Возвращает породы с предзагрузкой типов питомцев."""
+        return Breed.objects.select_related('pet_type').all()
+
+
+class PetRecommendationsAPIView(generics.ListAPIView):
+    """
+    API для получения персонализированных рекомендаций питомцев.
+    
+    Основано на:
+    - Истории посещений
+    - Предпочтениях пользователя
+    - Похожих питомцах
+    """
+    serializer_class = PetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = PetSearchPagination
+    
+    def get_queryset(self):
+        """Возвращает персонализированные рекомендации."""
+        user = self.request.user
+        limit = int(self.request.query_params.get('limit', 10))
+        
+        # Получаем питомцев пользователя
+        user_pets = Pet.objects.filter(owners=user)
+        
+        if not user_pets.exists():
+            # Если у пользователя нет питомцев, возвращаем популярные типы
+            return Pet.objects.filter(
+                pet_type__in=PetType.objects.all()[:3]
+            ).order_by('?')[:limit]
+        
+        # Анализируем предпочтения пользователя
+        user_pet_types = user_pets.values_list('pet_type', flat=True).distinct()
+        user_breeds = user_pets.values_list('breed', flat=True).distinct()
+        
+        # Находим похожих питомцев
+        similar_pets = Pet.objects.exclude(owners=user).filter(
+            Q(pet_type__in=user_pet_types) |
+            Q(breed__in=user_breeds)
+        ).distinct()
+        
+        # Если похожих питомцев мало, добавляем случайные
+        if similar_pets.count() < limit:
+            additional_pets = Pet.objects.exclude(
+                Q(owners=user) | Q(id__in=similar_pets.values_list('id', flat=True))
+            ).order_by('?')[:limit - similar_pets.count()]
+            similar_pets = list(similar_pets) + list(additional_pets)
+        
+        return similar_pets[:limit]
+
+
+class PetStatisticsAPIView(APIView):
+    """
+    API для получения статистики по питомцам.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        """Возвращает статистику по питомцам пользователя."""
+        user = request.user
+        
+        # Получаем питомцев пользователя
+        user_pets = Pet.objects.filter(owners=user)
+        
+        # Базовая статистика
+        total_pets = user_pets.count()
+        pets_by_type = user_pets.values('pet_type__name').annotate(
+            count=models.Count('id')
+        ).order_by('-count')
+        
+        # Статистика по возрасту
+        age_stats = {
+            'young': user_pets.filter(birth_date__gte=timezone.now().date() - timedelta(days=365*2)).count(),
+            'adult': user_pets.filter(
+                birth_date__lt=timezone.now().date() - timedelta(days=365*2),
+                birth_date__gte=timezone.now().date() - timedelta(days=365*7)
+            ).count(),
+            'senior': user_pets.filter(birth_date__lt=timezone.now().date() - timedelta(days=365*7)).count(),
+        }
+        
+        # Статистика по медицинским условиям
+        pets_with_medical_conditions = user_pets.filter(
+            ~Q(medical_conditions={}) & ~Q(medical_conditions__isnull=True)
+        ).count()
+        
+        pets_with_special_needs = user_pets.filter(
+            ~Q(special_needs={}) & ~Q(special_needs__isnull=True)
+        ).count()
+        
+        # Статистика по последним посещениям
+        recent_visits = user_pets.filter(
+            records__date__gte=timezone.now() - timedelta(days=30)
+        ).distinct().count()
+        
+        return Response({
+            'total_pets': total_pets,
+            'pets_by_type': list(pets_by_type),
+            'age_distribution': age_stats,
+            'pets_with_medical_conditions': pets_with_medical_conditions,
+            'pets_with_special_needs': pets_with_special_needs,
+            'recent_visits': recent_visits,
+        }) 

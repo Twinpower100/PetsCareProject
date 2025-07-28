@@ -13,7 +13,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
-from .models import Payment, Invoice, Refund, ContractType, BillingManagerProvider, BillingManagerEvent, Contract, BlockingRule, ProviderBlocking, BlockingNotification
+from .models import Payment, Invoice, Refund, ContractType, BillingManagerProvider, BillingManagerEvent, Contract, BlockingRule, ProviderBlocking, BlockingNotification, ContractApprovalHistory
 from .serializers import (
     PaymentSerializer,
     InvoiceSerializer,
@@ -581,3 +581,245 @@ class BlockingNotificationRetryAPIView(generics.UpdateAPIView):
             'message': 'Уведомление отправлено повторно',
             'sent_at': notification.sent_at
         }) 
+
+
+# Workflow согласования контрактов
+from rest_framework.decorators import api_view, permission_classes
+from django.utils import timezone
+from django.db import transaction
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def submit_contract_for_approval(request, contract_id):
+    """
+    Отправляет контракт на согласование админу.
+    
+    Права доступа:
+    - Требуется аутентификация
+    - Только менеджеры по биллингу или создатели контракта
+    """
+    try:
+        with transaction.atomic():
+            contract = get_object_or_404(Contract, id=contract_id)
+            
+            # Проверяем права доступа
+            if not (request.user.is_staff or 
+                   contract.created_by == request.user or
+                   BillingManagerProvider.objects.filter(
+                       billing_manager=request.user,
+                       provider=contract.provider,
+                       status='active'
+                   ).exists()):
+                return Response({
+                    'error': _('You do not have permission to submit this contract for approval')
+                }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Проверяем, что контракт в статусе черновика
+            if contract.status != 'draft':
+                return Response({
+                    'error': _('Contract must be in draft status to submit for approval')
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Обновляем статус контракта
+            contract.status = 'pending_approval'
+            contract.submitted_for_approval_at = timezone.now()
+            contract.save()
+            
+            # Создаем запись в истории
+            ContractApprovalHistory.objects.create(
+                contract=contract,
+                action='submitted',
+                user=request.user,
+                reason=request.data.get('reason', '')
+            )
+            
+            # Отправляем уведомления админам
+            from .services import notify_admins_contract_approval_needed
+            notify_admins_contract_approval_needed(contract)
+            
+            return Response({
+                'message': _('Contract submitted for approval successfully'),
+                'contract_id': contract.id,
+                'status': contract.status
+            })
+            
+    except Exception as e:
+        return Response({
+            'error': _('Failed to submit contract for approval'),
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAdminUser])
+def approve_contract(request, contract_id):
+    """
+    Одобряет контракт админом.
+    
+    Права доступа:
+    - Требуется аутентификация
+    - Только админы
+    """
+    try:
+        with transaction.atomic():
+            contract = get_object_or_404(Contract, id=contract_id)
+            
+            # Проверяем, что контракт ожидает согласования
+            if contract.status != 'pending_approval':
+                return Response({
+                    'error': _('Contract must be pending approval to approve')
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Обновляем статус контракта
+            contract.status = 'active'
+            contract.approved_by = request.user
+            contract.approved_at = timezone.now()
+            contract.save()
+            
+            # Создаем запись в истории
+            ContractApprovalHistory.objects.create(
+                contract=contract,
+                action='approved',
+                user=request.user,
+                reason=request.data.get('reason', '')
+            )
+            
+            # Отправляем уведомление менеджеру
+            from .services import notify_manager_contract_approved
+            notify_manager_contract_approved(contract)
+            
+            return Response({
+                'message': _('Contract approved successfully'),
+                'contract_id': contract.id,
+                'status': contract.status
+            })
+            
+    except Exception as e:
+        return Response({
+            'error': _('Failed to approve contract'),
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAdminUser])
+def reject_contract(request, contract_id):
+    """
+    Отклоняет контракт админом.
+    
+    Права доступа:
+    - Требуется аутентификация
+    - Только админы
+    """
+    try:
+        with transaction.atomic():
+            contract = get_object_or_404(Contract, id=contract_id)
+            
+            # Проверяем, что контракт ожидает согласования
+            if contract.status != 'pending_approval':
+                return Response({
+                    'error': _('Contract must be pending approval to reject')
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            rejection_reason = request.data.get('reason', '')
+            if not rejection_reason:
+                return Response({
+                    'error': _('Rejection reason is required')
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Обновляем статус контракта
+            contract.status = 'rejected'
+            contract.rejection_reason = rejection_reason
+            contract.save()
+            
+            # Создаем запись в истории
+            ContractApprovalHistory.objects.create(
+                contract=contract,
+                action='rejected',
+                user=request.user,
+                reason=rejection_reason
+            )
+            
+            # Отправляем уведомление менеджеру
+            from .services import notify_manager_contract_rejected
+            notify_manager_contract_rejected(contract, rejection_reason)
+            
+            return Response({
+                'message': _('Contract rejected successfully'),
+                'contract_id': contract.id,
+                'status': contract.status
+            })
+            
+    except Exception as e:
+        return Response({
+            'error': _('Failed to reject contract'),
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def activate_contract(request, contract_id):
+    """
+    Активирует контракт менеджером (если стандартные условия) или админом.
+    
+    Права доступа:
+    - Требуется аутентификация
+    - Менеджеры могут активировать только стандартные контракты
+    - Админы могут активировать любые контракты
+    """
+    try:
+        with transaction.atomic():
+            contract = get_object_or_404(Contract, id=contract_id)
+            
+            # Проверяем права доступа
+            if not request.user.is_staff:
+                # Для менеджеров проверяем, что контракт стандартный
+                if not contract.can_manager_activate():
+                    return Response({
+                        'error': _('You can only activate contracts with standard conditions')
+                    }, status=status.HTTP_403_FORBIDDEN)
+                
+                # Проверяем, что менеджер связан с провайдером
+                if not BillingManagerProvider.objects.filter(
+                    billing_manager=request.user,
+                    provider=contract.provider,
+                    status='active'
+                ).exists():
+                    return Response({
+                        'error': _('You do not have permission to activate this contract')
+                    }, status=status.HTTP_403_FORBIDDEN)
+            
+            # Проверяем, что контракт в статусе черновика или одобрен
+            if contract.status not in ['draft', 'active']:
+                return Response({
+                    'error': _('Contract must be in draft or approved status to activate')
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Обновляем статус контракта
+            contract.status = 'active'
+            if not request.user.is_staff:
+                contract.approved_by = request.user
+                contract.approved_at = timezone.now()
+            contract.save()
+            
+            # Создаем запись в истории
+            ContractApprovalHistory.objects.create(
+                contract=contract,
+                action='activated',
+                user=request.user,
+                reason=request.data.get('reason', '')
+            )
+            
+            return Response({
+                'message': _('Contract activated successfully'),
+                'contract_id': contract.id,
+                'status': contract.status
+            })
+            
+    except Exception as e:
+        return Response({
+            'error': _('Failed to activate contract'),
+            'details': str(e)
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 

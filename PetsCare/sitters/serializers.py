@@ -8,9 +8,10 @@
 """
 
 from rest_framework import serializers
-from .models import SitterProfile, PetSittingAd, PetSittingResponse, PetSittingHistory, Review, PetSitting
+from .models import SitterProfile, PetSittingAd, PetSittingResponse, Review, PetSitting
 from users.models import User
 from django.utils.translation import gettext_lazy as _
+from .models import Message, Conversation
 
 
 class SitterProfileSerializer(serializers.ModelSerializer):
@@ -178,3 +179,86 @@ class ReviewSerializer(serializers.ModelSerializer):
             'id', 'history', 'author', 'rating', 'text', 'created_at'
         ]
         read_only_fields = ['id', 'created_at', 'author'] 
+
+
+class MessageSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для сообщений в чате.
+    """
+    sender_name = serializers.CharField(source='sender.get_full_name', read_only=True)
+    sender_avatar = serializers.CharField(source='sender.avatar', read_only=True)
+    
+    class Meta:
+        model = Message
+        fields = ['id', 'sender', 'sender_name', 'sender_avatar', 'text', 'created_at', 'is_read']
+        read_only_fields = ['sender', 'created_at', 'is_read']
+
+    def create(self, validated_data):
+        """Автоматически устанавливает отправителя"""
+        validated_data['sender'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class ConversationSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для диалогов.
+    """
+    participants = serializers.SerializerMethodField()
+    last_message = serializers.SerializerMethodField()
+    unread_count = serializers.SerializerMethodField()
+    other_participant = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Conversation
+        fields = ['id', 'participants', 'other_participant', 'last_message', 'unread_count', 'created_at', 'updated_at', 'is_active']
+        read_only_fields = ['created_at', 'updated_at']
+
+    def get_participants(self, obj):
+        """Получает список участников"""
+        return [
+            {
+                'id': user.id,
+                'name': user.get_full_name(),
+                'avatar': user.avatar
+            }
+            for user in obj.participants.all()
+        ]
+
+    def get_last_message(self, obj):
+        """Получает последнее сообщение"""
+        last_message = obj.messages.last()
+        if last_message:
+            return {
+                'id': last_message.id,
+                'text': last_message.text[:100] + '...' if len(last_message.text) > 100 else last_message.text,
+                'sender_name': last_message.sender.get_full_name(),
+                'created_at': last_message.created_at
+            }
+        return None
+
+    def get_unread_count(self, obj):
+        """Получает количество непрочитанных сообщений"""
+        user = self.context['request'].user
+        return obj.messages.filter(is_read=False).exclude(sender=user).count()
+
+    def get_other_participant(self, obj):
+        """Получает другого участника диалога"""
+        user = self.context['request'].user
+        other = obj.get_other_participant(user)
+        if other:
+            return {
+                'id': other.id,
+                'name': other.get_full_name(),
+                'avatar': other.avatar
+            }
+        return None
+
+
+class ConversationDetailSerializer(ConversationSerializer):
+    """
+    Детальный сериализатор для диалога с сообщениями.
+    """
+    messages = MessageSerializer(many=True, read_only=True)
+    
+    class Meta(ConversationSerializer.Meta):
+        fields = ConversationSerializer.Meta.fields + ['messages'] 

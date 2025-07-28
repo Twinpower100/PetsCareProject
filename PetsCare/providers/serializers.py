@@ -35,6 +35,8 @@ class ProviderSerializer(serializers.ModelSerializer):
     services = serializers.SerializerMethodField()
     employees = serializers.SerializerMethodField()
     distance = serializers.SerializerMethodField()
+    price_info = serializers.SerializerMethodField()
+    availability_info = serializers.SerializerMethodField()
     
     def get_services(self, obj):
         from .serializers import ProviderServiceSerializer
@@ -73,15 +75,158 @@ class ProviderSerializer(serializers.ModelSerializer):
         
         return None
     
+    def get_price_info(self, obj):
+        """
+        Возвращает информацию о ценах на услуги.
+        """
+        context = self.context
+        service_id = context.get('service_id')
+        
+        if not service_id:
+            return None
+        
+        try:
+            service_id = int(service_id)
+            provider_service = obj.provider_services.filter(
+                service_id=service_id,
+                is_active=True
+            ).first()
+            
+            if provider_service:
+                return {
+                    'service_id': service_id,
+                    'price': float(provider_service.price),
+                    'base_price': float(provider_service.base_price),
+                    'duration_minutes': provider_service.duration_minutes,
+                    'tech_break_minutes': provider_service.tech_break_minutes
+                }
+        except (ValueError, TypeError):
+            pass
+        
+        return None
+    
+    def get_availability_info(self, obj):
+        """
+        Возвращает информацию о доступности учреждения.
+        """
+        context = self.context
+        available_date = context.get('available_date')
+        available_time = context.get('available_time')
+        service_id = context.get('service_id')
+        
+        if not available_date or not available_time:
+            return None
+        
+        try:
+            from datetime import datetime, timedelta
+            from booking.models import Booking
+            
+            # Парсим дату и время
+            date_obj = datetime.strptime(available_date, '%Y-%m-%d').date()
+            time_obj = datetime.strptime(available_time, '%H:%M').time()
+            datetime_obj = datetime.combine(date_obj, time_obj)
+            
+            # Получаем день недели (0 = понедельник)
+            weekday = date_obj.weekday()
+            
+            # Проверяем расписание учреждения
+            provider_schedule = obj.schedules.filter(weekday=weekday).first()
+            if not provider_schedule or provider_schedule.is_closed:
+                return {
+                    'available': False,
+                    'reason': 'provider_closed',
+                    'message': _('Institution is closed on this day')
+                }
+            
+            # Проверяем время работы
+            if (provider_schedule.open_time and provider_schedule.close_time and
+                (time_obj < provider_schedule.open_time or time_obj > provider_schedule.close_time)):
+                return {
+                    'available': False,
+                    'reason': 'outside_hours',
+                    'message': f'Учреждение работает с {provider_schedule.open_time} до {provider_schedule.close_time}'
+                }
+            
+            # Проверяем доступность сотрудников
+            if service_id:
+                employees = obj.employees.filter(
+                    services__id=service_id,
+                    is_active=True
+                )
+                
+                available_employees = []
+                for employee in employees:
+                    # Проверяем расписание сотрудника
+                    employee_schedule = employee.schedules.filter(day_of_week=weekday).first()
+                    if not employee_schedule or not employee_schedule.is_working:
+                        continue
+                    
+                    # Проверяем время работы сотрудника
+                    if (employee_schedule.start_time and employee_schedule.end_time and
+                        (time_obj < employee_schedule.start_time or time_obj > employee_schedule.end_time)):
+                        continue
+                    
+                    # Проверяем, нет ли уже бронирования в это время
+                    slot_end_time = datetime_obj + timedelta(minutes=30)  # Предполагаем 30 минут
+                    conflicting_booking = Booking.objects.filter(
+                        employee=employee,
+                        scheduled_date=date_obj,
+                        scheduled_time__lt=slot_end_time.time(),
+                        scheduled_time__gt=datetime_obj.time(),
+                        status__in=['confirmed', 'pending']
+                    ).exists()
+                    
+                    if not conflicting_booking:
+                        available_employees.append({
+                            'id': employee.id,
+                            'name': f"{employee.user.first_name} {employee.user.last_name}",
+                            'position': employee.position
+                        })
+                
+                if available_employees:
+                    return {
+                        'available': True,
+                        'available_employees': available_employees,
+                        'message': f'Доступно {len(available_employees)} сотрудников'
+                    }
+                else:
+                    return {
+                        'available': False,
+                        'reason': 'no_available_employees',
+                        'message': _('No available employees at this time')
+                    }
+            else:
+                # Если услуга не указана, проверяем наличие работающих сотрудников
+                if obj.employees.filter(is_active=True).exists():
+                    return {
+                        'available': True,
+                        'message': _('There are working employees')
+                    }
+                else:
+                    return {
+                        'available': False,
+                        'reason': 'no_employees',
+                        'message': _('No working employees')
+                    }
+                    
+        except (ValueError, TypeError):
+            return {
+                'available': False,
+                'reason': 'error',
+                'message': _('Error checking availability')
+            }
+        
+        return None
+    
     class Meta:
         model = Provider
         fields = [
             'id', 'name', 'description', 'address', 'location',
             'phone_number', 'email', 'website', 'logo', 'rating',
             'is_active', 'created_at', 'updated_at', 'available_category_levels', 'available_categories',
-            'services', 'employees', 'distance'
+            'services', 'employees', 'distance', 'price_info', 'availability_info'
         ]
-        read_only_fields = ['created_at', 'updated_at', 'distance']
+        read_only_fields = ['created_at', 'updated_at', 'distance', 'price_info', 'availability_info']
 
     def validate_rating(self, value):
         """

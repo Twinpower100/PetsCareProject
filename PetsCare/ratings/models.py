@@ -246,6 +246,18 @@ class Review(models.Model):
         help_text=_('Whether the review is marked as suspicious')
     )
     
+    # Поля для Google Perspective API модерации
+    moderation_reason = models.TextField(
+        _('Moderation Reason'),
+        blank=True,
+        help_text=_('Reason for moderation decision')
+    )
+    toxicity_scores = models.JSONField(
+        _('Toxicity Scores'),
+        default=dict,
+        help_text=_('Toxicity scores from Google Perspective API')
+    )
+    
     # Временные метки
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)

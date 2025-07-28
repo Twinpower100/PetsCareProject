@@ -12,7 +12,8 @@ import logging
 from typing import Dict, Any
 from django.utils.translation import gettext as _
 from django.db import transaction
-from rest_framework import status, viewsets, permissions
+from django.db.models import Q
+from rest_framework import status, viewsets, permissions, serializers
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
@@ -798,6 +799,11 @@ class NotificationRuleViewSet(viewsets.ModelViewSet):
     - Создания и редактирования правил уведомлений
     - Тестирования правил
     - Получения статистики правил
+    
+    Защищен от гонки админов с помощью:
+    - @transaction.atomic для всех операций
+    - select_for_update() для блокировки записей
+    - Уникальные ограничения в модели
     """
     serializer_class = NotificationRuleSerializer
     permission_classes = [permissions.IsAdminUser]
@@ -811,7 +817,92 @@ class NotificationRuleViewSet(viewsets.ModelViewSet):
         """
         return NotificationRule.objects.all()
     
+    @transaction.atomic
+    def perform_create(self, serializer):
+        """
+        Создает новое правило уведомления с защитой от гонки.
+        
+        Args:
+            serializer: Сериализатор с данными правила
+        """
+        # Проверяем уникальность перед созданием
+        data = serializer.validated_data
+        existing_rule = NotificationRule.objects.filter(
+            event_type=data['event_type'],
+            condition=data['condition'],
+            template=data['template'],
+            inheritance=data['inheritance'],
+            user=data.get('user')
+        ).first()
+        
+        if existing_rule:
+            raise serializers.ValidationError(
+                _('A rule with these exact parameters already exists')
+            )
+        
+        # Создаем правило
+        rule = serializer.save(created_by=self.request.user)
+        
+        # Логируем создание
+        logger.info(
+            f"Notification rule created by {self.request.user.username}: "
+            f"event_type={rule.event_type}, template={rule.template.name}"
+        )
+    
+    @transaction.atomic
+    def perform_update(self, serializer):
+        """
+        Обновляет правило уведомления с защитой от гонки.
+        
+        Args:
+            serializer: Сериализатор с данными правила
+        """
+        rule = self.get_object()
+        
+        # Блокируем запись для обновления
+        with transaction.atomic():
+            locked_rule = NotificationRule.objects.select_for_update().get(pk=rule.pk)
+            
+            # Проверяем версию для оптимистичного блокирования
+            current_version = serializer.validated_data.get('version', rule.version)
+            if locked_rule.version != current_version:
+                raise serializers.ValidationError(
+                    _('Rule was modified by another administrator. Please refresh and try again.')
+                )
+            
+            # Обновляем правило
+            updated_rule = serializer.save()
+            
+            # Логируем обновление
+            logger.info(
+                f"Notification rule updated by {self.request.user.username}: "
+                f"rule_id={updated_rule.id}, event_type={updated_rule.event_type}, "
+                f"version={updated_rule.version}"
+            )
+    
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        """
+        Удаляет правило уведомления с защитой от гонки.
+        
+        Args:
+            instance: Правило для удаления
+        """
+        # Блокируем запись перед удалением
+        with transaction.atomic():
+            locked_rule = NotificationRule.objects.select_for_update().get(pk=instance.pk)
+            
+            # Логируем удаление
+            logger.info(
+                f"Notification rule deleted by {self.request.user.username}: "
+                f"rule_id={locked_rule.id}, event_type={locked_rule.event_type}"
+            )
+            
+            # Удаляем правило
+            locked_rule.delete()
+    
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def test(self, request, pk=None):
         """
         Тестирует правило с тестовым контекстом.
@@ -824,7 +915,8 @@ class NotificationRuleViewSet(viewsets.ModelViewSet):
             Response: Результат тестирования
         """
         try:
-            rule = self.get_object()
+            # Блокируем правило для тестирования
+            rule = NotificationRule.objects.select_for_update().get(pk=pk)
             test_context = request.data.get('context', {})
             
             rule_service = NotificationRuleService()
@@ -837,6 +929,11 @@ class NotificationRuleViewSet(viewsets.ModelViewSet):
                 'message': _('Rule would trigger') if result else _('Rule would not trigger')
             })
             
+        except NotificationRule.DoesNotExist:
+            return Response({
+                'success': False,
+                'message': _('Rule not found')
+            }, status=404)
         except Exception as e:
             logger.error(f"Error testing notification rule {pk}: {e}")
             return Response({
@@ -913,4 +1010,57 @@ class NotificationRuleViewSet(viewsets.ModelViewSet):
         return Response({
             'success': True,
             'templates': template_data
-        }) 
+        })
+    
+    @action(detail=False, methods=['post'])
+    @transaction.atomic
+    def bulk_update(self, request):
+        """
+        Массовое обновление правил уведомлений.
+        
+        Args:
+            request: HTTP запрос с данными для обновления
+            
+        Returns:
+            Response: Результат массового обновления
+        """
+        try:
+            rules_data = request.data.get('rules', [])
+            updated_count = 0
+            errors = []
+            
+            for rule_data in rules_data:
+                rule_id = rule_data.get('id')
+                if not rule_id:
+                    errors.append(f"Rule ID is required for bulk update")
+                    continue
+                
+                try:
+                    # Блокируем правило для обновления
+                    rule = NotificationRule.objects.select_for_update().get(pk=rule_id)
+                    
+                    # Обновляем поля
+                    for field, value in rule_data.items():
+                        if field != 'id' and hasattr(rule, field):
+                            setattr(rule, field, value)
+                    
+                    rule.save()
+                    updated_count += 1
+                    
+                except NotificationRule.DoesNotExist:
+                    errors.append(f"Rule with ID {rule_id} not found")
+                except Exception as e:
+                    errors.append(f"Error updating rule {rule_id}: {str(e)}")
+            
+            return Response({
+                'success': True,
+                'updated_count': updated_count,
+                'errors': errors
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in bulk update of notification rules: {e}")
+            return Response({
+                'success': False,
+                'message': _('Failed to perform bulk update')
+            }, status=500) 

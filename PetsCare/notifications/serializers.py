@@ -353,7 +353,7 @@ class NotificationTestSerializer(serializers.Serializer):
         choices=Notification.PRIORITY_CHOICES,
         default='low',
         help_text=_('Test notification priority')
-    )
+    ) 
 
 
 class NotificationRuleSerializer(serializers.ModelSerializer):
@@ -387,9 +387,9 @@ class NotificationRuleSerializer(serializers.ModelSerializer):
             'id', 'event_type', 'event_type_display', 'condition', 'template',
             'template_name', 'priority', 'priority_display', 'channels',
             'is_active', 'inheritance', 'inheritance_display', 'user',
-            'created_by', 'created_by_username', 'created_at', 'updated_at'
+            'created_by', 'created_by_username', 'created_at', 'updated_at', 'version'
         ]
-        read_only_fields = ['created_by', 'created_at', 'updated_at']
+        read_only_fields = ['created_by', 'created_at', 'updated_at', 'version']
     
     def validate(self, data):
         """
@@ -432,6 +432,23 @@ class NotificationRuleSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     _('Invalid channel: {}').format(channel)
                 )
+        
+        # Проверяем уникальность правила (для создания)
+        if self.instance is None:  # Только для создания новых правил
+            from django.db import transaction
+            with transaction.atomic():
+                existing_rule = NotificationRule.objects.filter(
+                    event_type=data.get('event_type'),
+                    condition=data.get('condition'),
+                    template=data.get('template'),
+                    inheritance=data.get('inheritance'),
+                    user=data.get('user')
+                ).first()
+                
+                if existing_rule:
+                    raise serializers.ValidationError(
+                        _('A rule with these exact parameters already exists')
+                    )
         
         return data
     

@@ -30,6 +30,9 @@ from django.core.validators import RegexValidator
 from django.utils import timezone
 import uuid
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class PetType(models.Model):
@@ -774,3 +777,298 @@ class DocumentType(models.Model):
         super().clean()
         if self.requires_expiry_date and not self.requires_issue_date:
             raise ValidationError(_('Issue date is required if expiry date is required'))
+
+
+class PetOwnerIncapacity(models.Model):
+    """
+    Модель для отслеживания недееспособности владельцев питомцев.
+    
+    Особенности:
+    - Отслеживание статуса недееспособности
+    - История изменений статуса
+    - Привязка к питомцам и владельцам
+    - Автоматические действия
+    """
+    STATUS_CHOICES = [
+        ('pending_confirmation', _('Pending Confirmation')),
+        ('confirmed_incapacity', _('Confirmed Incapacity')),
+        ('pet_lost', _('Pet Lost/Deceased')),
+        ('resolved', _('Resolved')),
+        ('auto_deleted', _('Auto Deleted')),
+        ('coowner_assigned', _('Co-owner Assigned as Main')),
+    ]
+    
+    FLOW_CHOICES = [
+        ('automatic_detection', _('Automatic Detection')),
+        ('coowner_report_pet_lost', _('Co-owner Report: Pet Lost')),
+        ('coowner_report_owner_incapacity', _('Co-owner Report: Owner Incapacity')),
+    ]
+    
+    pet = models.ForeignKey(
+        Pet,
+        on_delete=models.CASCADE,
+        verbose_name=_('Pet'),
+        related_name='incapacity_records'
+    )
+    main_owner = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        verbose_name=_('Main Owner'),
+        related_name='incapacity_records_as_main'
+    )
+    reported_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        verbose_name=_('Reported By'),
+        related_name='incapacity_reports',
+        help_text=_('User who reported the incapacity')
+    )
+    
+    status = models.CharField(
+        _('Status'),
+        max_length=30,
+        choices=STATUS_CHOICES,
+        default='pending_confirmation'
+    )
+    
+    flow_type = models.CharField(
+        _('Flow Type'),
+        max_length=30,
+        choices=FLOW_CHOICES,
+        help_text=_('Type of incapacity handling flow')
+    )
+    
+    # Детали недееспособности
+    incapacity_reason = models.TextField(
+        _('Incapacity Reason'),
+        blank=True,
+        help_text=_('Reason for incapacity (if reported by co-owner)')
+    )
+    
+    # Даты и сроки
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    confirmation_deadline = models.DateTimeField(
+        _('Confirmation Deadline'),
+        help_text=_('Deadline for pet status confirmation')
+    )
+    resolved_at = models.DateTimeField(
+        _('Resolved At'),
+        null=True,
+        blank=True
+    )
+    
+    # Автоматические действия
+    auto_action_taken = models.CharField(
+        _('Auto Action Taken'),
+        max_length=50,
+        blank=True,
+        help_text=_('Automatic action that was taken')
+    )
+    new_main_owner = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_('New Main Owner'),
+        related_name='incapacity_records_as_new_main',
+        help_text=_('New main owner assigned automatically')
+    )
+    
+    # Уведомления
+    notifications_sent = models.JSONField(
+        _('Notifications Sent'),
+        default=list,
+        help_text=_('List of notification IDs sent to owners')
+    )
+    
+    # Метаданные
+    notes = models.TextField(
+        _('Notes'),
+        blank=True,
+        help_text=_('Additional notes about this incapacity case')
+    )
+    
+    class Meta:
+        verbose_name = _('Pet Owner Incapacity')
+        verbose_name_plural = _('Pet Owner Incapacities')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status']),
+            models.Index(fields=['flow_type']),
+            models.Index(fields=['confirmation_deadline']),
+            models.Index(fields=['pet', 'main_owner']),
+        ]
+    
+    def __str__(self):
+        return f"Incapacity case for {self.pet.name} (Owner: {self.main_owner}) - {self.get_status_display()}"
+    
+    def save(self, *args, **kwargs):
+        """Автоматически устанавливаем дедлайн подтверждения при создании"""
+        if not self.pk and not self.confirmation_deadline:
+            from billing.models import BlockingSystemSettings
+            settings = BlockingSystemSettings.get_settings()
+            deadline_days = settings.get_pet_confirmation_deadline_days()
+            self.confirmation_deadline = timezone.now() + timedelta(days=deadline_days)
+        super().save(*args, **kwargs)
+    
+    def is_deadline_passed(self):
+        """Проверяет, истек ли дедлайн подтверждения"""
+        return timezone.now() > self.confirmation_deadline
+    
+    def can_take_auto_action(self):
+        """Проверяет, можно ли выполнить автоматическое действие"""
+        return (self.status == 'pending_confirmation' and 
+                self.is_deadline_passed())
+    
+    def take_auto_action(self):
+        """Выполняет автоматическое действие на основе настроек"""
+        from billing.models import BlockingSystemSettings
+        settings = BlockingSystemSettings.get_settings()
+        
+        if not self.can_take_auto_action():
+            return False
+        
+        try:
+            if settings.should_auto_delete_unconfirmed_pets():
+                # Удаляем питомца
+                self.status = 'auto_deleted'
+                self.auto_action_taken = 'pet_deleted'
+                self.resolved_at = timezone.now()
+                self.save()
+                
+                # Удаляем питомца
+                self.pet.delete()
+                return True
+                
+            elif settings.should_auto_assign_coowner_as_main():
+                # Назначаем совладельца основным
+                coowners = self.pet.owners.exclude(id=self.main_owner.id)
+                if coowners.exists():
+                    new_main = self._select_coowner_by_priority(coowners, settings)
+                    if new_main:
+                        self.pet.main_owner = new_main
+                        self.pet.save()
+                        
+                        self.status = 'coowner_assigned'
+                        self.auto_action_taken = 'coowner_assigned'
+                        self.new_main_owner = new_main
+                        self.resolved_at = timezone.now()
+                        self.save()
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error taking auto action for incapacity case {self.id}: {str(e)}")
+            return False
+    
+    def _select_coowner_by_priority(self, coowners, settings):
+        """Выбирает совладельца по приоритету"""
+        priority = settings.get_coowner_assignment_priority()
+        
+        if priority == 'oldest':
+            return coowners.order_by('date_joined').first()
+        elif priority == 'newest':
+            return coowners.order_by('-date_joined').first()
+        elif priority == 'random':
+            return coowners.order_by('?').first()
+        
+        return coowners.first()
+
+
+class PetIncapacityNotification(models.Model):
+    """
+    Модель для отслеживания уведомлений о недееспособности владельцев.
+    
+    Особенности:
+    - Отслеживание статуса отправки
+    - Различные типы уведомлений
+    - История уведомлений
+    """
+    NOTIFICATION_TYPES = [
+        ('confirmation_request', _('Confirmation Request')),
+        ('deadline_warning', _('Deadline Warning')),
+        ('auto_action_notification', _('Auto Action Notification')),
+        ('resolution_notification', _('Resolution Notification')),
+    ]
+    
+    STATUS_CHOICES = [
+        ('pending', _('Pending')),
+        ('sent', _('Sent')),
+        ('failed', _('Failed')),
+    ]
+    
+    incapacity_record = models.ForeignKey(
+        PetOwnerIncapacity,
+        on_delete=models.CASCADE,
+        verbose_name=_('Incapacity Record'),
+        related_name='notifications'
+    )
+    
+    notification_type = models.CharField(
+        _('Notification Type'),
+        max_length=30,
+        choices=NOTIFICATION_TYPES
+    )
+    
+    status = models.CharField(
+        _('Status'),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    
+    # Получатели уведомления
+    recipient = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        verbose_name=_('Recipient'),
+        related_name='incapacity_notifications_received'
+    )
+    
+    # Содержание уведомления
+    subject = models.CharField(
+        _('Subject'),
+        max_length=200
+    )
+    message = models.TextField(_('Message'))
+    
+    # Время отправки
+    sent_at = models.DateTimeField(
+        _('Sent At'),
+        null=True,
+        blank=True
+    )
+    
+    # Ошибки при отправке
+    error_message = models.TextField(
+        _('Error Message'),
+        blank=True
+    )
+    
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    
+    class Meta:
+        verbose_name = _('Pet Incapacity Notification')
+        verbose_name_plural = _('Pet Incapacity Notifications')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['status']),
+            models.Index(fields=['notification_type']),
+            models.Index(fields=['recipient']),
+        ]
+    
+    def __str__(self):
+        return f"{self.get_notification_type_display()} to {self.recipient} - {self.get_status_display()}"
+    
+    def mark_as_sent(self):
+        """Отмечает уведомление как отправленное"""
+        self.status = 'sent'
+        self.sent_at = timezone.now()
+        self.save()
+    
+    def mark_as_failed(self, error_message=''):
+        """Отмечает уведомление как неудачное"""
+        self.status = 'failed'
+        self.error_message = error_message
+        self.save()

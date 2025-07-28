@@ -112,6 +112,62 @@ class ContractType(models.Model):
     description = models.TextField(_('Description'), blank=True)
     is_active = models.BooleanField(_('Is Active'), default=True)
 
+    # Стандартные условия для автоматической сверки
+    standard_commission_percent = models.DecimalField(
+        _('Standard Commission Percent'),
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_('Standard commission percentage for this contract type')
+    )
+    standard_commission_fixed = models.DecimalField(
+        _('Standard Commission Fixed'),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_('Standard fixed commission amount for this contract type')
+    )
+    standard_payment_terms_days = models.PositiveIntegerField(
+        _('Standard Payment Terms (Days)'),
+        default=30,
+        help_text=_('Standard payment terms in days for this contract type')
+    )
+    standard_conditions_text = models.TextField(
+        _('Standard Conditions Text'),
+        blank=True,
+        help_text=_('Standard terms and conditions text for this contract type')
+    )
+    
+    # Стандартные пороги блокировки
+    standard_debt_threshold = models.DecimalField(
+        _('Standard Debt Threshold'),
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_('Standard debt threshold for this contract type')
+    )
+    standard_overdue_threshold_1 = models.PositiveIntegerField(
+        _('Standard Overdue Threshold 1 (Days)'),
+        null=True,
+        blank=True,
+        help_text=_('Standard overdue threshold 1 for this contract type')
+    )
+    standard_overdue_threshold_2 = models.PositiveIntegerField(
+        _('Standard Overdue Threshold 2 (Days)'),
+        null=True,
+        blank=True,
+        help_text=_('Standard overdue threshold 2 for this contract type')
+    )
+    standard_overdue_threshold_3 = models.PositiveIntegerField(
+        _('Standard Overdue Threshold 3 (Days)'),
+        null=True,
+        blank=True,
+        help_text=_('Standard overdue threshold 3 for this contract type')
+    )
+
     class Meta:
         verbose_name = _('Contract Type')
         verbose_name_plural = _('Contract Types')
@@ -141,7 +197,9 @@ class Contract(models.Model):
     """
     STATUS_CHOICES = [
         ('draft', _('Draft')),
+        ('pending_approval', _('Pending Approval')),
         ('active', _('Active')),
+        ('rejected', _('Rejected')),
         ('suspended', _('Suspended')),
         ('terminated', _('Terminated')),
     ]
@@ -232,26 +290,18 @@ class Contract(models.Model):
         _('Debt Threshold'),
         max_digits=12,
         decimal_places=2,
-        null=True,
-        blank=True,
         help_text=_('Maximum allowed debt amount in contract currency')
     )
     overdue_threshold_1 = models.PositiveIntegerField(
         _('Overdue Threshold 1 (Days)'),
-        null=True,
-        blank=True,
         help_text=_('Days overdue for information notification')
     )
     overdue_threshold_2 = models.PositiveIntegerField(
         _('Overdue Threshold 2 (Days)'),
-        null=True,
-        blank=True,
         help_text=_('Days overdue for exclusion from search')
     )
     overdue_threshold_3 = models.PositiveIntegerField(
         _('Overdue Threshold 3 (Days)'),
-        null=True,
-        blank=True,
         help_text=_('Days overdue for full blocking')
     )
     
@@ -265,6 +315,34 @@ class Contract(models.Model):
         _('Blocking Exclusion Reason'),
         blank=True,
         help_text=_('Reason for excluding this contract from automatic blocking')
+    )
+    
+    # Поля для workflow согласования
+    submitted_for_approval_at = models.DateTimeField(
+        _('Submitted For Approval At'),
+        null=True,
+        blank=True,
+        help_text=_('When the contract was submitted for approval')
+    )
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_('Approved By'),
+        related_name='approved_contracts',
+        help_text=_('User who approved the contract')
+    )
+    approved_at = models.DateTimeField(
+        _('Approved At'),
+        null=True,
+        blank=True,
+        help_text=_('When the contract was approved')
+    )
+    rejection_reason = models.TextField(
+        _('Rejection Reason'),
+        blank=True,
+        help_text=_('Reason for rejecting the contract')
     )
 
     class Meta:
@@ -439,8 +517,8 @@ class Contract(models.Model):
         - 2: исключение из поиска
         - 3: полная блокировка
         """
-        if not self.debt_threshold and not any([self.overdue_threshold_1, self.overdue_threshold_2, self.overdue_threshold_3]):
-            return 0
+        # Наследуем глобальные пороги, если они не установлены
+        self.inherit_global_thresholds()
             
         debt_info = self.calculate_debt()
         overdue_debt = debt_info['overdue_debt']
@@ -660,6 +738,137 @@ class Contract(models.Model):
         # Применяем шаблон только при создании нового договора
         if is_new and self.status == 'draft':
             self.apply_blocking_template()
+    
+    def inherit_global_thresholds(self):
+        """Наследует глобальные пороги блокировки из настроек системы."""
+        from .models import BlockingSystemSettings
+        
+        settings = BlockingSystemSettings.get_settings()
+        
+        # Наследуем глобальные пороги, если они не установлены
+        if not hasattr(self, 'debt_threshold') or self.debt_threshold is None:
+            self.debt_threshold = settings.get_global_debt_threshold()
+        
+        if not hasattr(self, 'overdue_threshold_1') or self.overdue_threshold_1 is None:
+            self.overdue_threshold_1 = settings.get_global_overdue_threshold_1()
+        
+        if not hasattr(self, 'overdue_threshold_2') or self.overdue_threshold_2 is None:
+            self.overdue_threshold_2 = settings.get_global_overdue_threshold_2()
+        
+        if not hasattr(self, 'overdue_threshold_3') or self.overdue_threshold_3 is None:
+            self.overdue_threshold_3 = settings.get_global_overdue_threshold_3()
+    
+    def is_standard_conditions(self) -> bool:
+        """
+        Проверяет, соответствуют ли условия контракта стандартным для его типа.
+        
+        Returns:
+            bool: True если условия стандартные, False если есть отклонения
+        """
+        if not self.contract_type:
+            return False
+        
+        # Проверяем соответствие порогов блокировки
+        if (self.contract_type.standard_debt_threshold is not None and 
+            self.debt_threshold != self.contract_type.standard_debt_threshold):
+            return False
+        
+        if (self.contract_type.standard_overdue_threshold_1 is not None and 
+            self.overdue_threshold_1 != self.contract_type.standard_overdue_threshold_1):
+            return False
+        
+        if (self.contract_type.standard_overdue_threshold_2 is not None and 
+            self.overdue_threshold_2 != self.contract_type.standard_overdue_threshold_2):
+            return False
+        
+        if (self.contract_type.standard_overdue_threshold_3 is not None and 
+            self.overdue_threshold_3 != self.contract_type.standard_overdue_threshold_3):
+            return False
+        
+        # Проверяем соответствие условий оплаты
+        if (self.contract_type.standard_payment_terms_days is not None and 
+            self.payment_deferral_days != self.contract_type.standard_payment_terms_days):
+            return False
+        
+        # Проверяем соответствие текста условий
+        if (self.contract_type.standard_conditions_text and 
+            self.terms.strip() != self.contract_type.standard_conditions_text.strip()):
+            return False
+        
+        return True
+    
+    def can_manager_activate(self) -> bool:
+        """
+        Проверяет, может ли менеджер активировать контракт.
+        
+        Returns:
+            bool: True если менеджер может активировать, False если нужна согласование админа
+        """
+        return self.status == 'draft' and self.is_standard_conditions()
+
+
+class ContractApprovalHistory(models.Model):
+    """
+    История согласований контрактов.
+    
+    Особенности:
+    - Отслеживание всех действий с контрактом
+    - Логирование изменений и причин
+    - Поддержка аудита и compliance
+    """
+    APPROVAL_ACTIONS = [
+        ('created', _('Created')),
+        ('submitted', _('Submitted for approval')),
+        ('approved', _('Approved')),
+        ('rejected', _('Rejected')),
+        ('activated', _('Activated')),
+    ]
+    
+    contract = models.ForeignKey(
+        Contract,
+        on_delete=models.CASCADE,
+        verbose_name=_('Contract'),
+        related_name='approval_history'
+    )
+    action = models.CharField(
+        _('Action'),
+        max_length=20,
+        choices=APPROVAL_ACTIONS,
+        help_text=_('Type of action performed')
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        verbose_name=_('User'),
+        help_text=_('User who performed the action')
+    )
+    timestamp = models.DateTimeField(
+        _('Timestamp'),
+        auto_now_add=True,
+        help_text=_('When the action was performed')
+    )
+    reason = models.TextField(
+        _('Reason'),
+        blank=True,
+        help_text=_('Reason for the action')
+    )
+    changes_summary = models.JSONField(
+        _('Changes Summary'),
+        default=dict,
+        help_text=_('Summary of changes made')
+    )
+    
+    class Meta:
+        verbose_name = _('Contract Approval History')
+        verbose_name_plural = _('Contract Approval Histories')
+        ordering = ['-timestamp']
+        indexes = [
+            models.Index(fields=['contract', 'action']),
+            models.Index(fields=['user', 'timestamp']),
+        ]
+    
+    def __str__(self):
+        return f"{self.contract.number} - {self.get_action_display()} by {self.user.username}"
 
 
 class ContractCommission(models.Model):
@@ -2345,11 +2554,6 @@ class BlockingSystemSettings(models.Model):
     )
     
     # Настройки автоматического снятия блокировок
-    auto_resolve_threshold_days = models.PositiveIntegerField(
-        _('Auto Resolve Threshold (Days)'),
-        default=0,
-        help_text=_('Automatically resolve blockings after N days (0 = disabled)')
-    )
     auto_resolve_on_payment = models.BooleanField(
         _('Auto Resolve On Payment'),
         default=True,
@@ -2378,6 +2582,67 @@ class BlockingSystemSettings(models.Model):
         _('Log Resolutions'),
         default=True,
         help_text=_('Whether to log blocking resolutions')
+    )
+    
+    # Глобальные пороги блокировки для наследования в контрактах
+    global_debt_threshold = models.DecimalField(
+        _('Global Debt Threshold'),
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_('Global debt threshold for automatic inheritance in contracts')
+    )
+    global_overdue_threshold_1 = models.PositiveIntegerField(
+        _('Global Overdue Threshold 1 (Days)'),
+        null=True,
+        blank=True,
+        help_text=_('Global overdue threshold 1 for automatic inheritance in contracts')
+    )
+    global_overdue_threshold_2 = models.PositiveIntegerField(
+        _('Global Overdue Threshold 2 (Days)'),
+        null=True,
+        blank=True,
+        help_text=_('Global overdue threshold 2 for automatic inheritance in contracts')
+    )
+    global_overdue_threshold_3 = models.PositiveIntegerField(
+        _('Global Overdue Threshold 3 (Days)'),
+        null=True,
+        blank=True,
+        help_text=_('Global overdue threshold 3 for automatic inheritance in contracts')
+    )
+    
+    # Настройки обработки недееспособности владельцев
+    inactive_owner_threshold_days = models.PositiveIntegerField(
+        _('Inactive Owner Threshold (Days)'),
+        default=180,
+        help_text=_('Number of days of inactivity to consider owner as inactive (default: 6 months)')
+    )
+    pet_confirmation_deadline_days = models.PositiveIntegerField(
+        _('Pet Confirmation Deadline (Days)'),
+        default=30,
+        help_text=_('Number of days to wait for pet status confirmation before taking action (default: 1 month)')
+    )
+    auto_delete_unconfirmed_pets = models.BooleanField(
+        _('Auto Delete Unconfirmed Pets'),
+        default=True,
+        help_text=_('Automatically delete pets if no confirmation received within deadline')
+    )
+    auto_assign_coowner_as_main = models.BooleanField(
+        _('Auto Assign Co-owner as Main'),
+        default=True,
+        help_text=_('Automatically assign a co-owner as main owner if primary owner is inactive')
+    )
+    coowner_assignment_priority = models.CharField(
+        _('Co-owner Assignment Priority'),
+        max_length=20,
+        choices=[
+            ('oldest', _('Oldest co-owner')),
+            ('newest', _('Newest co-owner')),
+            ('random', _('Random co-owner')),
+        ],
+        default='oldest',
+        help_text=_('Priority method for assigning co-owner as main owner')
     )
     
     # Метаданные
@@ -2438,6 +2703,54 @@ class BlockingSystemSettings(models.Model):
     def is_working_day(self, date):
         """Проверяет, является ли дата рабочим днем."""
         return date.weekday() in self.get_working_days()
+    
+    def get_global_debt_threshold(self):
+        """Возвращает глобальный порог долга из настроек или дефолтное значение."""
+        if self.global_debt_threshold is not None:
+            return self.global_debt_threshold
+        from django.conf import settings
+        return settings.BLOCKING_SETTINGS.get('DEFAULT_DEBT_THRESHOLD', 1000.00)
+    
+    def get_global_overdue_threshold_1(self):
+        """Возвращает глобальный порог просрочки 1 из настроек или дефолтное значение."""
+        if self.global_overdue_threshold_1 is not None:
+            return self.global_overdue_threshold_1
+        from django.conf import settings
+        return settings.BLOCKING_SETTINGS.get('DEFAULT_OVERDUE_THRESHOLD_1', 7)
+    
+    def get_global_overdue_threshold_2(self):
+        """Возвращает глобальный порог просрочки 2 из настроек или дефолтное значение."""
+        if self.global_overdue_threshold_2 is not None:
+            return self.global_overdue_threshold_2
+        from django.conf import settings
+        return settings.BLOCKING_SETTINGS.get('DEFAULT_OVERDUE_THRESHOLD_2', 14)
+    
+    def get_global_overdue_threshold_3(self):
+        """Возвращает глобальный порог просрочки 3 из настроек или дефолтное значение."""
+        if self.global_overdue_threshold_3 is not None:
+            return self.global_overdue_threshold_3
+        from django.conf import settings
+        return settings.BLOCKING_SETTINGS.get('DEFAULT_OVERDUE_THRESHOLD_3', 30)
+    
+    def get_inactive_owner_threshold_days(self):
+        """Возвращает порог неактивности владельца в днях"""
+        return self.inactive_owner_threshold_days
+    
+    def get_pet_confirmation_deadline_days(self):
+        """Возвращает дедлайн подтверждения статуса питомца в днях"""
+        return self.pet_confirmation_deadline_days
+    
+    def should_auto_delete_unconfirmed_pets(self):
+        """Возвращает True если нужно автоматически удалять неподтвержденных питомцев"""
+        return self.auto_delete_unconfirmed_pets
+    
+    def should_auto_assign_coowner_as_main(self):
+        """Возвращает True если нужно автоматически назначать совладельца основным"""
+        return self.auto_assign_coowner_as_main
+    
+    def get_coowner_assignment_priority(self):
+        """Возвращает приоритет назначения совладельца"""
+        return self.coowner_assignment_priority
 
 
 class BlockingSchedule(models.Model):

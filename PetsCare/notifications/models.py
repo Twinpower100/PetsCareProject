@@ -624,6 +624,11 @@ class NotificationRule(models.Model):
     )
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+    version = models.PositiveIntegerField(
+        _('Version'),
+        default=1,
+        help_text=_('Version number for optimistic locking')
+    )
     
     class Meta:
         verbose_name = _('Notification Rule')
@@ -637,6 +642,14 @@ class NotificationRule(models.Model):
         unique_together = [
             ('event_type', 'condition', 'template', 'inheritance', 'user'),
         ]
+    
+    def save(self, *args, **kwargs):
+        """
+        Переопределяет метод save для автоматического увеличения версии.
+        """
+        if self.pk:  # Обновление существующего правила
+            self.version += 1
+        super().save(*args, **kwargs)
     
     def __str__(self):
         """

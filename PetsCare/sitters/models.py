@@ -279,3 +279,101 @@ class Review(models.Model):
         Возвращает строковое представление отзыва.
         """
         return f"Review by {self.author} for {self.history} ({self.rating})" 
+
+
+class Conversation(models.Model):
+    """
+    Модель диалога между владельцем и ситтером.
+    Связывает участников диалога с объявлением или передержкой.
+    """
+    participants = models.ManyToManyField(
+        User,
+        related_name='conversations',
+        verbose_name=_('Participants')
+    )
+    pet_sitting_ad = models.ForeignKey(
+        PetSittingAd,
+        on_delete=models.CASCADE,
+        related_name='conversations',
+        verbose_name=_('Pet Sitting Ad'),
+        null=True,
+        blank=True
+    )
+    pet_sitting = models.ForeignKey(
+        PetSitting,
+        on_delete=models.CASCADE,
+        related_name='conversations',
+        verbose_name=_('Pet Sitting'),
+        null=True,
+        blank=True
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_('Created At')
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name=_('Updated At')
+    )
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name=_('Is Active')
+    )
+
+    class Meta:
+        verbose_name = _('Conversation')
+        verbose_name_plural = _('Conversations')
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        if self.pet_sitting_ad:
+            return f"Chat for {self.pet_sitting_ad.pet} (Ad)"
+        elif self.pet_sitting:
+            return f"Chat for {self.pet_sitting.pet} (Sitting)"
+        return f"Chat {self.id}"
+
+    def get_other_participant(self, user):
+        """Получает другого участника диалога"""
+        return self.participants.exclude(id=user.id).first()
+
+
+class Message(models.Model):
+    """
+    Модель сообщения в диалоге.
+    """
+    conversation = models.ForeignKey(
+        Conversation,
+        on_delete=models.CASCADE,
+        related_name='messages',
+        verbose_name=_('Conversation')
+    )
+    sender = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='sent_messages',
+        verbose_name=_('Sender')
+    )
+    text = models.TextField(
+        verbose_name=_('Text')
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_('Created At')
+    )
+    is_read = models.BooleanField(
+        default=False,
+        verbose_name=_('Is Read')
+    )
+
+    class Meta:
+        verbose_name = _('Message')
+        verbose_name_plural = _('Messages')
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"Message from {self.sender} at {self.created_at}"
+
+    def mark_as_read(self):
+        """Отмечает сообщение как прочитанное"""
+        self.is_read = True
+        self.save() 

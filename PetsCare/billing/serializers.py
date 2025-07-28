@@ -165,8 +165,41 @@ class ContractCreateSerializer(serializers.ModelSerializer):
         model = Contract
         fields = [
             'provider', 'contract_type', 'number', 'start_date',
-            'end_date', 'terms', 'document'
+            'end_date', 'terms', 'document', 'currency', 'base_currency',
+            'payment_deferral_days', 'debt_threshold', 'overdue_threshold_1',
+            'overdue_threshold_2', 'overdue_threshold_3'
         ]
+    
+    def create(self, validated_data):
+        """Создает контракт с автоматическим наследованием глобальных порогов и стандартных условий."""
+        contract = super().create(validated_data)
+        
+        # Наследуем глобальные пороги, если они не указаны
+        if not validated_data.get('debt_threshold'):
+            contract.inherit_global_thresholds()
+        
+        # Наследуем стандартные условия из типа контракта, если они не указаны
+        if contract.contract_type:
+            if not validated_data.get('payment_deferral_days') and contract.contract_type.standard_payment_terms_days:
+                contract.payment_deferral_days = contract.contract_type.standard_payment_terms_days
+            
+            if not validated_data.get('terms') and contract.contract_type.standard_conditions_text:
+                contract.terms = contract.contract_type.standard_conditions_text
+            
+            if not validated_data.get('debt_threshold') and contract.contract_type.standard_debt_threshold:
+                contract.debt_threshold = contract.contract_type.standard_debt_threshold
+            
+            if not validated_data.get('overdue_threshold_1') and contract.contract_type.standard_overdue_threshold_1:
+                contract.overdue_threshold_1 = contract.contract_type.standard_overdue_threshold_1
+            
+            if not validated_data.get('overdue_threshold_2') and contract.contract_type.standard_overdue_threshold_2:
+                contract.overdue_threshold_2 = contract.contract_type.standard_overdue_threshold_2
+            
+            if not validated_data.get('overdue_threshold_3') and contract.contract_type.standard_overdue_threshold_3:
+                contract.overdue_threshold_3 = contract.contract_type.standard_overdue_threshold_3
+        
+        contract.save()
+        return contract
 
 
 class PaymentSerializer(serializers.ModelSerializer):

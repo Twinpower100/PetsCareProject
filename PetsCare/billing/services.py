@@ -356,3 +356,148 @@ Notes: {blocking.notes}
                 stats['errors'].append(f"Error checking provider {provider.name}: {str(e)}")
         
         return stats 
+
+
+# Функции уведомлений для workflow согласования контрактов
+def notify_admins_contract_approval_needed(contract):
+    """
+    Отправляет уведомления админам о необходимости согласования контракта.
+    
+    Args:
+        contract: Объект Contract
+    """
+    from django.contrib.auth import get_user_model
+    from notifications.models import Notification
+    
+    User = get_user_model()
+    
+    # Получаем всех админов
+    admins = User.objects.filter(is_staff=True, is_active=True)
+    
+    for admin in admins:
+        Notification.objects.create(
+            user=admin,
+            title=_('Contract Approval Required'),
+            message=_('Contract %(contract_number)s for provider %(provider_name)s requires your approval.') % {
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name
+            },
+            notification_type='contract_approval',
+            data={
+                'contract_id': contract.id,
+                'provider_id': contract.provider.id,
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name
+            }
+        )
+
+
+def notify_manager_contract_approved(contract):
+    """
+    Отправляет уведомление менеджеру об одобрении контракта.
+    
+    Args:
+        contract: Объект Contract
+    """
+    from notifications.models import Notification
+    
+    # Уведомляем создателя контракта
+    if contract.created_by:
+        Notification.objects.create(
+            user=contract.created_by,
+            title=_('Contract Approved'),
+            message=_('Your contract %(contract_number)s for provider %(provider_name)s has been approved.') % {
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name
+            },
+            notification_type='contract_approved',
+            data={
+                'contract_id': contract.id,
+                'provider_id': contract.provider.id,
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name
+            }
+        )
+    
+    # Уведомляем менеджеров по биллингу для этого провайдера
+    from .models import BillingManagerProvider
+    
+    billing_managers = BillingManagerProvider.objects.filter(
+        provider=contract.provider,
+        status='active'
+    )
+    
+    for billing_manager in billing_managers:
+        Notification.objects.create(
+            user=billing_manager.billing_manager,
+            title=_('Contract Approved'),
+            message=_('Contract %(contract_number)s for provider %(provider_name)s has been approved.') % {
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name
+            },
+            notification_type='contract_approved',
+            data={
+                'contract_id': contract.id,
+                'provider_id': contract.provider.id,
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name
+            }
+        )
+
+
+def notify_manager_contract_rejected(contract, rejection_reason):
+    """
+    Отправляет уведомление менеджеру об отклонении контракта.
+    
+    Args:
+        contract: Объект Contract
+        rejection_reason: Причина отклонения
+    """
+    from notifications.models import Notification
+    
+    # Уведомляем создателя контракта
+    if contract.created_by:
+        Notification.objects.create(
+            user=contract.created_by,
+            title=_('Contract Rejected'),
+            message=_('Your contract %(contract_number)s for provider %(provider_name)s has been rejected. Reason: %(reason)s') % {
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name,
+                'reason': rejection_reason
+            },
+            notification_type='contract_rejected',
+            data={
+                'contract_id': contract.id,
+                'provider_id': contract.provider.id,
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name,
+                'rejection_reason': rejection_reason
+            }
+        )
+    
+    # Уведомляем менеджеров по биллингу для этого провайдера
+    from .models import BillingManagerProvider
+    
+    billing_managers = BillingManagerProvider.objects.filter(
+        provider=contract.provider,
+        status='active'
+    )
+    
+    for billing_manager in billing_managers:
+        Notification.objects.create(
+            user=billing_manager.billing_manager,
+            title=_('Contract Rejected'),
+            message=_('Contract %(contract_number)s for provider %(provider_name)s has been rejected. Reason: %(reason)s') % {
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name,
+                'reason': rejection_reason
+            },
+            notification_type='contract_rejected',
+            data={
+                'contract_id': contract.id,
+                'provider_id': contract.provider.id,
+                'contract_number': contract.number,
+                'provider_name': contract.provider.name,
+                'rejection_reason': rejection_reason
+            }
+        ) 

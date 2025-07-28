@@ -16,6 +16,8 @@ from users.models import User
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
+from .models import PetOwnerIncapacity, PetIncapacityNotification
+
 
 class MedicalRecordSerializer(serializers.ModelSerializer):
     """
@@ -144,6 +146,7 @@ class PetSerializer(serializers.ModelSerializer):
     - Расчет возраста
     - Связь с медицинскими записями
     - Управление доступом
+    - Поддержка расширенного поиска
     """
     owner = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(),
@@ -153,6 +156,16 @@ class PetSerializer(serializers.ModelSerializer):
     medical_records = MedicalRecordSerializer(many=True, read_only=True)
     records = PetRecordSerializer(many=True, read_only=True)
     access_list = PetAccessSerializer(many=True, read_only=True)
+    
+    # Дополнительные поля для поиска
+    pet_type_name = serializers.CharField(source='pet_type.name', read_only=True)
+    breed_name = serializers.CharField(source='breed.name', read_only=True)
+    main_owner_name = serializers.CharField(source='main_owner.get_full_name', read_only=True)
+    main_owner_email = serializers.CharField(source='main_owner.email', read_only=True)
+    records_count = serializers.SerializerMethodField()
+    last_visit_date = serializers.SerializerMethodField()
+    has_medical_conditions = serializers.SerializerMethodField()
+    has_special_needs = serializers.SerializerMethodField()
 
     class Meta:
         model = Pet
@@ -161,7 +174,9 @@ class PetSerializer(serializers.ModelSerializer):
             'owner',
             'name',
             'pet_type',
+            'pet_type_name',
             'breed',
+            'breed_name',
             'birth_date',
             'age',
             'weight',
@@ -172,14 +187,44 @@ class PetSerializer(serializers.ModelSerializer):
             'medical_records',
             'records',
             'access_list',
+            'main_owner_name',
+            'main_owner_email',
+            'records_count',
+            'last_visit_date',
+            'has_medical_conditions',
+            'has_special_needs',
             'created_at',
             'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'created_at', 'updated_at', 'pet_type_name', 'breed_name',
+            'main_owner_name', 'main_owner_email', 'records_count', 'last_visit_date',
+            'has_medical_conditions', 'has_special_needs'
+        ]
 
     def get_age(self, obj):
         """Возвращает возраст питомца"""
         return obj.get_age()
+    
+    def get_records_count(self, obj):
+        """Возвращает количество записей питомца"""
+        context = self.context
+        if context.get('include_records_count', False):
+            return obj.records.count()
+        return None
+    
+    def get_last_visit_date(self, obj):
+        """Возвращает дату последнего посещения"""
+        last_record = obj.records.order_by('-date').first()
+        return last_record.date if last_record else None
+    
+    def get_has_medical_conditions(self, obj):
+        """Возвращает True если у питомца есть медицинские условия"""
+        return bool(obj.medical_conditions and obj.medical_conditions != {})
+    
+    def get_has_special_needs(self, obj):
+        """Возвращает True если у питомца есть особые потребности"""
+        return bool(obj.special_needs and obj.special_needs != {})
 
     def validate(self, data):
         """Проверяет корректность данных"""
@@ -343,3 +388,52 @@ class PetOwnershipInviteSerializer(serializers.ModelSerializer):
             'id', 'pet', 'email', 'token', 'expires_at', 'type', 'invited_by', 'is_used', 'created_at'
         ]
         read_only_fields = ['id', 'token', 'invited_by', 'is_used', 'created_at'] 
+
+
+class PetOwnerIncapacitySerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для модели PetOwnerIncapacity.
+    """
+    pet_name = serializers.CharField(source='pet.name', read_only=True)
+    main_owner_name = serializers.CharField(source='main_owner.get_full_name', read_only=True)
+    main_owner_email = serializers.CharField(source='main_owner.email', read_only=True)
+    reported_by_name = serializers.CharField(source='reported_by.get_full_name', read_only=True)
+    reported_by_email = serializers.CharField(source='reported_by.email', read_only=True)
+    new_main_owner_name = serializers.CharField(source='new_main_owner.get_full_name', read_only=True)
+    new_main_owner_email = serializers.CharField(source='new_main_owner.email', read_only=True)
+    
+    class Meta:
+        model = PetOwnerIncapacity
+        fields = [
+            'id', 'pet', 'pet_name', 'main_owner', 'main_owner_name', 'main_owner_email',
+            'reported_by', 'reported_by_name', 'reported_by_email', 'status', 'flow_type',
+            'incapacity_reason', 'created_at', 'confirmation_deadline', 'resolved_at',
+            'auto_action_taken', 'new_main_owner', 'new_main_owner_name', 'new_main_owner_email',
+            'notifications_sent', 'notes'
+        ]
+        read_only_fields = [
+            'id', 'pet_name', 'main_owner_name', 'main_owner_email', 'reported_by_name', 
+            'reported_by_email', 'created_at', 'confirmation_deadline', 'resolved_at',
+            'auto_action_taken', 'new_main_owner_name', 'new_main_owner_email', 
+            'notifications_sent'
+        ]
+
+
+class PetIncapacityNotificationSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для модели PetIncapacityNotification.
+    """
+    recipient_name = serializers.CharField(source='recipient.get_full_name', read_only=True)
+    recipient_email = serializers.CharField(source='recipient.email', read_only=True)
+    
+    class Meta:
+        model = PetIncapacityNotification
+        fields = [
+            'id', 'incapacity_record', 'notification_type', 'status', 'recipient',
+            'recipient_name', 'recipient_email', 'subject', 'message', 'sent_at',
+            'error_message', 'created_at'
+        ]
+        read_only_fields = [
+            'id', 'recipient_name', 'recipient_email', 'subject', 'message', 'sent_at',
+            'error_message', 'created_at'
+        ] 

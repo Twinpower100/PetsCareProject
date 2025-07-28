@@ -201,62 +201,7 @@ def send_blocking_notifications():
         return {'error': str(e)}
 
 
-@shared_task
-def auto_resolve_blockings():
-    """
-    Автоматически снимает блокировки по истечении срока.
-    
-    Returns:
-        dict: Статистика снятия блокировок
-    """
-    try:
-        # Получаем настройки системы
-        settings = BlockingSystemSettings.get_settings()
-        
-        if not settings.auto_resolve_threshold_days:
-            logger.info("Auto resolve is disabled")
-            return {'status': 'disabled', 'message': 'Auto resolve is disabled'}
-        
-        # Находим блокировки для автоматического снятия
-        threshold_date = timezone.now() - timezone.timedelta(
-            days=settings.auto_resolve_threshold_days
-        )
-        
-        blockings = ProviderBlocking.objects.filter(
-            status='active',
-            blocked_at__lte=threshold_date
-        )
-        
-        service = MultiLevelBlockingService()
-        stats = {
-            'total_blockings': blockings.count(),
-            'resolved': 0,
-            'errors': []
-        }
-        
-        for blocking in blockings:
-            try:
-                service.resolve_blocking(
-                    blocking,
-                    resolved_by=None,
-                    notes=f"Automatically resolved after {settings.auto_resolve_threshold_days} days"
-                )
-                stats['resolved'] += 1
-                logger.info(f"Auto-resolved blocking for provider {blocking.provider.name}")
-                
-            except Exception as e:
-                stats['errors'].append(f"Error resolving blocking {blocking.id}: {str(e)}")
-                logger.error(f"Error auto-resolving blocking {blocking.id}: {str(e)}")
-        
-        logger.info(f"Auto resolve completed: {stats}")
-        return {
-            'status': 'completed',
-            'statistics': stats
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in auto_resolve_blockings: {str(e)}")
-        return {'error': str(e)}
+
 
 
 @shared_task

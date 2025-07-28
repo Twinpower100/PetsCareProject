@@ -22,7 +22,7 @@ from django.db import transaction
 from .models import Rating, Review, Complaint, ComplaintResponse, SuspiciousActivity
 from .services import (
     RatingCalculationService, ComplaintProcessingService,
-    SuspiciousActivityDetectionService, ReviewModerationService,
+    SuspiciousActivityDetectionService, GooglePerspectiveModerationService,
     ReviewService
 )
 from .serializers import (
@@ -182,7 +182,7 @@ class ReviewViewSet(viewsets.ModelViewSet):
         review = serializer.save(author=self.request.user)
         
         # Запускаем модерацию
-        service = ReviewModerationService()
+        service = GooglePerspectiveModerationService()
         service.moderate_review(review)
         
         # Проверяем подозрительную активность
@@ -195,7 +195,7 @@ class ReviewViewSet(viewsets.ModelViewSet):
         Модерирует отзыв.
         """
         review = self.get_object()
-        service = ReviewModerationService()
+        service = GooglePerspectiveModerationService()
         
         try:
             moderated_review = service.moderate_review(review)
