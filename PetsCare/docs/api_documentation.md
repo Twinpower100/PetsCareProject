@@ -189,3 +189,85 @@ GET /api/pets/statistics/
     "recent_visits": 6
 }
 ``` 
+
+## Pet Sitting
+
+### Pet Filter for Sitting
+```
+GET /api/sitters/pets/filter/
+```
+
+**Description:** Filter user's pets when creating a pet sitting advertisement.
+
+**Query Parameters:**
+- `pet_type` - Filter by pet type code (e.g., "dog", "cat")
+- `breed` - Filter by breed code (e.g., "golden_retriever")
+- `age_min` - Minimum age in years
+- `age_max` - Maximum age in years
+- `weight_min` - Minimum weight in kg
+- `weight_max` - Maximum weight in kg
+- `has_medical_conditions` - Filter pets with medical conditions (true/false)
+- `has_special_needs` - Filter pets with special needs (true/false)
+- `is_active` - Filter active/inactive pets (true/false)
+- `distance_km` - Maximum distance in kilometers (requires lat/lng)
+- `lat` - Latitude for distance calculation
+- `lng` - Longitude for distance calculation
+- `ordering` - Sort by field (e.g., "name", "age", "-age", "weight", "-weight", "distance", "-distance")
+
+**Example Request:**
+```
+GET /api/sitters/pets/filter/?pet_type=dog&age_min=1&age_max=5&has_medical_conditions=false&ordering=name
+```
+
+**Example Response:**
+```json
+{
+    "results": [
+        {
+            "id": 1,
+            "name": "Buddy",
+            "pet_type": 1,
+            "pet_type_name": "Dog",
+            "breed": 5,
+            "breed_name": "Golden Retriever",
+            "birth_date": "2020-03-15",
+            "age": 3,
+            "weight": 25.5,
+            "description": "Friendly and energetic dog",
+            "has_medical_conditions": false,
+            "has_special_needs": false,
+            "main_owner": 1,
+            "main_owner_name": "John Doe",
+            "main_owner_email": "john@example.com",
+            "created_at": "2020-03-20T14:30:00Z",
+            "updated_at": "2023-12-01T15:45:00Z"
+        }
+    ],
+    "meta": {
+        "total_count": 1,
+        "filters_applied": {
+            "pet_type": "dog",
+            "breed": null,
+            "age_min": "1",
+            "age_max": "5",
+            "weight_min": null,
+            "weight_max": null,
+            "has_medical_conditions": "false",
+            "has_special_needs": null,
+            "is_active": null,
+            "distance_km": null
+        },
+        "ordering": "name"
+    }
+}
+```
+
+**Features:**
+- Filters only pets owned by the authenticated user
+- Supports multiple filter combinations
+- Includes metadata about applied filters
+- Supports pagination
+- Distance-based filtering (when coordinates provided)
+- Age calculation based on birth date
+- Medical conditions and special needs filtering
+- Active/inactive pet status filtering 

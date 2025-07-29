@@ -5,9 +5,10 @@ API представления для модуля передержки пито
 1. Управления профилями передержки
 2. Поиска передержек
 3. Получения профиля текущего пользователя
+4. Фильтрации питомцев при создании объявления о передержке
 """
 
-from rest_framework import viewsets, permissions, status
+from rest_framework import viewsets, permissions, status, generics
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
@@ -16,7 +17,7 @@ from .models import SitterProfile, PetSittingAd, PetSittingResponse, Review, Pet
 from .serializers import SitterProfileSerializer, PetSittingAdSerializer, PetSittingResponseSerializer, ReviewSerializer, PetSittingSerializer
 from django.shortcuts import get_object_or_404
 from django.db import models
-from django.db.models import Avg
+from django.db.models import Avg, Q
 from notifications.models import Notification
 from notifications.tasks import send_notification
 from django.utils.translation import gettext_lazy as _
@@ -25,6 +26,10 @@ from access.models import PetAccess
 from .models import Conversation, Message
 from .serializers import ConversationSerializer, ConversationDetailSerializer, MessageSerializer
 from django.contrib.auth import get_user_model
+from pets.models import Pet, PetType, Breed
+from pets.serializers import PetSerializer
+from datetime import date, timedelta
+from django.utils import timezone
 
 User = get_user_model()
 
@@ -904,3 +909,191 @@ class ConversationViewSet(viewsets.ModelViewSet):
                     pass
         
         return Response(ConversationDetailSerializer(conversation, context={'request': request}).data) 
+
+
+class PetFilterForSittingAPIView(generics.ListAPIView):
+    """
+    API endpoint для фильтрации питомцев пользователя при создании объявления о передержке.
+    
+    Поддерживает фильтрацию по:
+    - Типу питомца (pet_type)
+    - Породе (breed)
+    - Возрасту (age_min, age_max)
+    - Весу (weight_min, weight_max)
+    - Медицинским условиям (has_medical_conditions)
+    - Особым потребностям (has_special_needs)
+    - Статусу (is_active)
+    - Удаленности (distance_km)
+    
+    Поддерживает сортировку по:
+    - Возрасту (age)
+    - Весу (weight)
+    - Удаленности (distance)
+    """
+    serializer_class = PetSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """
+        Возвращает отфильтрованный список питомцев пользователя.
+        
+        Returns:
+            QuerySet: Отфильтрованный список питомцев
+        """
+        user = self.request.user
+        
+        # Базовый queryset - только питомцы пользователя
+        queryset = Pet.objects.filter(
+            Q(main_owner=user) | Q(owners=user)
+        ).distinct()
+        
+        # Фильтрация по типу питомца
+        pet_type = self.request.query_params.get('pet_type')
+        if pet_type:
+            queryset = queryset.filter(pet_type__code=pet_type)
+        
+        # Фильтрация по породе
+        breed = self.request.query_params.get('breed')
+        if breed:
+            queryset = queryset.filter(breed__code=breed)
+        
+        # Фильтрация по возрасту
+        age_min = self.request.query_params.get('age_min')
+        age_max = self.request.query_params.get('age_max')
+        
+        if age_min:
+            max_birth_date = timezone.now().date() - timedelta(days=int(age_min) * 365)
+            queryset = queryset.filter(birth_date__lte=max_birth_date)
+        
+        if age_max:
+            min_birth_date = timezone.now().date() - timedelta(days=(int(age_max) + 1) * 365)
+            queryset = queryset.filter(birth_date__gt=min_birth_date)
+        
+        # Фильтрация по весу
+        weight_min = self.request.query_params.get('weight_min')
+        weight_max = self.request.query_params.get('weight_max')
+        
+        if weight_min:
+            queryset = queryset.filter(weight__gte=float(weight_min))
+        
+        if weight_max:
+            queryset = queryset.filter(weight__lte=float(weight_max))
+        
+        # Фильтрация по медицинским условиям
+        has_medical_conditions = self.request.query_params.get('has_medical_conditions')
+        if has_medical_conditions is not None:
+            if has_medical_conditions.lower() == 'true':
+                queryset = queryset.filter(
+                    ~Q(medical_conditions={}) & ~Q(medical_conditions__isnull=True)
+                )
+            else:
+                queryset = queryset.filter(
+                    Q(medical_conditions={}) | Q(medical_conditions__isnull=True)
+                )
+        
+        # Фильтрация по особым потребностям
+        has_special_needs = self.request.query_params.get('has_special_needs')
+        if has_special_needs is not None:
+            if has_special_needs.lower() == 'true':
+                queryset = queryset.filter(
+                    ~Q(special_needs={}) & ~Q(special_needs__isnull=True)
+                )
+            else:
+                queryset = queryset.filter(
+                    Q(special_needs={}) | Q(special_needs__isnull=True)
+                )
+        
+        # Фильтрация по статусу (активные/неактивные)
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            if is_active.lower() == 'true':
+                # Активные питомцы - без недееспособности владельцев
+                queryset = queryset.exclude(
+                    incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
+                )
+            else:
+                # Неактивные питомцы - с недееспособностью владельцев
+                queryset = queryset.filter(
+                    incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
+                )
+        
+        # Фильтрация по удаленности (если переданы координаты)
+        distance_km = self.request.query_params.get('distance_km')
+        lat = self.request.query_params.get('lat')
+        lng = self.request.query_params.get('lng')
+        
+        if distance_km and lat and lng:
+            try:
+                from geolocation.utils import calculate_distance
+                
+                # Получаем координаты пользователя
+                user_lat = float(lat)
+                user_lng = float(lng)
+                max_distance = float(distance_km)
+                
+                # Фильтруем питомцев по расстоянию (если у них есть геолокация)
+                # Пока это заглушка - в реальной реализации нужно добавить геолокацию к питомцам
+                # queryset = queryset.filter(...)
+                
+            except (ValueError, ImportError):
+                # Если ошибка в координатах или нет модуля геолокации, игнорируем фильтр
+                pass
+        
+        # Сортировка
+        ordering = self.request.query_params.get('ordering', 'name')
+        if ordering in ['age', '-age']:
+            if ordering == 'age':
+                queryset = queryset.order_by('birth_date')
+            else:
+                queryset = queryset.order_by('-birth_date')
+        elif ordering in ['weight', '-weight']:
+            queryset = queryset.order_by(ordering)
+        elif ordering in ['distance', '-distance']:
+            # Сортировка по удаленности (заглушка)
+            # В реальной реализации нужно добавить расчет расстояния
+            pass
+        else:
+            # По умолчанию сортируем по имени
+            queryset = queryset.order_by('name')
+        
+        return queryset
+    
+    def list(self, request, *args, **kwargs):
+        """
+        Возвращает отфильтрованный список питомцев с дополнительной информацией.
+        
+        Returns:
+            Response: Список питомцев с метаданными
+        """
+        queryset = self.get_queryset()
+        
+        # Пагинация
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(queryset, many=True)
+        
+        # Добавляем метаданные
+        response_data = {
+            'results': serializer.data,
+            'meta': {
+                'total_count': queryset.count(),
+                'filters_applied': {
+                    'pet_type': request.query_params.get('pet_type'),
+                    'breed': request.query_params.get('breed'),
+                    'age_min': request.query_params.get('age_min'),
+                    'age_max': request.query_params.get('age_max'),
+                    'weight_min': request.query_params.get('weight_min'),
+                    'weight_max': request.query_params.get('weight_max'),
+                    'has_medical_conditions': request.query_params.get('has_medical_conditions'),
+                    'has_special_needs': request.query_params.get('has_special_needs'),
+                    'is_active': request.query_params.get('is_active'),
+                    'distance_km': request.query_params.get('distance_km'),
+                },
+                'ordering': request.query_params.get('ordering', 'name')
+            }
+        }
+        
+        return Response(response_data) 
