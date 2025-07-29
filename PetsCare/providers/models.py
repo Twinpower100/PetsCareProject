@@ -31,6 +31,8 @@ from geopy.distance import geodesic
 from decimal import Decimal
 from django.core.exceptions import ValidationError
 from users.models import User
+from django.contrib.gis.db import models as gis_models
+from django.contrib.gis.geos import Point
 
 
 class Provider(models.Model):
@@ -82,22 +84,8 @@ class Provider(models.Model):
     )
     
     # Координаты (теперь получаются из структурированного адреса)
-    latitude = models.DecimalField(
-        _('Latitude'),
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True,
-        help_text=_('Latitude coordinate from structured address')
-    )
-    longitude = models.DecimalField(
-        _('Longitude'),
-        max_digits=9,
-        decimal_places=6,
-        null=True,
-        blank=True,
-        help_text=_('Longitude coordinate from structured address')
-    )
+    point = gis_models.PointField(srid=4326, verbose_name=_('Point'), null=True, blank=True)
+    
     phone_number = models.CharField(
         _('Phone Number'),
         max_length=20,
@@ -167,7 +155,7 @@ class Provider(models.Model):
             models.Index(fields=['address']),
             models.Index(fields=['rating']),
             models.Index(fields=['is_active']),
-            models.Index(fields=['latitude', 'longitude']),
+            gis_models.Index(fields=['point'], name='idx_provider_point'),
             models.Index(fields=['exclude_from_blocking_checks']),
         ]
 
@@ -190,11 +178,10 @@ class Provider(models.Model):
         """
         # Если есть структурированный адрес и он валидирован, берем координаты из него
         if self.structured_address and self.structured_address.is_validated:
-            if self.structured_address.latitude and self.structured_address.longitude:
-                self.latitude = self.structured_address.latitude
-                self.longitude = self.structured_address.longitude
+            if self.structured_address.point:
+                self.point = self.structured_address.point
         # Иначе используем старое поле address для обратной совместимости
-        elif not (self.latitude and self.longitude) and self.address:
+        elif not self.point and self.address:
             try:
                 # Инициализация клиента Google Maps
                 gmaps = googlemaps.Client(key=settings.GOOGLE_MAPS_API_KEY)
@@ -205,8 +192,7 @@ class Provider(models.Model):
                 if geocode_result:
                     # Получение координат из результата
                     location = geocode_result[0]['geometry']['location']
-                    self.latitude = Decimal(str(location['lat']))
-                    self.longitude = Decimal(str(location['lng']))
+                    self.point = Point(location['lng'], location['lat'], srid=4326)
             except Exception as e:
                 # В случае ошибки сохраняем без координат
                 print(f"Geocoding error: {e}")
@@ -224,13 +210,11 @@ class Provider(models.Model):
         Returns:
             float: Расстояние в километрах или None, если координаты не указаны
         """
-        if not (self.latitude and self.longitude):
+        if not self.point:
             return None
         
-        return geodesic(
-            (float(self.latitude), float(self.longitude)),
-            (float(lat), float(lon))
-        ).kilometers
+        target_point = Point(lon, lat, srid=4326)
+        return self.point.distance(target_point) * 111.32  # Convert to km
 
     @classmethod
     def find_nearest(cls, lat, lon, radius=10, limit=10):
@@ -246,26 +230,23 @@ class Provider(models.Model):
         Returns:
             list: Список кортежей (provider, distance) с ближайшими учреждениями
         """
-        providers = cls.objects.filter(is_active=True).exclude(
-            latitude__isnull=True,
-            longitude__isnull=True
-        )
+        from django.contrib.gis.geos import Point
+        from django.contrib.gis.db.models.functions import Distance
         
-        # Вычисляем расстояния и сортируем
-        providers_with_distance = [
-            (provider, provider.distance_to(lat, lon))
-            for provider in providers
-        ]
+        search_point = Point(lon, lat)
         
-        # Фильтруем по радиусу и сортируем по расстоянию
-        nearest = [
-            (provider, distance) 
-            for provider, distance in providers_with_distance
-            if distance is not None and distance <= radius
-        ]
-        nearest.sort(key=lambda x: x[1])
+        # Используем PostGIS для поиска ближайших учреждений
+        providers = cls.objects.filter(
+            is_active=True,
+            point__isnull=False
+        ).filter(
+            point__distance_lte=(search_point, radius * 1000)  # radius в метрах
+        ).annotate(
+            distance=Distance('point', search_point)
+        ).order_by('distance')[:limit]
         
-        return nearest[:limit]
+        # Возвращаем список кортежей (provider, distance)
+        return [(provider, provider.distance.m) for provider in providers]
 
     def get_available_categories(self):
         """

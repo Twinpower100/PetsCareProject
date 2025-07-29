@@ -89,6 +89,12 @@ class Service(models.Model):
         help_text=_('Days before the procedure to send a reminder')
     )
     
+    requires_license = models.BooleanField(
+        _('Requires License'),
+        default=False,
+        help_text=_('Whether this service requires special licensing or certification')
+    )
+    
     is_active = models.BooleanField(
         _('Is Active'),
         default=True,

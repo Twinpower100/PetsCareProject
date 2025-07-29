@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'django.contrib.sites',
+    'django.contrib.gis',  # PostGIS support for spatial operations
     
     # Third party apps
     'rest_framework',
@@ -112,10 +113,10 @@ TEMPLATES = [
     },
 ]
 
-# Настройки базы данных PostgreSQL
+# Настройки базы данных PostgreSQL с PostGIS
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.postgresql',
+        'ENGINE': 'django.contrib.gis.db.backends.postgis',
         'NAME': config('DB_NAME'),
         'USER': config('DB_USER'),
         'PASSWORD': config('DB_PASSWORD'),

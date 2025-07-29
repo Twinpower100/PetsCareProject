@@ -35,7 +35,7 @@ class LocationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Location
         fields = [
-            'id', 'user', 'address', 'latitude', 'longitude',
+            'id', 'user', 'address', 'point',
             'city', 'country', 'postal_code', 'created_at'
         ]
         read_only_fields = ['id', 'user', 'created_at']
@@ -92,9 +92,9 @@ class AddressSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'street_number', 'route', 'locality', 'administrative_area_level_1',
             'administrative_area_level_2', 'country', 'postal_code', 'formatted_address',
-            'latitude', 'longitude', 'is_validated', 'validation_status', 'created_at', 'updated_at'
+            'point', 'is_validated', 'validation_status', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'formatted_address', 'latitude', 'longitude', 
+        read_only_fields = ['id', 'formatted_address', 'point', 
                            'is_validated', 'validation_status', 'created_at', 'updated_at']
 
     def validate(self, attrs):

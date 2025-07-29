@@ -745,13 +745,13 @@ class UserSearchByDistanceAPIView(generics.ListAPIView):
         
         # Получаем пользователей в радиусе
         users_with_distance = filter_by_distance(
-            queryset, lat, lon, radius, 'address__latitude', 'address__longitude'
+            queryset, lat, lon, radius, 'address__point'
         )
         
         # Если пользователь не найден по основному адресу, ищем по адресу провайдера
         if not users_with_distance:
             users_with_distance = filter_by_distance(
-                queryset, lat, lon, radius, 'provider_address__latitude', 'provider_address__longitude'
+                queryset, lat, lon, radius, 'provider_address__point'
             )
         
         # Возвращаем только объекты пользователей (расстояния будут в сериализаторе)
@@ -849,13 +849,13 @@ class SitterSearchByDistanceAPIView(generics.ListAPIView):
         
         # Получаем ситтеров в радиусе
         sitters_with_distance = filter_by_distance(
-            queryset, lat, lon, radius, 'address__latitude', 'address__longitude'
+            queryset, lat, lon, radius, 'address__point'
         )
         
         # Если ситтер не найден по основному адресу, ищем по адресу провайдера
         if not sitters_with_distance:
             sitters_with_distance = filter_by_distance(
-                queryset, lat, lon, radius, 'provider_address__latitude', 'provider_address__longitude'
+                queryset, lat, lon, radius, 'provider_address__point'
             )
         
         # Сортируем по расстоянию и рейтингу

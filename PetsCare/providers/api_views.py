@@ -46,6 +46,7 @@ from .permissions import IsEmployee
 from django.core.exceptions import ValidationError
 from datetime import datetime, timedelta
 from geolocation.utils import filter_by_distance, validate_coordinates, calculate_distance
+from django.contrib.gis.geos import Point
 from django.db.models import Q
 from rest_framework.decorators import api_view
 from rest_framework.decorators import permission_classes
@@ -629,7 +630,7 @@ class ProviderSearchByDistanceAPIView(generics.ListAPIView):
         
         # Получаем провайдеров в радиусе
         providers_with_distance = filter_by_distance(
-            queryset, lat, lon, radius, 'address__latitude', 'address__longitude'
+            queryset, lat, lon, radius, 'address__point'
         )
         
         # Сортировка
@@ -801,13 +802,13 @@ class SitterAdvancedSearchByDistanceAPIView(generics.ListAPIView):
         
         # Получаем ситтеров в радиусе
         sitters_with_distance = filter_by_distance(
-            queryset, lat, lon, radius, 'address__latitude', 'address__longitude'
+            queryset, lat, lon, radius, 'address__point'
         )
         
         # Если ситтер не найден по основному адресу, ищем по адресу провайдера
         if not sitters_with_distance:
             sitters_with_distance = filter_by_distance(
-                queryset, lat, lon, radius, 'provider_address__latitude', 'provider_address__longitude'
+                queryset, lat, lon, radius, 'provider_address__point'
             )
         
         # Сортируем по расстоянию, рейтингу и цене
@@ -1397,8 +1398,8 @@ def search_providers_map_availability(request):
         # Get providers in radius
         providers = Provider.objects.filter(is_active=True)
         
-        # Filter by distance
-        providers = filter_by_distance(providers, latitude, longitude, radius)
+        # Filter by distance using PostGIS
+        providers = filter_by_distance(providers, latitude, longitude, radius, 'address__point')
         
         # Filter by rating
         if min_rating:
@@ -1445,16 +1446,10 @@ def search_providers_map_availability(request):
         providers_with_availability = []
         
         for provider in providers:
-            # Calculate distance
-            if hasattr(provider, 'address') and provider.address:
-                provider_lat = provider.address.latitude
-                provider_lon = provider.address.longitude
-                
-                if provider_lat and provider_lon:
-                    distance = calculate_distance(latitude, longitude, provider_lat, provider_lon)
-                    distance = round(distance, 2) if distance else None
-                else:
-                    distance = None
+            # Calculate distance using PostGIS
+            if hasattr(provider, 'address') and provider.address and provider.address.point:
+                distance = provider.address.point.distance(Point(longitude, latitude)) * 111.32  # Convert to km
+                distance = round(distance, 2) if distance else None
             else:
                 distance = None
             

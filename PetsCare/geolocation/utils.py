@@ -94,30 +94,66 @@ def filter_by_distance(
     center_lat: float,
     center_lon: float,
     radius_km: float,
-    lat_field: str = 'latitude',
-    lon_field: str = 'longitude'
+    point_field: str = 'point'
 ) -> List[Tuple[Any, float]]:
     """
-    Фильтрует QuerySet по расстоянию от центральной точки.
+    Фильтрует QuerySet по расстоянию от центральной точки используя PostGIS.
     
     Args:
         queryset: QuerySet для фильтрации
         center_lat: Широта центральной точки
         center_lon: Долгота центральной точки
         radius_km: Радиус поиска в километрах
-        lat_field: Название поля с широтой
-        lon_field: Название поля с долготой
+        point_field: Название поля с PointField
         
     Returns:
         Список кортежей (объект, расстояние) в радиусе
     """
+    try:
+        center_point = Point(center_lon, center_lat, srid=4326)
+        
+        # Используем PostGIS геооператоры для фильтрации
+        filtered_queryset = queryset.filter(
+            **{f'{point_field}__distance_lte': (center_point, radius_km * 1000)}
+        ).annotate(
+            distance=Distance(point_field, center_point)
+        ).order_by('distance')
+        
+        # Конвертируем в список кортежей для совместимости
+        results = []
+        for obj in filtered_queryset:
+            # Конвертируем расстояние из метров в километры
+            distance_km = float(obj.distance.km) if obj.distance else 0
+            results.append((obj, distance_km))
+        
+        return results
+        
+    except Exception as e:
+        print(f"PostGIS filter error: {e}")
+        # Fallback к старому методу если PostGIS недоступен
+        return _fallback_filter_by_distance(
+            queryset, center_lat, center_lon, radius_km, point_field
+        )
+
+
+def _fallback_filter_by_distance(
+    queryset,
+    center_lat: float,
+    center_lon: float,
+    radius_km: float,
+    point_field: str = 'point'
+) -> List[Tuple[Any, float]]:
+    """
+    Fallback метод для фильтрации по расстоянию без PostGIS.
+    """
     results = []
     
     for obj in queryset:
-        lat = getattr(obj, lat_field, None)
-        lon = getattr(obj, lon_field, None)
+        point = getattr(obj, point_field, None)
         
-        if lat is not None and lon is not None:
+        if point is not None:
+            # Используем координаты из Point объекта
+            lat, lon = point.coords
             distance = calculate_distance(center_lat, center_lon, lat, lon)
             if distance is not None and distance <= radius_km:
                 results.append((obj, distance))
@@ -163,20 +199,16 @@ def create_distance_annotation(
     queryset,
     center_lat: float,
     center_lon: float,
-    lat_field: str = 'latitude',
-    lon_field: str = 'longitude'
+    point_field: str = 'point'
 ):
     """
-    Добавляет аннотацию с расстоянием к QuerySet.
-    
-    Требует GeoDjango для работы с пространственными полями.
+    Добавляет аннотацию с расстоянием к QuerySet используя PostGIS.
     
     Args:
         queryset: QuerySet для аннотации
         center_lat: Широта центральной точки
         center_lon: Долгота центральной точки
-        lat_field: Название поля с широтой
-        lon_field: Название поля с долготой
+        point_field: Название поля с PointField
         
     Returns:
         QuerySet с аннотацией distance
@@ -184,10 +216,11 @@ def create_distance_annotation(
     try:
         center_point = Point(center_lon, center_lat, srid=4326)
         return queryset.annotate(
-            distance=Distance(f'{lat_field}__{lon_field}', center_point)
+            distance=Distance(point_field, center_point)
         )
     except Exception as e:
-        print(f"Distance annotation error: {e}")
+        print(f"PostGIS annotation error: {e}")
+        # Возвращаем исходный queryset если PostGIS недоступен
         return queryset
 
 
@@ -283,37 +316,68 @@ def generate_search_cache_key(search_type: str, **params) -> str:
 
 
 def optimize_geospatial_query(queryset, center_lat: float, center_lon: float, 
-                             radius_km: float, lat_field: str = 'latitude', 
-                             lon_field: str = 'longitude') -> Any:
+                             radius_km: float, point_field: str = 'point') -> Any:
     """
-    Оптимизирует геопространственный запрос с использованием ограничивающего прямоугольника.
+    Оптимизирует геопространственный запрос с использованием PostGIS.
     
-    Это предварительная фильтрация для уменьшения количества объектов
-    перед точным расчетом расстояний.
+    Использует PostGIS геооператоры для эффективной фильтрации
+    по расстоянию без необходимости предварительной фильтрации.
     
     Args:
         queryset: QuerySet для оптимизации
         center_lat: Широта центральной точки
         center_lon: Долгота центральной точки
         radius_km: Радиус поиска в километрах
-        lat_field: Название поля с широтой
-        lon_field: Название поля с долготой
+        point_field: Название поля с PointField
         
     Returns:
-        Оптимизированный QuerySet
+        Оптимизированный QuerySet с аннотацией расстояния
+    """
+    try:
+        center_point = Point(center_lon, center_lat, srid=4326)
+        
+        # Используем PostGIS для эффективной фильтрации и аннотации
+        optimized_queryset = queryset.filter(
+            **{f'{point_field}__distance_lte': (center_point, radius_km * 1000)}
+        ).annotate(
+            distance=Distance(point_field, center_point)
+        ).order_by('distance')
+        
+        return optimized_queryset
+        
+    except Exception as e:
+        print(f"PostGIS optimization error: {e}")
+        # Fallback к старому методу если PostGIS недоступен
+        return _fallback_optimize_geospatial_query(
+            queryset, center_lat, center_lon, radius_km, point_field
+        )
+
+
+def _fallback_optimize_geospatial_query(queryset, center_lat: float, center_lon: float, 
+                                       radius_km: float, point_field: str = 'point') -> Any:
+    """
+    Fallback метод для оптимизации геопространственных запросов без PostGIS.
     """
     # Получаем ограничивающий прямоугольник
     bbox = get_bounding_box(center_lat, center_lon, radius_km)
     
-    # Применяем предварительную фильтрацию
-    optimized_queryset = queryset.filter(
-        **{
-            f'{lat_field}__gte': bbox['min_lat'],
-            f'{lat_field}__lte': bbox['max_lat'],
-            f'{lon_field}__gte': bbox['min_lon'],
-            f'{lon_field}__lte': bbox['max_lon']
-        }
-    )
+    # Применяем предварительную фильтрацию по координатам
+    # Это работает только если у объекта есть отдельные поля latitude/longitude
+    optimized_queryset = queryset
+    
+    # Пытаемся применить фильтрацию по координатам если они доступны
+    try:
+        optimized_queryset = queryset.filter(
+            **{
+                f'{point_field}__x__gte': bbox['min_lon'],
+                f'{point_field}__x__lte': bbox['max_lon'],
+                f'{point_field}__y__gte': bbox['min_lat'],
+                f'{point_field}__y__lte': bbox['max_lat']
+            }
+        )
+    except:
+        # Если не удалось применить фильтрацию, возвращаем исходный queryset
+        pass
     
     return optimized_queryset
 
@@ -321,7 +385,7 @@ def optimize_geospatial_query(queryset, center_lat: float, center_lon: float,
 def batch_distance_calculation(queryset, center_lat: float, center_lon: float,
                               batch_size: int = 100) -> List[Tuple[Any, float]]:
     """
-    Выполняет расчет расстояний батчами для оптимизации памяти.
+    Выполняет расчет расстояний батчами для оптимизации памяти используя PostGIS.
     
     Args:
         queryset: QuerySet для обработки
@@ -332,6 +396,37 @@ def batch_distance_calculation(queryset, center_lat: float, center_lon: float,
     Returns:
         Список кортежей (объект, расстояние)
     """
+    try:
+        center_point = Point(center_lon, center_lat, srid=4326)
+        results = []
+        
+        for i in range(0, queryset.count(), batch_size):
+            batch = queryset[i:i + batch_size]
+            
+            # Используем PostGIS для батчевой обработки
+            for obj in batch:
+                point = getattr(obj, 'point', None)
+                
+                if point is not None:
+                    # Используем PostGIS для расчета расстояния
+                    distance = point.distance(center_point) * 111.32  # Convert to km
+                    results.append((obj, distance))
+        
+        return results
+        
+    except Exception as e:
+        print(f"PostGIS batch calculation error: {e}")
+        # Fallback к старому методу если PostGIS недоступен
+        return _fallback_batch_distance_calculation(
+            queryset, center_lat, center_lon, batch_size
+        )
+
+
+def _fallback_batch_distance_calculation(queryset, center_lat: float, center_lon: float,
+                                        batch_size: int = 100) -> List[Tuple[Any, float]]:
+    """
+    Fallback метод для батчевого расчета расстояний без PostGIS.
+    """
     results = []
     
     for i in range(0, queryset.count(), batch_size):
@@ -339,19 +434,18 @@ def batch_distance_calculation(queryset, center_lat: float, center_lon: float,
         
         for obj in batch:
             # Получаем координаты объекта
-            lat = getattr(obj, 'latitude', None)
-            lon = getattr(obj, 'longitude', None)
+            point = getattr(obj, 'point', None)
             
-            # Если координаты не найдены, пытаемся получить из связанного адреса
-            if lat is None or lon is None:
+            # Если point не найден, пытаемся получить из связанного адреса
+            if point is None:
                 if hasattr(obj, 'address') and obj.address:
-                    lat = obj.address.latitude
-                    lon = obj.address.longitude
+                    point = obj.address.point
                 elif hasattr(obj, 'provider_address') and obj.provider_address:
-                    lat = obj.provider_address.latitude
-                    lon = obj.provider_address.longitude
+                    point = obj.provider_address.point
             
-            if lat is not None and lon is not None:
+            if point is not None:
+                # Используем координаты из Point объекта
+                lat, lon = point.coords
                 distance = calculate_distance(center_lat, center_lon, lat, lon)
                 if distance is not None:
                     results.append((obj, distance))
@@ -361,28 +455,58 @@ def batch_distance_calculation(queryset, center_lat: float, center_lon: float,
 
 def create_geospatial_index_hint() -> str:
     """
-    Возвращает подсказку для создания геопространственных индексов.
+    Возвращает подсказку для создания геопространственных индексов PostGIS.
     
     Returns:
         SQL-запрос для создания индексов
     """
     return """
-    -- Рекомендуемые индексы для оптимизации геопространственных запросов
+    -- Рекомендуемые индексы для оптимизации геопространственных запросов с PostGIS
     
-    -- Индекс для координат адресов
-    CREATE INDEX idx_address_coordinates ON geolocation_address (latitude, longitude);
+    -- Включение расширения PostGIS (если еще не включено)
+    CREATE EXTENSION IF NOT EXISTS postgis;
     
-    -- Составной индекс для поиска по координатам и статусу
-    CREATE INDEX idx_address_coordinates_status ON geolocation_address (latitude, longitude, validation_status);
+    -- GiST индекс для PointField в модели Address
+    CREATE INDEX idx_address_point_gist ON geolocation_address USING GIST (point);
     
-    -- Индекс для ограничивающего прямоугольника
-    CREATE INDEX idx_address_bbox ON geolocation_address (
-        latitude, longitude, 
-        validation_status, 
-        is_valid
-    );
+    -- GiST индекс для PointField в модели Location
+    CREATE INDEX idx_location_point_gist ON geolocation_location USING GIST (point);
     
-    -- Для PostgreSQL с расширением PostGIS (рекомендуется):
-    -- CREATE EXTENSION IF NOT EXISTS postgis;
-    -- CREATE INDEX idx_address_geom ON geolocation_address USING GIST (geom);
+    -- GiST индекс для PointField в модели LocationHistory
+    CREATE INDEX idx_location_history_point_gist ON geolocation_locationhistory USING GIST (point);
+    
+    -- GiST индекс для PointField в модели UserLocation
+    CREATE INDEX idx_user_location_point_gist ON geolocation_userlocation USING GIST (point);
+    
+    -- GiST индекс для PointField в модели Provider
+    CREATE INDEX idx_provider_point_gist ON providers_provider USING GIST (point);
+    
+    -- Составные индексы для оптимизации запросов с дополнительными условиями
+    
+    -- Address с валидацией
+    CREATE INDEX idx_address_point_status ON geolocation_address USING GIST (point) 
+    WHERE validation_status = 'valid';
+    
+    -- Provider с активностью
+    CREATE INDEX idx_provider_point_active ON providers_provider USING GIST (point) 
+    WHERE is_active = true;
+    
+    -- UserLocation с источником
+    CREATE INDEX idx_user_location_point_source ON geolocation_userlocation USING GIST (point) 
+    WHERE source = 'device';
+    
+    -- Для оптимизации запросов по времени (LocationHistory)
+    CREATE INDEX idx_location_history_point_time ON geolocation_locationhistory 
+    USING GIST (point, created_at);
+    
+    -- Для оптимизации запросов по пользователю и времени (UserLocation)
+    CREATE INDEX idx_user_location_point_user ON geolocation_userlocation 
+    USING GIST (point, user_id);
+    
+    -- Анализ статистики для оптимизации запросов
+    ANALYZE geolocation_address;
+    ANALYZE geolocation_location;
+    ANALYZE geolocation_locationhistory;
+    ANALYZE geolocation_userlocation;
+    ANALYZE providers_provider;
     """ 

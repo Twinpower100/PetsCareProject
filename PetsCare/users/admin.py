@@ -72,10 +72,40 @@ class ProviderFormAdmin(admin.ModelAdmin):
     """
     Админка для форм учреждений.
     """
-    list_display = ('provider_name', 'status', 'created_at')
-    list_filter = ('status',)
+    list_display = ('provider_name', 'status', 'has_documents', 'created_at')
+    list_filter = ('status', 'has_documents')
     search_fields = ('provider_name', 'provider_address')
     readonly_fields = ('created_at', 'updated_at', 'approved_at')
+    
+    fieldsets = (
+        (_('Basic Information'), {
+            'fields': (
+                'provider_name',
+                'provider_address',
+                'provider_phone',
+            )
+        }),
+        (_('Documents'), {
+            'fields': (
+                'documents',
+            ),
+            'description': _('Documents are required only if the institution provides services that require licensing or certification')
+        }),
+        (_('Status'), {
+            'fields': (
+                'status',
+                'created_at',
+                'updated_at',
+                'approved_at'
+            )
+        }),
+    )
+    
+    def has_documents(self, obj):
+        """Показывает, есть ли документы у учреждения."""
+        return bool(obj.documents)
+    has_documents.boolean = True
+    has_documents.short_description = _('Has Documents')
 
     def has_module_permission(self, request):
         """

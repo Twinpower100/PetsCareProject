@@ -31,6 +31,10 @@ class PetFilter(django_filters.FilterSet):
     - Статусу и датам
     """
     
+    def __init__(self, *args, **kwargs):
+        self.request = kwargs.pop('request', None)
+        super().__init__(*args, **kwargs)
+    
     # Фильтрация по типу питомца
     pet_type = django_filters.ModelChoiceFilter(
         queryset=PetType.objects.all(),
@@ -215,10 +219,38 @@ class PetFilter(django_filters.FilterSet):
         return queryset
     
     def filter_by_location(self, queryset, name, value):
-        """Фильтрация по геолокации (заглушка для будущей реализации)."""
-        # TODO: Реализовать геолокационный поиск
-        # Пока возвращаем исходный queryset
-        return queryset
+        """Фильтрация по геолокации с использованием PostGIS."""
+        # Получаем параметры геолокации из request
+        request = self.request
+        if not request:
+            return queryset
+        
+        lat = request.query_params.get('location_lat')
+        lng = request.query_params.get('location_lng')
+        radius = request.query_params.get('radius_km')
+        
+        if not all([lat, lng, radius]):
+            return queryset
+        
+        try:
+            lat = float(lat)
+            lng = float(lng)
+            radius = float(radius)
+        except (ValueError, TypeError):
+            return queryset
+        
+        # Используем PostGIS для фильтрации по расстоянию
+        from django.contrib.gis.geos import Point
+        from django.contrib.gis.db.models.functions import Distance
+        
+        search_point = Point(lng, lat)
+        
+        # Фильтруем питомцев по расстоянию от владельцев
+        return queryset.filter(
+            owners__address__point__distance_lte=(search_point, radius * 1000)  # radius в метрах
+        ).annotate(
+            distance=Distance('owners__address__point', search_point)
+        ).order_by('distance')
     
     def filter_medical_conditions(self, queryset, name, value):
         """Фильтрация по наличию медицинских условий."""

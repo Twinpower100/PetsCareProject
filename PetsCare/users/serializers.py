@@ -51,21 +51,18 @@ class UserSerializer(serializers.ModelSerializer):
             return None
         
         # Пытаемся получить координаты пользователя
-        user_lat = None
-        user_lon = None
-        
-        # Сначала проверяем основной адрес
-        if hasattr(obj, 'address') and obj.address:
-            user_lat = obj.address.latitude
-            user_lon = obj.address.longitude
+        # Сначала проверяем основной адрес используя PostGIS
+        if hasattr(obj, 'address') and obj.address and obj.address.point:
+            from django.contrib.gis.geos import Point
+            search_point = Point(search_lon, search_lat)
+            distance = obj.address.point.distance(search_point) * 111.32  # Convert to km
+            return round(distance, 2) if distance is not None else None
         
         # Если нет основного адреса, проверяем адрес провайдера
-        if (user_lat is None or user_lon is None) and hasattr(obj, 'provider_address') and obj.provider_address:
-            user_lat = obj.provider_address.latitude
-            user_lon = obj.provider_address.longitude
-        
-        if user_lat is not None and user_lon is not None:
-            distance = calculate_distance(search_lat, search_lon, user_lat, user_lon)
+        if hasattr(obj, 'provider_address') and obj.provider_address and obj.provider_address.point:
+            from django.contrib.gis.geos import Point
+            search_point = Point(search_lon, search_lat)
+            distance = obj.provider_address.point.distance(search_point) * 111.32  # Convert to km
             return round(distance, 2) if distance is not None else None
         
         return None
@@ -201,7 +198,20 @@ class ProviderAdminRegistrationSerializer(serializers.ModelSerializer):
         fields = [
             'provider_name', 'provider_address', 
             'provider_phone', 'documents'
-        ] 
+        ]
+    
+    def validate(self, data):
+        """
+        Валидация данных регистрации учреждения.
+        Проверяет необходимость документов на основе планируемых услуг.
+        """
+        # В MVP версии документы не обязательны
+        # В будущем здесь будет логика проверки на основе выбранных услуг
+        # from catalog.models import Service
+        # Если учреждение планирует предоставлять услуги с requires_license=True,
+        # то документы обязательны
+        
+        return data 
 
 
 class RoleInviteSerializer(serializers.ModelSerializer):

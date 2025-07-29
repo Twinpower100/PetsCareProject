@@ -3,6 +3,8 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils.translation import gettext_lazy as _
 from decimal import Decimal
 from math import radians, cos, sin, asin, sqrt
+from django.contrib.gis.db import models as gis_models
+from django.contrib.gis.geos import Point
 
 class Location(models.Model):
     """
@@ -12,26 +14,7 @@ class Location(models.Model):
     Поддерживает валидацию координат и автоматическое добавление даты создания.
     """
     user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'))
-    latitude = models.DecimalField(
-        _('Latitude'),
-        max_digits=9,
-        decimal_places=6,
-        validators=[
-            MinValueValidator(Decimal('-90.0')),
-            MaxValueValidator(Decimal('90.0'))
-        ],
-        help_text=_('Geographic latitude')
-    )
-    longitude = models.DecimalField(
-        _('Longitude'),
-        max_digits=9,
-        decimal_places=6,
-        validators=[
-            MinValueValidator(Decimal('-180.0')),
-            MaxValueValidator(Decimal('180.0'))
-        ],
-        help_text=_('Geographic longitude')
-    )
+    point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
     address = models.CharField(max_length=255, verbose_name=_('Address'))
     city = models.CharField(max_length=100, verbose_name=_('City'), blank=True)
     country = models.CharField(max_length=100, verbose_name=_('Country'), blank=True)
@@ -43,7 +26,7 @@ class Location(models.Model):
         verbose_name_plural = _('Locations')
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['latitude', 'longitude']),
+            gis_models.Index(fields=['point'], name='idx_location_point'),
         ]
 
     def __str__(self):
@@ -52,7 +35,9 @@ class Location(models.Model):
     @property
     def coordinates(self):
         """Возвращает координаты в формате (latitude, longitude)"""
-        return (float(self.latitude), float(self.longitude))
+        if self.point:
+            return self.point.coords
+        return None
 
 class SearchRadius(models.Model):
     """
@@ -82,26 +67,7 @@ class LocationHistory(models.Model):
     Используется для анализа перемещений и поиска ближайших поставщиков услуг.
     """
     user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'))
-    latitude = models.DecimalField(
-        _('Latitude'),
-        max_digits=9,
-        decimal_places=6,
-        validators=[
-            MinValueValidator(Decimal('-90.0')),
-            MaxValueValidator(Decimal('90.0'))
-        ],
-        help_text=_('Geographic latitude')
-    )
-    longitude = models.DecimalField(
-        _('Longitude'),
-        max_digits=9,
-        decimal_places=6,
-        validators=[
-            MinValueValidator(Decimal('-180.0')),
-            MaxValueValidator(Decimal('180.0'))
-        ],
-        help_text=_('Geographic longitude')
-    )
+    point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
     address = models.CharField(max_length=255, verbose_name=_('Address'))
     city = models.CharField(max_length=100, verbose_name=_('City'), blank=True)
     country = models.CharField(max_length=100, verbose_name=_('Country'), blank=True)
@@ -113,7 +79,8 @@ class LocationHistory(models.Model):
         verbose_name_plural = _('Location History')
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['latitude', 'longitude']),
+            gis_models.Index(fields=['point'], name='idx_location_history_point'),
+            models.Index(fields=['created_at'], name='idx_location_history_created'),
         ]
 
     def __str__(self):
@@ -122,7 +89,9 @@ class LocationHistory(models.Model):
     @property
     def coordinates(self):
         """Возвращает координаты в формате (latitude, longitude)"""
-        return (float(self.latitude), float(self.longitude))
+        if self.point:
+            return self.point.coords
+        return None
 
 class Address(models.Model):
     """
@@ -147,8 +116,7 @@ class Address(models.Model):
     formatted_address = models.TextField(_('Formatted Address'), blank=True)
     
     # Координаты
-    latitude = models.DecimalField(_('Latitude'), max_digits=10, decimal_places=8, null=True, blank=True)
-    longitude = models.DecimalField(_('Longitude'), max_digits=11, decimal_places=8, null=True, blank=True)
+    point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
     
     # Статус валидации
     VALIDATION_STATUS_CHOICES = [
@@ -183,12 +151,12 @@ class Address(models.Model):
         
         # Индексы для оптимизации геопространственных запросов
         indexes = [
-            models.Index(fields=['latitude', 'longitude'], name='idx_address_coordinates'),
-            models.Index(fields=['latitude', 'longitude', 'validation_status'], name='idx_address_coordinates_status'),
-            models.Index(fields=['latitude', 'longitude', 'is_valid'], name='idx_address_coordinates_valid'),
-            models.Index(fields=['validation_status'], name='idx_address_validation_status'),
-            models.Index(fields=['city', 'region'], name='idx_address_city_region'),
-            models.Index(fields=['postal_code'], name='idx_address_postal_code'),
+            gis_models.Index(fields=['point'], name='idx_address_coordinates'),
+            gis_models.Index(fields=['point', 'validation_status'], name='idx_address_coordinates_status'),
+            gis_models.Index(fields=['point', 'is_valid'], name='idx_address_coordinates_valid'),
+            gis_models.Index(fields=['validation_status'], name='idx_address_validation_status'),
+            gis_models.Index(fields=['city', 'region'], name='idx_address_city_region'),
+            gis_models.Index(fields=['postal_code'], name='idx_address_postal_code'),
         ]
 
     def __str__(self):
@@ -197,8 +165,8 @@ class Address(models.Model):
     @property
     def coordinates(self):
         """Возвращает координаты в формате (latitude, longitude)"""
-        if self.latitude and self.longitude:
-            return (float(self.latitude), float(self.longitude))
+        if self.point:
+            return self.point.coords
         return None
 
     @property
@@ -209,7 +177,7 @@ class Address(models.Model):
     @property
     def is_geocoded(self):
         """Проверяет, определены ли координаты"""
-        return self.latitude is not None and self.longitude is not None
+        return self.point is not None
 
     def get_full_address(self):
         """Возвращает полный адрес в строковом формате"""
@@ -229,6 +197,14 @@ class Address(models.Model):
         if self.postal_code:
             parts.append(self.postal_code)
         return ", ".join(parts)
+
+    def distance_to(self, lat: float, lon: float) -> float:
+        """Вычисляет расстояние до указанной точки в километрах"""
+        if self.point:
+            from django.contrib.gis.geos import Point
+            target_point = Point(lon, lat, srid=4326)
+            return self.point.distance(target_point) * 111.32  # Convert to km
+        return None
 
 
 class AddressValidation(models.Model):
@@ -375,18 +351,7 @@ class UserLocation(models.Model):
         related_name='location',
         verbose_name=_('User')
     )
-    latitude = models.DecimalField(
-        _('Latitude'),
-        max_digits=9,
-        decimal_places=6,
-        help_text=_('Latitude coordinate')
-    )
-    longitude = models.DecimalField(
-        _('Longitude'),
-        max_digits=9,
-        decimal_places=6,
-        help_text=_('Longitude coordinate')
-    )
+    point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
     accuracy = models.FloatField(
         _('Accuracy'),
         null=True,
@@ -406,46 +371,23 @@ class UserLocation(models.Model):
     )
     last_updated = models.DateTimeField(
         _('Last Updated'),
-        auto_now=True,
-        help_text=_('When location was last updated')
+        auto_now=True
     )
-    
+
     class Meta:
         verbose_name = _('User Location')
         verbose_name_plural = _('User Locations')
         indexes = [
-            models.Index(fields=['user']),
-            models.Index(fields=['source']),
-            models.Index(fields=['last_updated']),
+            gis_models.Index(fields=['point'], name='idx_user_location_point'),
+            models.Index(fields=['last_updated'], name='idx_user_location_updated'),
         ]
-    
+
     def __str__(self):
-        return f"{self.user} - {self.latitude}, {self.longitude}"
-    
+        return f"{self.user} - {self.point.coords if self.point else 'No coordinates'}"
+
     def distance_to(self, lat: float, lon: float) -> float:
-        """
-        Рассчитывает расстояние до указанной точки.
-        
-        Args:
-            lat: Широта
-            lon: Долгота
-            
-        Returns:
-            Расстояние в километрах
-        """
-        # Конвертируем в радианы
-        lat1, lon1 = radians(float(self.latitude)), radians(float(self.longitude))
-        lat2, lon2 = radians(lat), radians(lon)
-        
-        # Разность координат
-        dlat = lat2 - lat1
-        dlon = lon2 - lon1
-        
-        # Формула гаверсинуса
-        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
-        c = 2 * asin(sqrt(a))
-        
-        # Радиус Земли в километрах
-        r = 6371
-        
-        return c * r 
+        """Вычисляет расстояние до указанной точки"""
+        if self.point:
+            target_point = Point(lon, lat, srid=4326)
+            return self.point.distance(target_point) * 111.32  # Convert to km
+        return None 

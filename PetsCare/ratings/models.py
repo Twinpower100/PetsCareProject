@@ -306,16 +306,23 @@ class Review(models.Model):
         """
         Валидация модели.
         """
-        if self.rating < 1 or self.rating > 5:
+        # Проверяем рейтинг только если он указан
+        if self.rating is not None and (self.rating < 1 or self.rating > 5):
             raise ValidationError(_('Rating must be between 1 and 5'))
         
-        # Проверяем, что пользователь является владельцем питомца
-        if not self.content_object.owners.filter(id=self.author.id).exists():
-            raise ValidationError(_('User must be an owner of the pet'))
+        # Проверяем, что пользователь является владельцем питомца (не ситтером)
+        if hasattr(self.content_object, 'owners'):
+            if not self.content_object.owners.filter(id=self.author.id).exists():
+                raise ValidationError(_('Only pet owners can leave reviews'))
+        elif hasattr(self.content_object, 'sitter'):
+            # Для передержек проверяем, что автор - владелец питомца, а не ситтер
+            if self.author == self.content_object.sitter:
+                raise ValidationError(_('Sitters cannot review themselves'))
         
         # Проверяем, что услуга была оказана
-        if not self.content_object.is_completed:
-            raise ValidationError(_('Can only review completed services'))
+        if hasattr(self.content_object, 'is_completed'):
+            if not self.content_object.is_completed:
+                raise ValidationError(_('Can only review completed services'))
 
 
 class Complaint(models.Model):

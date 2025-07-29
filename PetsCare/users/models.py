@@ -415,7 +415,10 @@ class ProviderForm(models.Model):
     )
     documents = models.FileField(
         upload_to='provider_docs/%Y/%m/%d/',
-        verbose_name=_('Registration Documents')
+        verbose_name=_('Registration Documents'),
+        blank=True,
+        null=True,
+        help_text=_('Required only if the institution provides services that require licensing or certification')
     )
     status = models.CharField(
         max_length=20,

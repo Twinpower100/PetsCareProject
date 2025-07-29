@@ -179,11 +179,13 @@ def update_related_models(sender, instance, created, **kwargs):
     if instance.is_validated and instance.latitude and instance.longitude:
         # Обновляем провайдеры
         from providers.models import Provider
+        from django.contrib.gis.geos import Point
+        
         providers = Provider.objects.filter(structured_address=instance)
         for provider in providers:
-            provider.latitude = instance.latitude
-            provider.longitude = instance.longitude
-            provider.save(update_fields=['latitude', 'longitude', 'updated_at'])
+            if instance.point:
+                provider.point = instance.point
+                provider.save(update_fields=['point', 'updated_at'])
         
         # Обновляем профили ситтеров
         from sitters.models import SitterProfile

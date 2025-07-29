@@ -64,14 +64,12 @@ class ProviderSerializer(serializers.ModelSerializer):
         except (ValueError, TypeError):
             return None
         
-        # Получаем координаты провайдера
-        if hasattr(obj, 'address') and obj.address:
-            provider_lat = obj.address.latitude
-            provider_lon = obj.address.longitude
-            
-            if provider_lat is not None and provider_lon is not None:
-                distance = calculate_distance(search_lat, search_lon, provider_lat, provider_lon)
-                return round(distance, 2) if distance is not None else None
+        # Получаем координаты провайдера используя PostGIS
+        if hasattr(obj, 'address') and obj.address and obj.address.point:
+            from django.contrib.gis.geos import Point
+            search_point = Point(search_lon, search_lat)
+            distance = obj.address.point.distance(search_point) * 111.32  # Convert to km
+            return round(distance, 2) if distance is not None else None
         
         return None
     
@@ -426,17 +424,17 @@ class ProviderSearchSerializer(serializers.Serializer):
             queryset = queryset.filter(services__category__name=data['service_type'])
 
         if all(key in data for key in ['latitude', 'longitude', 'radius']):
-            search_point = (data['latitude'], data['longitude'])
-            providers_in_radius = []
+            from django.contrib.gis.geos import Point
+            from django.contrib.gis.db.models.functions import Distance
             
-            for provider in queryset:
-                if provider.latitude and provider.longitude:
-                    provider_point = (provider.latitude, provider.longitude)
-                    distance = geodesic(search_point, provider_point).kilometers
-                    if distance <= data['radius']:
-                        providers_in_radius.append(provider.id)
+            search_point = Point(data['longitude'], data['latitude'], srid=4326)
+            radius_meters = data['radius'] * 1000  # Convert km to meters
             
-            queryset = queryset.filter(id__in=providers_in_radius)
+            queryset = queryset.filter(
+                point__distance_lte=(search_point, radius_meters)
+            ).annotate(
+                distance=Distance('point', search_point)
+            ).order_by('distance')
 
         if data.get('min_rating'):
             queryset = queryset.filter(rating__gte=data['min_rating'])

@@ -2367,24 +2367,22 @@ class BlockingTemplate(models.Model):
             BlockingTemplate или None
         """
         # Сначала ищем по точной локации
-        if provider.latitude and provider.longitude:
-            from geopy.distance import geodesic
+        if provider.point:
+            from django.contrib.gis.db.models.functions import Distance
             
             # Ищем шаблоны с привязкой к локации
             location_templates = cls.objects.filter(
                 is_active=True,
-                location__isnull=False
-            )
+                location__isnull=False,
+                location__point__isnull=False
+            ).annotate(
+                distance=Distance('location__point', provider.point)
+            ).filter(
+                distance__lte=models.F('radius_km') * 1000  # Convert km to meters
+            ).order_by('distance')
             
-            for template in location_templates:
-                if template.location.latitude and template.location.longitude:
-                    distance = geodesic(
-                        (provider.latitude, provider.longitude),
-                        (template.location.latitude, template.location.longitude)
-                    ).kilometers
-                    
-                    if distance <= template.radius_km:
-                        return template
+            if location_templates.exists():
+                return location_templates.first()
         
         # Затем ищем по иерархии (город -> регион -> страна)
         if provider.address:

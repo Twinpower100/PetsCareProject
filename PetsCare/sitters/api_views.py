@@ -705,7 +705,7 @@ def search_sitters(request):
             if not sitter.user.address:
                 continue  # Пропускаем ситтеров без адреса
             
-            if sitter.user.address.latitude and sitter.user.address.longitude:
+            if sitter.user.address and sitter.user.address.point:
                 distance = sitter.user.address.distance_to(search_lat, search_lon)
                 if distance <= radius:
                     sitters_with_distance.append({
@@ -757,8 +757,8 @@ def search_sitters(request):
                 'bio': sitter.bio,
                 'distance_km': round(item['distance'], 2),
                 'location': {
-                    'latitude': float(sitter.user.address.latitude),
-                    'longitude': float(sitter.user.address.longitude),
+                                    'latitude': float(sitter.user.address.point.coords[1]),  # latitude
+                'longitude': float(sitter.user.address.point.coords[0]),  # longitude
                     'address': sitter.user.address.formatted_address
                 }
             })

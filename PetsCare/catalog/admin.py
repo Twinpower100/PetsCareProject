@@ -24,8 +24,8 @@ class ServiceAdmin(admin.ModelAdmin):
     - Автоматический уровень (level)
     - Исключение самой услуги из parent
     """
-    list_display = ['code', 'name', 'parent', 'level', 'is_active', 'is_mandatory', 'is_periodic']
-    list_filter = ['level', 'is_active', 'is_mandatory', 'is_periodic']
+    list_display = ['code', 'name', 'parent', 'level', 'is_active', 'is_mandatory', 'is_periodic', 'requires_license']
+    list_filter = ['level', 'is_active', 'is_mandatory', 'is_periodic', 'requires_license']
     search_fields = ['code', 'name', 'description']
     ordering = ['level', 'name']
     readonly_fields = ['level']
@@ -43,7 +43,8 @@ class ServiceAdmin(admin.ModelAdmin):
             'fields': (
                 'is_active',
                 'is_mandatory',
-                'is_periodic'
+                'is_periodic',
+                'requires_license'
             )
         }),
         (_('Periodic Settings'), {
