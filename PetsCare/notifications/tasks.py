@@ -701,4 +701,234 @@ def send_system_maintenance_notification_task(message: str, user_ids: List[int] 
                 continue
         
     except Exception as e:
-        logger.error(f"Failed to send system maintenance notifications: {e}") 
+        logger.error(f"Failed to send system maintenance notifications: {e}")
+
+
+@shared_task
+def send_upcoming_booking_reminders_task():
+    """
+    Задача для отправки индивидуальных напоминаний о предстоящих бронированиях.
+    Проверяет каждые 15 минут, какие бронирования требуют напоминания,
+    учитывая индивидуальные настройки пользователей.
+    """
+    try:
+        from booking.models import Booking
+        from django.utils import timezone
+        from django.contrib.auth import get_user_model
+        from .models import ReminderSettings
+        
+        User = get_user_model()
+        notification_service = NotificationService()
+        now = timezone.now()
+        
+        # Получаем все активные бронирования в будущем
+        upcoming_bookings = Booking.objects.filter(
+            start_time__gt=now,
+            status='confirmed'
+        ).select_related('user', 'service', 'provider', 'pet')
+        
+        reminders_sent = 0
+        
+        for booking in upcoming_bookings:
+            try:
+                # Получаем настройки напоминаний пользователя
+                reminder_settings, created = ReminderSettings.objects.get_or_create(
+                    user=booking.user,
+                    defaults={
+                        'reminder_time_before_booking': 120,  # 2 часа по умолчанию
+                        'multiple_reminders': False,
+                        'is_active': True
+                    }
+                )
+                
+                # Проверяем, нужно ли отправить напоминание
+                if reminder_settings.should_send_reminder(booking.start_time):
+                    # Получаем время последнего напоминания для этого бронирования
+                    last_reminder = Notification.objects.filter(
+                        user=booking.user,
+                        notification_type='reminder',
+                        data__booking_id=booking.id
+                    ).order_by('-created_at').first()
+                    
+                    last_reminder_time = last_reminder.created_at if last_reminder else None
+                    
+                    # Проверяем еще раз с учетом последнего напоминания
+                    if reminder_settings.should_send_reminder(booking.start_time, last_reminder_time):
+                        # Вычисляем время до бронирования
+                        time_until_booking = booking.start_time - now
+                        hours_until_booking = int(time_until_booking.total_seconds() / 3600)
+                        minutes_until_booking = int(time_until_booking.total_seconds() / 60)
+                        
+                        # Формируем сообщение в зависимости от времени
+                        if hours_until_booking >= 24:
+                            days = hours_until_booking // 24
+                            time_text = _('{} days').format(days)
+                        elif hours_until_booking >= 1:
+                            time_text = _('{} hours').format(hours_until_booking)
+                        else:
+                            time_text = _('{} minutes').format(minutes_until_booking)
+                        
+                        # Отправляем напоминание
+                        notification = notification_service.send_notification(
+                            user=booking.user,
+                            notification_type='reminder',
+                            title=_('Upcoming Booking Reminder'),
+                            message=_('Your booking for {} is in {}').format(
+                                booking.service.name, time_text
+                            ),
+                            channels=['email', 'push', 'in_app'],
+                            priority='medium',
+                            pet=booking.pet,
+                            data={
+                                'booking_id': booking.id,
+                                'service_name': booking.service.name,
+                                'provider_name': booking.provider.name,
+                                'start_time': booking.start_time.isoformat(),
+                                'time_until_booking': time_until_booking.total_seconds(),
+                                'reminder_type': 'upcoming_booking'
+                            }
+                        )
+                        
+                        reminders_sent += 1
+                        logger.info(f"Booking reminder sent to user {booking.user.id} for booking {booking.id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to process reminder for booking {booking.id}: {e}")
+                continue
+        
+        logger.info(f"Processed {upcoming_bookings.count()} bookings, sent {reminders_sent} reminders")
+        
+    except Exception as e:
+        logger.error(f"Failed to process booking reminders: {e}")
+
+
+@shared_task
+def schedule_individual_booking_reminders_task(booking_id: int):
+    """
+    Задача для планирования индивидуальных напоминаний о конкретном бронировании.
+    
+    Args:
+        booking_id: ID бронирования
+    """
+    try:
+        from booking.models import Booking
+        from django.utils import timezone
+        from .models import ReminderSettings
+        
+        booking = Booking.objects.get(id=booking_id)
+        
+        # Получаем настройки напоминаний пользователя
+        reminder_settings, created = ReminderSettings.objects.get_or_create(
+            user=booking.user,
+            defaults={
+                'reminder_time_before_booking': 120,  # 2 часа по умолчанию
+                'multiple_reminders': False,
+                'is_active': True
+            }
+        )
+        
+        if not reminder_settings.is_active:
+            logger.info(f"Reminder settings disabled for user {booking.user.id}")
+            return
+        
+        # Вычисляем время следующего напоминания
+        next_reminder_time = reminder_settings.get_next_reminder_time(booking.start_time)
+        
+        if next_reminder_time:
+            # Планируем задачу на отправку напоминания
+            from celery import current_app
+            
+            # Вычисляем задержку в секундах
+            delay_seconds = int((next_reminder_time - timezone.now()).total_seconds())
+            
+            if delay_seconds > 0:
+                # Планируем отправку напоминания
+                send_individual_booking_reminder_task.apply_async(
+                    args=[booking.id],
+                    countdown=delay_seconds
+                )
+                
+                logger.info(f"Scheduled reminder for booking {booking.id} at {next_reminder_time}")
+            else:
+                logger.info(f"Reminder time for booking {booking.id} has already passed")
+        else:
+            logger.info(f"No reminder needed for booking {booking.id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to schedule reminder for booking {booking_id}: {e}")
+
+
+@shared_task
+def send_individual_booking_reminder_task(booking_id: int):
+    """
+    Задача для отправки индивидуального напоминания о конкретном бронировании.
+    
+    Args:
+        booking_id: ID бронирования
+    """
+    try:
+        from booking.models import Booking
+        from django.utils import timezone
+        from .models import ReminderSettings
+        
+        booking = Booking.objects.get(id=booking_id)
+        
+        # Проверяем, что бронирование все еще активно
+        if booking.status != 'confirmed':
+            logger.info(f"Booking {booking_id} is no longer confirmed, skipping reminder")
+            return
+        
+        # Получаем настройки напоминаний пользователя
+        reminder_settings = ReminderSettings.objects.filter(user=booking.user).first()
+        
+        if not reminder_settings or not reminder_settings.is_active:
+            logger.info(f"Reminder settings disabled for user {booking.user.id}")
+            return
+        
+        # Проверяем, нужно ли отправить напоминание
+        if reminder_settings.should_send_reminder(booking.start_time):
+            notification_service = NotificationService()
+            
+            # Вычисляем время до бронирования
+            time_until_booking = booking.start_time - timezone.now()
+            hours_until_booking = int(time_until_booking.total_seconds() / 3600)
+            minutes_until_booking = int(time_until_booking.total_seconds() / 60)
+            
+            # Формируем сообщение в зависимости от времени
+            if hours_until_booking >= 24:
+                days = hours_until_booking // 24
+                time_text = _('{} days').format(days)
+            elif hours_until_booking >= 1:
+                time_text = _('{} hours').format(hours_until_booking)
+            else:
+                time_text = _('{} minutes').format(minutes_until_booking)
+            
+            # Отправляем напоминание
+            notification = notification_service.send_notification(
+                user=booking.user,
+                notification_type='reminder',
+                title=_('Booking Reminder'),
+                message=_('Your booking for {} is in {}').format(
+                    booking.service.name, time_text
+                ),
+                channels=['email', 'push', 'in_app'],
+                priority='medium',
+                pet=booking.pet,
+                data={
+                    'booking_id': booking.id,
+                    'service_name': booking.service.name,
+                    'provider_name': booking.provider.name,
+                    'start_time': booking.start_time.isoformat(),
+                    'time_until_booking': time_until_booking.total_seconds(),
+                    'reminder_type': 'individual_booking'
+                }
+            )
+            
+            logger.info(f"Individual booking reminder sent to user {booking.user.id} for booking {booking.id}")
+            
+            # Планируем следующее напоминание, если включены множественные
+            if reminder_settings.multiple_reminders:
+                schedule_individual_booking_reminders_task.delay(booking.id)
+        
+    except Exception as e:
+        logger.error(f"Failed to send individual reminder for booking {booking_id}: {e}") 

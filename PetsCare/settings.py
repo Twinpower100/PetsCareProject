@@ -285,6 +285,11 @@ NOTIFICATION_SETTINGS = {
     'EMAIL_TEMPLATE_DIR': BASE_DIR / 'notifications' / 'templates' / 'email',
     'PUSH_ENABLED': True,
     'PUSH_TEMPLATE_DIR': BASE_DIR / 'notifications' / 'templates' / 'push',
+    # Настройки напоминаний о бронированиях
+    'DEFAULT_REMINDER_TIME_MINUTES': 120,  # 2 часа по умолчанию (за 2 часа до бронирования)
+    'REMINDER_CHECK_INTERVAL_MINUTES': 15,  # Проверка каждые 15 минут
+    'MULTIPLE_REMINDERS_ENABLED': False,  # Множественные напоминания по умолчанию отключены
+    'DEFAULT_REMINDER_INTERVALS': [1440, 120],  # за 1 день и за 2 часа до бронирования по умолчанию
 }
 
 # Настройки Celery

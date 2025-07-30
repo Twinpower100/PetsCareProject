@@ -27,6 +27,7 @@ router.register(r'notifications', api_views.NotificationViewSet, basename='notif
 router.register(r'preferences', api_views.NotificationPreferenceViewSet, basename='notification-preference')
 router.register(r'settings', api_views.UserNotificationSettingsViewSet, basename='notification-settings')
 router.register(r'notification-rules', api_views.NotificationRuleViewSet, basename='notification-rule')
+router.register(r'reminder-settings', api_views.ReminderSettingsViewSet, basename='reminder-settings')
 
 app_name = 'notifications'
 
@@ -70,6 +71,23 @@ urlpatterns = [
     path('api/settings/available-options/',
          api_views.UserNotificationSettingsViewSet.as_view({'get': 'available_options'}),
          name='settings-available-options'),
+    
+    # API endpoints для настроек напоминаний
+    path('api/reminder-settings/current/',
+         api_views.ReminderSettingsViewSet.as_view({'get': 'current'}),
+         name='reminder-settings-current'),
+    
+    path('api/reminder-settings/reset/',
+         api_views.ReminderSettingsViewSet.as_view({'post': 'reset_to_defaults'}),
+         name='reminder-settings-reset'),
+    
+    path('api/reminder-settings/test/',
+         api_views.ReminderSettingsViewSet.as_view({'post': 'test'}),
+         name='reminder-settings-test'),
+    
+    path('api/reminder-settings/preview/',
+         api_views.ReminderSettingsViewSet.as_view({'get': 'preview'}),
+         name='reminder-settings-preview'),
     
     # API endpoints для уведомлений
     path('api/notifications/', api_views.get_notifications, name='api_notifications'),

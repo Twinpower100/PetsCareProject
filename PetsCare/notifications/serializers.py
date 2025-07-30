@@ -473,4 +473,116 @@ class NotificationRuleSerializer(serializers.ModelSerializer):
         # Здесь можно добавить дополнительную валидацию синтаксиса Python
         # Например, проверку на безопасность выражения
         
-        return value 
+        return value
+
+
+class ReminderSettingsSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для настроек напоминаний о бронированиях.
+    """
+    reminder_intervals_hours = serializers.SerializerMethodField()
+    reminder_time_hours = serializers.SerializerMethodField()
+    
+    class Meta:
+        from .models import ReminderSettings
+        model = ReminderSettings
+        fields = [
+            'id', 'user', 'reminder_time_before_booking', 'reminder_time_hours',
+            'multiple_reminders', 'reminder_intervals', 'reminder_intervals_hours',
+            'is_active', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['user', 'created_at', 'updated_at']
+    
+    def get_reminder_time_hours(self, obj):
+        """
+        Возвращает время напоминания в часах.
+        
+        Args:
+            obj: Объект настроек напоминаний
+            
+        Returns:
+            float: Время в часах
+        """
+        return round(obj.reminder_time_before_booking / 60, 2)
+    
+    def get_reminder_intervals_hours(self, obj):
+        """
+        Возвращает интервалы напоминаний в часах.
+        
+        Args:
+            obj: Объект настроек напоминаний
+            
+        Returns:
+            list: Список интервалов в часах
+        """
+        if obj.reminder_intervals:
+            return [round(interval / 60, 2) for interval in obj.reminder_intervals]
+        return []
+    
+    def validate_reminder_time_before_booking(self, value):
+        """
+        Валидирует время напоминания до бронирования.
+        
+        Args:
+            value: Время в минутах
+            
+        Returns:
+            int: Валидное время в минутах
+            
+        Raises:
+            ValidationError: Если время невалидно
+        """
+        if value < 1:
+            raise serializers.ValidationError(_('Reminder time must be at least 1 minute'))
+        if value > 10080:  # 1 неделя
+            raise serializers.ValidationError(_('Reminder time cannot exceed 1 week'))
+        return value
+    
+    def validate_reminder_intervals(self, value):
+        """
+        Валидирует интервалы напоминаний.
+        
+        Args:
+            value: Список интервалов в минутах
+            
+        Returns:
+            list: Валидный список интервалов
+            
+        Raises:
+            ValidationError: Если интервалы невалидны
+        """
+        if not isinstance(value, list):
+            raise serializers.ValidationError(_('Reminder intervals must be a list'))
+        
+        for interval in value:
+            if not isinstance(interval, int) or interval < 1:
+                raise serializers.ValidationError(_('Each interval must be a positive integer'))
+            if interval > 10080:  # 1 неделя
+                raise serializers.ValidationError(_('Each interval cannot exceed 1 week'))
+        
+        # Убираем дубликаты и сортируем
+        unique_intervals = sorted(list(set(value)), reverse=True)
+        return unique_intervals
+    
+    def validate(self, data):
+        """
+        Валидирует данные настроек напоминаний.
+        
+        Args:
+            data: Данные для валидации
+            
+        Returns:
+            dict: Валидные данные
+            
+        Raises:
+            ValidationError: Если данные невалидны
+        """
+        # Если множественные напоминания отключены, очищаем интервалы
+        if not data.get('multiple_reminders', False):
+            data['reminder_intervals'] = []
+        
+        # Если множественные напоминания включены, убеждаемся что есть интервалы
+        if data.get('multiple_reminders', False) and not data.get('reminder_intervals'):
+            raise serializers.ValidationError(_('Reminder intervals are required when multiple reminders are enabled'))
+        
+        return data 

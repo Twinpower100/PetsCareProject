@@ -1063,4 +1063,199 @@ class NotificationRuleViewSet(viewsets.ModelViewSet):
             return Response({
                 'success': False,
                 'message': _('Failed to perform bulk update')
-            }, status=500) 
+            }, status=500)
+
+
+class ReminderSettingsViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet для управления настройками напоминаний о бронированиях.
+    
+    Предоставляет endpoints для:
+    - Получения настроек напоминаний пользователя
+    - Обновления настроек напоминаний
+    - Сброса настроек к значениям по умолчанию
+    - Тестирования настроек
+    """
+    serializer_class = None  # Будет определен ниже
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """
+        Возвращает queryset настроек напоминаний текущего пользователя.
+        
+        Returns:
+            QuerySet: Настройки напоминаний пользователя
+        """
+        from .models import ReminderSettings
+        return ReminderSettings.objects.filter(user=self.request.user)
+    
+    def get_serializer_class(self):
+        """
+        Возвращает класс сериализатора в зависимости от действия.
+        
+        Returns:
+            Serializer: Класс сериализатора
+        """
+        from .serializers import ReminderSettingsSerializer
+        return ReminderSettingsSerializer
+    
+    def perform_create(self, serializer):
+        """
+        Создает настройки напоминаний для пользователя.
+        
+        Args:
+            serializer: Сериализатор с данными
+        """
+        serializer.save(user=self.request.user)
+    
+    def perform_update(self, serializer):
+        """
+        Обновляет настройки напоминаний пользователя.
+        
+        Args:
+            serializer: Сериализатор с данными
+        """
+        serializer.save(user=self.request.user)
+    
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        """
+        Получает текущие настройки напоминаний пользователя.
+        Если настройки не существуют, создает их с значениями по умолчанию.
+        
+        Returns:
+            Response: Текущие настройки напоминаний
+        """
+        from .models import ReminderSettings
+        from django.conf import settings
+        
+        reminder_settings, created = ReminderSettings.objects.get_or_create(
+            user=request.user,
+            defaults={
+                'reminder_time_before_booking': settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_TIME_MINUTES', 120),
+                'multiple_reminders': settings.NOTIFICATION_SETTINGS.get('MULTIPLE_REMINDERS_ENABLED', False),
+                'reminder_intervals': settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_INTERVALS', [1440, 120]),
+                'is_active': True
+            }
+        )
+        
+        serializer = self.get_serializer(reminder_settings)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'])
+    def reset_to_defaults(self, request):
+        """
+        Сбрасывает настройки напоминаний к значениям по умолчанию.
+        
+        Returns:
+            Response: Обновленные настройки
+        """
+        from django.conf import settings
+        
+        reminder_settings, created = ReminderSettings.objects.get_or_create(
+            user=request.user,
+            defaults={
+                'reminder_time_before_booking': settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_TIME_MINUTES', 120),
+                'multiple_reminders': settings.NOTIFICATION_SETTINGS.get('MULTIPLE_REMINDERS_ENABLED', False),
+                'reminder_intervals': settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_INTERVALS', [1440, 120]),
+                'is_active': True
+            }
+        )
+        
+        if not created:
+            reminder_settings.reminder_time_before_booking = settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_TIME_MINUTES', 120)
+            reminder_settings.multiple_reminders = settings.NOTIFICATION_SETTINGS.get('MULTIPLE_REMINDERS_ENABLED', False)
+            reminder_settings.reminder_intervals = settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_INTERVALS', [1440, 120])
+            reminder_settings.is_active = True
+            reminder_settings.save()
+        
+        serializer = self.get_serializer(reminder_settings)
+        return Response({
+            'message': _('Reminder settings reset to defaults'),
+            'settings': serializer.data
+        })
+    
+    @action(detail=False, methods=['post'])
+    def test(self, request):
+        """
+        Отправляет тестовое напоминание для проверки настроек.
+        
+        Returns:
+            Response: Результат отправки тестового уведомления
+        """
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        # Создаем тестовое время бронирования (через 2 часа)
+        test_booking_time = timezone.now() + timedelta(hours=2)
+        
+        reminder_settings = self.get_queryset().first()
+        if not reminder_settings:
+            return Response({
+                'error': _('No reminder settings found')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Проверяем, нужно ли отправить тестовое напоминание
+        if reminder_settings.should_send_reminder(test_booking_time):
+            notification_service = NotificationService()
+            
+            notification = notification_service.send_notification(
+                user=request.user,
+                notification_type='reminder',
+                title=_('Test Booking Reminder'),
+                message=_('This is a test reminder for your upcoming booking'),
+                channels=['email', 'push', 'in_app'],
+                priority='medium',
+                data={
+                    'test': True,
+                    'reminder_type': 'test'
+                }
+            )
+            
+            return Response({
+                'message': _('Test reminder sent successfully'),
+                'notification_id': notification.id
+            })
+        else:
+            return Response({
+                'message': _('Test reminder not needed based on current settings'),
+                'next_reminder_time': reminder_settings.get_next_reminder_time(test_booking_time)
+            })
+    
+    @action(detail=False, methods=['get'])
+    def preview(self, request):
+        """
+        Показывает предварительный просмотр настроек напоминаний.
+        
+        Returns:
+            Response: Предварительный просмотр настроек
+        """
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        reminder_settings = self.get_queryset().first()
+        if not reminder_settings:
+            return Response({
+                'error': _('No reminder settings found')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Создаем тестовое время бронирования
+        test_booking_time = timezone.now() + timedelta(hours=3)
+        
+        intervals = reminder_settings.get_reminder_intervals()
+        preview_data = []
+        
+        for interval in intervals:
+            reminder_time = test_booking_time - timedelta(minutes=interval)
+            preview_data.append({
+                'interval_minutes': interval,
+                'interval_hours': interval / 60,
+                'reminder_time': reminder_time,
+                'time_until_reminder': (reminder_time - timezone.now()).total_seconds() / 3600
+            })
+        
+        return Response({
+            'settings': self.get_serializer(reminder_settings).data,
+            'preview': preview_data,
+            'test_booking_time': test_booking_time
+        }) 

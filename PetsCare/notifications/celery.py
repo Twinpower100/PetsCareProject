@@ -40,29 +40,13 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(day_of_week=0, hour=3, minute=0),
     },
     
-    # Ежедневная проверка и отправка уведомлений о предстоящих бронированиях (в 7:00)
+    # Проверка и отправка уведомлений о предстоящих бронированиях каждые 15 минут
     'send-upcoming-booking-reminders': {
         'task': 'notifications.tasks.send_upcoming_booking_reminders_task',
-        'schedule': crontab(hour=7, minute=0),
+        'schedule': crontab(minute='*/15'),
     },
     
-    # Ежедневная отправка уведомлений о завершенных услугах (в 20:00)
-    'send-completed-service-notifications': {
-        'task': 'notifications.tasks.send_completed_service_notifications_task',
-        'schedule': crontab(hour=20, minute=0),
-    },
-    
-    # Еженедельная отправка уведомлений о новых отзывах (по пятницам в 16:00)
-    'send-new-review-summary': {
-        'task': 'notifications.tasks.send_new_review_summary_task',
-        'schedule': crontab(day_of_week=5, hour=16, minute=0),
-    },
-    
-    # Ежемесячная отправка аналитики уведомлений (1-го числа каждого месяца в 9:00)
-    'send-monthly-notification-analytics': {
-        'task': 'notifications.tasks.send_monthly_notification_analytics_task',
-        'schedule': crontab(day_of_month=1, hour=9, minute=0),
-    },
+
 }
 
 

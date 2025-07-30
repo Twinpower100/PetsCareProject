@@ -727,3 +727,138 @@ class NotificationRule(models.Model):
             bool: True если правило пользовательское
         """
         return self.inheritance == 'user_specific' and self.user is not None
+
+
+class ReminderSettings(models.Model):
+    """
+    Модель для настройки индивидуальных напоминаний о бронированиях.
+    Позволяет пользователям настраивать время и частоту напоминаний.
+    
+    Атрибуты:
+        user (ForeignKey): Пользователь
+        reminder_time_before_booking (int): Время напоминания до бронирования (в минутах)
+        multiple_reminders (bool): Поддержка множественных напоминаний
+        reminder_intervals (list): Интервалы для множественных напоминаний (в минутах)
+        is_active (bool): Активны ли настройки
+        created_at (DateTime): Дата создания
+        updated_at (DateTime): Дата обновления
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        verbose_name=_('User'),
+        related_name='reminder_settings'
+    )
+    reminder_time_before_booking = models.PositiveIntegerField(
+        _('Reminder Time Before Booking'),
+        default=120,  # 2 часа по умолчанию
+        help_text=_('Time in minutes before booking to send reminder')
+    )
+    multiple_reminders = models.BooleanField(
+        _('Multiple Reminders'),
+        default=False,
+        help_text=_('Enable multiple reminders for the same booking')
+    )
+    reminder_intervals = models.JSONField(
+        _('Reminder Intervals'),
+        default=list,
+        blank=True,
+        help_text=_('List of reminder intervals in minutes (e.g., [1440, 120] for 1 day and 2 hours)')
+    )
+    is_active = models.BooleanField(
+        _('Is Active'),
+        default=True,
+        help_text=_('Whether these reminder settings are active')
+    )
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Reminder Settings')
+        verbose_name_plural = _('Reminder Settings')
+        unique_together = ['user']
+        ordering = ['-updated_at']
+
+    def __str__(self):
+        """
+        Возвращает строковое представление настроек напоминаний.
+        
+        Returns:
+            str: Описание настроек пользователя
+        """
+        return f"Reminder settings for {self.user.email}"
+
+    def get_reminder_intervals(self):
+        """
+        Возвращает список интервалов напоминаний.
+        Если множественные напоминания отключены, возвращает только основной интервал.
+        
+        Returns:
+            list: Список интервалов в минутах
+        """
+        if self.multiple_reminders and self.reminder_intervals:
+            return sorted(self.reminder_intervals, reverse=True)  # Сортируем по убыванию
+        return [self.reminder_time_before_booking]
+
+    def get_next_reminder_time(self, booking_start_time):
+        """
+        Вычисляет время следующего напоминания для бронирования.
+        
+        Args:
+            booking_start_time (datetime): Время начала бронирования
+            
+        Returns:
+            datetime: Время следующего напоминания
+        """
+        from django.utils import timezone
+        now = timezone.now()
+        
+        intervals = self.get_reminder_intervals()
+        
+        for interval in intervals:
+            reminder_time = booking_start_time - timezone.timedelta(minutes=interval)
+            if reminder_time > now:
+                return reminder_time
+        
+        return None
+
+    def should_send_reminder(self, booking_start_time, last_reminder_time=None):
+        """
+        Проверяет, нужно ли отправить напоминание для бронирования.
+        
+        Args:
+            booking_start_time (datetime): Время начала бронирования
+            last_reminder_time (datetime): Время последнего напоминания
+            
+        Returns:
+            bool: True если нужно отправить напоминание
+        """
+        from django.utils import timezone
+        now = timezone.now()
+        
+        intervals = self.get_reminder_intervals()
+        
+        for interval in intervals:
+            reminder_time = booking_start_time - timezone.timedelta(minutes=interval)
+            
+            # Проверяем, что время напоминания прошло, но не слишком давно
+            if reminder_time <= now <= reminder_time + timezone.timedelta(minutes=15):
+                # Если это множественное напоминание, проверяем, что не отправляли недавно
+                if last_reminder_time:
+                    time_since_last = now - last_reminder_time
+                    if time_since_last < timezone.timedelta(minutes=30):
+                        continue
+                return True
+        
+        return False
+
+    def save(self, *args, **kwargs):
+        """
+        Переопределяет метод сохранения для валидации данных.
+        """
+        # Убеждаемся, что основной интервал включен в множественные
+        if self.multiple_reminders and self.reminder_intervals:
+            if self.reminder_time_before_booking not in self.reminder_intervals:
+                self.reminder_intervals.append(self.reminder_time_before_booking)
+        
+        super().save(*args, **kwargs)

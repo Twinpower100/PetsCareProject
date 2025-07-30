@@ -175,6 +175,9 @@ class PetOwnerIncapacityService:
         
         try:
             with transaction.atomic():
+                # Используем select_for_update для предотвращения гонки
+                incapacity_record = PetOwnerIncapacity.objects.select_for_update().get(id=incapacity_record.id)
+                
                 if pet_is_ok:
                     # Питомец в порядке - разрешаем случай
                     incapacity_record.status = 'resolved'
@@ -224,18 +227,22 @@ class PetOwnerIncapacityService:
         
         for record in overdue_records:
             try:
-                if record.take_auto_action():
-                    if record.auto_action_taken == 'pet_deleted':
-                        stats['pets_deleted'] += 1
-                    elif record.auto_action_taken == 'coowner_assigned':
-                        stats['coowners_assigned'] += 1
+                # Используем select_for_update для предотвращения гонки
+                with transaction.atomic():
+                    record = PetOwnerIncapacity.objects.select_for_update().get(id=record.id)
                     
-                    # Отправляем уведомления о выполненных действиях
-                    self._send_auto_action_notifications(record)
-                    
-                else:
-                    stats['errors'] += 1
-                    
+                    if record.take_auto_action():
+                        if record.auto_action_taken == 'pet_deleted':
+                            stats['pets_deleted'] += 1
+                        elif record.auto_action_taken == 'coowner_assigned':
+                            stats['coowners_assigned'] += 1
+                        
+                        # Отправляем уведомления о выполненных действиях
+                        self._send_auto_action_notifications(record)
+                        
+                    else:
+                        stats['errors'] += 1
+                        
             except Exception as e:
                 logger.error(f"Error processing deadline action for record {record.id}: {str(e)}")
                 stats['errors'] += 1

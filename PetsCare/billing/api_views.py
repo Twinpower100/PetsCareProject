@@ -113,14 +113,19 @@ class PaymentViewSet(viewsets.ModelViewSet):
             Response: Результат подтверждения платежа
         """
         payment = self.get_object()
-        if payment.status != 'pending':
-            return Response(
-                {'error': _('Payment is not pending')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
         
-        payment.status = 'completed'
-        payment.save()
+        # Используем select_for_update для предотвращения гонки
+        with transaction.atomic():
+            payment = Payment.objects.select_for_update().get(id=payment.id)
+            
+            if payment.status != 'pending':
+                return Response(
+                    {'error': _('Payment is not pending')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            payment.status = 'completed'
+            payment.save()
         
         # Создаем счет
         Invoice.objects.create(
@@ -217,18 +222,23 @@ class RefundViewSet(viewsets.ModelViewSet):
             Response: Результат подтверждения возврата
         """
         refund = self.get_object()
-        if refund.status != 'pending':
-            return Response(
-                {'error': _('Refund is not pending')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
         
-        refund.status = 'approved'
-        refund.save()
-        
-        # Обновляем статус платежа
-        refund.payment.status = 'refunded'
-        refund.payment.save()
+        # Используем select_for_update для предотвращения гонки
+        with transaction.atomic():
+            refund = Refund.objects.select_for_update().get(id=refund.id)
+            
+            if refund.status != 'pending':
+                return Response(
+                    {'error': _('Refund is not pending')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            refund.status = 'approved'
+            refund.save()
+            
+            # Обновляем статус платежа
+            refund.payment.status = 'refunded'
+            refund.payment.save()
         
         return Response({'status': _('refund approved')})
 
@@ -245,14 +255,19 @@ class RefundViewSet(viewsets.ModelViewSet):
             Response: Результат отклонения возврата
         """
         refund = self.get_object()
-        if refund.status != 'pending':
-            return Response(
-                {'error': _('Refund is not pending')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
         
-        refund.status = 'rejected'
-        refund.save()
+        # Используем select_for_update для предотвращения гонки
+        with transaction.atomic():
+            refund = Refund.objects.select_for_update().get(id=refund.id)
+            
+            if refund.status != 'pending':
+                return Response(
+                    {'error': _('Refund is not pending')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            refund.status = 'rejected'
+            refund.save()
         
         return Response({'status': _('refund rejected')})
 
@@ -490,7 +505,7 @@ class ProviderBlockingResolveAPIView(generics.UpdateAPIView):
         Returns:
             JSON с результатом операции
         """
-        blocking = get_object_or_404(ProviderBlocking, id=blocking_id)
+        blocking = get_object_or_404(ProviderBlocking.objects.select_for_update(), id=blocking_id)
         
         # Проверяем, что блокировка активна
         if blocking.status != 'active':
@@ -663,7 +678,7 @@ def approve_contract(request, contract_id):
     """
     try:
         with transaction.atomic():
-            contract = get_object_or_404(Contract, id=contract_id)
+            contract = get_object_or_404(Contract.objects.select_for_update(), id=contract_id)
             
             # Проверяем, что контракт ожидает согласования
             if contract.status != 'pending_approval':
@@ -714,7 +729,7 @@ def reject_contract(request, contract_id):
     """
     try:
         with transaction.atomic():
-            contract = get_object_or_404(Contract, id=contract_id)
+            contract = get_object_or_404(Contract.objects.select_for_update(), id=contract_id)
             
             # Проверяем, что контракт ожидает согласования
             if contract.status != 'pending_approval':
@@ -771,7 +786,7 @@ def activate_contract(request, contract_id):
     """
     try:
         with transaction.atomic():
-            contract = get_object_or_404(Contract, id=contract_id)
+            contract = get_object_or_404(Contract.objects.select_for_update(), id=contract_id)
             
             # Проверяем права доступа
             if not request.user.is_staff:
