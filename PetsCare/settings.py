@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     'scheduling.apps.SchedulingConfig',
     'ratings.apps.RatingsConfig',
     'audit.apps.AuditConfig',
+    'security.apps.SecurityConfig',
 ]
 
 # Middleware для обработки запросов
@@ -89,6 +90,8 @@ MIDDLEWARE = [
     'allauth.account.middleware.AccountMiddleware',
     'billing.middleware.ProviderBlockingMiddleware',  # Middleware для блокировки заблокированных учреждений
     'audit.services.AuditMiddleware',  # Middleware для логирования HTTP запросов
+    'security.middleware.SecurityMonitoringMiddleware',  # Middleware для мониторинга безопасности
+    'security.middleware.SecurityAuditMiddleware',  # Middleware для аудита безопасности
 ]
 
 # Настройки URL и шаблонов
@@ -428,4 +431,30 @@ LOGGING = {
             'propagate': True,
         },
     },
-} 
+}
+
+# Настройки безопасности
+SECURITY_EXEMPT_PATHS = [
+    '/admin/jsi18n/',
+    '/static/',
+    '/media/',
+    '/favicon.ico',
+    '/api/docs/',
+    '/swagger/',
+    '/redoc/',
+]
+
+SECURITY_RATE_LIMIT_PATHS = {
+    '/api/login/': {'limit': 10, 'window': 300},  # 10 попыток за 5 минут
+    '/api/register/': {'limit': 5, 'window': 3600},  # 5 попыток за час
+    '/api/password-reset/': {'limit': 3, 'window': 3600},  # 3 попытки за час
+}
+
+# Настройки Content Security Policy
+CSP_DEFAULT_SRC = ("'self'",)
+CSP_SCRIPT_SRC = ("'self'", "'unsafe-inline'")
+CSP_STYLE_SRC = ("'self'", "'unsafe-inline'")
+CSP_IMG_SRC = ("'self'", "data:", "https:")
+CSP_FONT_SRC = ("'self'", "https:")
+CSP_CONNECT_SRC = ("'self'",)
+CSP_FRAME_ANCESTORS = ("'none'",) 
