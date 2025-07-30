@@ -4,7 +4,6 @@ from django.utils import timezone
 from unittest.mock import patch, MagicMock
 from notifications.tasks import (
     send_debt_reminder_task,
-    send_price_change_notification_task,
     send_new_review_notification_task,
     send_role_invite_expired_task,
     send_pet_sitting_notification_task,
@@ -50,32 +49,7 @@ class DebtReminderTaskTest(TestCase):
             send_debt_reminder_task(99999, 100.0, 'EUR')
 
 
-class PriceChangeNotificationTaskTest(TestCase):
-    def setUp(self):
-        self.user = User.objects.create_user(
-            email='test@example.com',
-            password='testpass123'
-        )
 
-    @patch('notifications.tasks.Service')
-    @patch('notifications.tasks.User')
-    @patch('notifications.tasks.NotificationService')
-    def test_send_price_change_notification_task(self, mock_service, mock_user, mock_service_model):
-        """Тест отправки уведомления об изменении цены"""
-        # Мокаем модели
-        mock_service_instance = MagicMock()
-        mock_service_instance.id = 1
-        mock_service_instance.name = 'Test Service'
-        mock_service_model.objects.get.return_value = mock_service_instance
-        
-        mock_user.objects.filter.return_value.distinct.return_value = [self.user]
-        
-        mock_notification = MagicMock()
-        mock_service.return_value.send_notification.return_value = mock_notification
-        
-        send_price_change_notification_task(1, 100.0, 120.0, 'EUR')
-        
-        mock_service.return_value.send_notification.assert_called_once()
 
 
 class NewReviewNotificationTaskTest(TestCase):

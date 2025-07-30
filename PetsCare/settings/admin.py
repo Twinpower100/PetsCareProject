@@ -14,7 +14,7 @@ from django import forms
 from django.contrib.auth import get_user_model
 import logging
 
-from .models import SecuritySettings, RatingDecaySettings
+from .models import SecuritySettings, RatingDecaySettings, BlockingScheduleSettings
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -556,3 +556,186 @@ class RatingDecaySettingsAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin):
         css = {
             'all': ('admin/css/rating_decay_settings.css',)
         } 
+
+
+class BlockingScheduleSettingsForm(forms.ModelForm):
+    """Форма для настроек расписания блокировок с валидацией."""
+    
+    class Meta:
+        model = BlockingScheduleSettings
+        fields = '__all__'
+    
+    def clean(self):
+        """Валидация формы."""
+        cleaned_data = super().clean()
+        
+        # Проверка совместимости настроек
+        frequency = cleaned_data.get('frequency')
+        days_of_week = cleaned_data.get('days_of_week', [])
+        day_of_month = cleaned_data.get('day_of_month')
+        custom_interval_hours = cleaned_data.get('custom_interval_hours')
+        
+        if frequency == 'weekly' and days_of_week:
+            # Проверяем, что дни недели в правильном диапазоне
+            invalid_days = [day for day in days_of_week if day not in range(7)]
+            if invalid_days:
+                raise ValidationError({
+                    'days_of_week': _('Days of week must be numbers from 0 to 6 (0=Monday, 6=Sunday)')
+                })
+        
+        if frequency == 'monthly' and not day_of_month:
+            raise ValidationError({
+                'day_of_month': _('Day of month is required for monthly frequency')
+            })
+        
+        if frequency == 'custom' and not custom_interval_hours:
+            raise ValidationError({
+                'custom_interval_hours': _('Custom interval is required for custom frequency')
+            })
+        
+        return cleaned_data
+
+
+@admin.register(BlockingScheduleSettings)
+class BlockingScheduleSettingsAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin):
+    """
+    Админский интерфейс для настроек расписания блокировок.
+    
+    Особенности:
+    - Ограниченный доступ только для админов проекта
+    - Группировка полей по категориям
+    - Валидация настроек
+    - Автоматическое управление активностью
+    - Удобный интерфейс с подсказками
+    """
+    
+    form = BlockingScheduleSettingsForm
+    
+    # Отключаем возможность удаления (синглтон)
+    def has_delete_permission(self, request, obj=None):
+        return False
+    
+    # Группировка полей
+    fieldsets = (
+        (_('Schedule Configuration'), {
+            'fields': (
+                'frequency',
+                'check_time',
+                'days_of_week',
+                'day_of_month',
+                'custom_interval_hours',
+            ),
+            'description': _('Configure the frequency and timing of blocking checks')
+        }),
+        
+        (_('Additional Options'), {
+            'fields': (
+                'exclude_weekends',
+                'exclude_holidays',
+            ),
+            'description': _('Configure additional scheduling options')
+        }),
+        
+        (_('Status'), {
+            'fields': ('is_active',),
+            'description': _('Activate these settings (will deactivate all others)')
+        }),
+        
+        (_('Metadata'), {
+            'fields': (
+                'created_at',
+                'updated_at',
+                'updated_by',
+            ),
+            'classes': ('collapse',),
+            'description': _('System metadata and change tracking')
+        }),
+    )
+    
+    # Только для чтения поля
+    readonly_fields = ('created_at', 'updated_at')
+    
+    # Отображение в списке
+    list_display = ('get_settings_summary', 'is_active', 'updated_at', 'updated_by')
+    list_filter = ('is_active', 'frequency')
+    search_fields = ()
+    
+    # Настройки страницы
+    save_on_top = True
+    
+    def get_settings_summary(self, obj):
+        """Возвращает краткое описание настроек для списка."""
+        if obj.is_active:
+            status = format_html('<span style="color: green;">●</span> Active')
+        else:
+            status = format_html('<span style="color: red;">●</span> Inactive')
+        
+        schedule_desc = obj.get_schedule_description()
+        
+        return format_html(
+            '<div><strong>{}</strong><br/>'
+            '<small style="color: #666;">{}</small><br/>'
+            '<small>{}</small></div>',
+            schedule_desc,
+            status,
+            f"Updated: {obj.updated_at.strftime('%Y-%m-%d %H:%M')}"
+        )
+    get_settings_summary.short_description = _('Schedule Settings')
+    
+    def save_model(self, request, obj, form, change):
+        """Переопределяем сохранение для логирования изменений."""
+        if change:
+            # Логируем изменение
+            logger.info(
+                f"Blocking schedule settings updated by {request.user.email}. "
+                f"Changes: {form.changed_data}"
+            )
+        else:
+            # Логируем создание
+            logger.info(
+                f"Blocking schedule settings created by {request.user.email}"
+            )
+        
+        # Устанавливаем пользователя, внесшего изменения
+        obj.updated_by = request.user
+        
+        super().save_model(request, obj, form, change)
+    
+    def get_queryset(self, request):
+        """Возвращает queryset с проверкой доступа."""
+        if not self._check_global_settings_access(request):
+            return self.model.objects.none()
+        return super().get_queryset(request)
+    
+    def changelist_view(self, request, extra_context=None):
+        """Кастомизируем список для синглтона."""
+        # Для синглтона показываем только одну запись
+        if self.model.objects.exists():
+            # Если есть записи, перенаправляем на первую
+            first_obj = self.model.objects.first()
+            return self.response_change(request, first_obj)
+        
+        # Если записей нет, показываем форму создания
+        return self.add_view(request)
+    
+    def response_change(self, request, obj):
+        """Кастомизируем ответ после изменения."""
+        response = super().response_change(request, obj)
+        
+        # Добавляем сообщение об успешном сохранении
+        if '_save' in request.POST:
+            self.message_user(
+                request,
+                _('Blocking schedule settings updated successfully. '
+                  'Changes will take effect on the next Celery Beat restart.'),
+                level='SUCCESS'
+            )
+        
+        return response
+    
+    class Media:
+        """Добавляем CSS для улучшения интерфейса."""
+        css = {
+            'all': ('admin/css/blocking_schedule_settings.css',)
+        }
+        js = ('admin/js/blocking_schedule_settings.js',) 

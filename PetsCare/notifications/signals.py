@@ -21,7 +21,6 @@ from .tasks import (
     send_booking_confirmation_task,
     send_booking_cancellation_task,
     schedule_booking_reminders_task,
-    send_price_change_notification_task,
     send_new_review_notification_task,
     send_pet_sitting_notification_task,
     send_payment_failed_notification_task,
@@ -277,38 +276,6 @@ def handle_provider_blocking_notifications(sender, instance, **kwargs):
     except Exception as e:
         logger.error(f"Failed to handle provider blocking notification for provider {instance.id}: {e}")
 
-
-# Сигналы для изменений цен услуг
-@receiver(post_save, sender='catalog.Service')
-def handle_service_price_change_notifications(sender, instance, **kwargs):
-    """
-    Обрабатывает уведомления об изменении цен услуг.
-    
-    Args:
-        sender: Модель отправителя сигнала
-        instance: Экземпляр услуги
-        **kwargs: Дополнительные аргументы
-    """
-    try:
-        # Проверяем, изменилась ли цена
-        if instance.pk:
-            old_instance = sender.objects.get(pk=instance.pk)
-            if old_instance.price != instance.price:
-                # Отправляем задачу на уведомление об изменении цены
-                send_price_change_notification_task.delay(
-                    service_id=instance.id,
-                    old_price=old_instance.price,
-                    new_price=instance.price,
-                    currency=instance.currency or 'EUR'
-                )
-                
-                logger.info(f"Price change notification task queued for service {instance.id}")
-                
-    except sender.DoesNotExist:
-        # Это новая услуга
-        pass
-    except Exception as e:
-        logger.error(f"Failed to handle service price change notification for service {instance.id}: {e}")
 
 
 # Сигналы для отзывов

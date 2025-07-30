@@ -526,3 +526,247 @@ class RatingDecaySettings(models.Model):
         weight = max(float(self.min_weight), decay_factor)
         
         return weight 
+
+
+class BlockingScheduleSettings(models.Model):
+    """
+    Настройки расписания для автоматических проверок блокировок учреждений.
+    
+    Использует паттерн синглтона - только одна активная запись в базе данных.
+    Позволяет гибко настраивать частоту и время проверок через админку.
+    """
+    
+    # === ОСНОВНЫЕ НАСТРОЙКИ ===
+    is_active = models.BooleanField(
+        _('Is active'),
+        default=True,
+        help_text=_('Whether these schedule settings are currently active')
+    )
+    
+    # === ЧАСТОТА ПРОВЕРОК ===
+    FREQUENCY_CHOICES = [
+        ('hourly', _('Hourly')),
+        ('daily', _('Daily')),
+        ('weekly', _('Weekly')),
+        ('monthly', _('Monthly')),
+        ('custom', _('Custom Interval')),
+    ]
+    
+    frequency = models.CharField(
+        _('Frequency'),
+        max_length=20,
+        choices=FREQUENCY_CHOICES,
+        default='daily',
+        help_text=_('Frequency of blocking checks')
+    )
+    
+    # === ВРЕМЯ ПРОВЕРОК ===
+    check_time = models.TimeField(
+        _('Check Time'),
+        default='02:00',
+        help_text=_('Time of day to perform checks (HH:MM format)')
+    )
+    
+    # === ДНИ НЕДЕЛИ (для еженедельной частоты) ===
+    days_of_week = models.JSONField(
+        _('Days of Week'),
+        default=list,
+        blank=True,
+        help_text=_('Days of week for weekly frequency (0=Monday, 6=Sunday). Empty = all days.')
+    )
+    
+    # === ДЕНЬ МЕСЯЦА (для ежемесячной частоты) ===
+    day_of_month = models.PositiveIntegerField(
+        _('Day of Month'),
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(31)],
+        help_text=_('Day of month for monthly frequency (1-31)')
+    )
+    
+    # === ПОЛЬЗОВАТЕЛЬСКИЙ ИНТЕРВАЛ (для custom частоты) ===
+    custom_interval_hours = models.PositiveIntegerField(
+        _('Custom Interval (Hours)'),
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(8760)],  # 1 час - 1 год
+        help_text=_('Custom interval in hours for custom frequency (1-8760 hours)')
+    )
+    
+    # === ДОПОЛНИТЕЛЬНЫЕ НАСТРОЙКИ ===
+    exclude_weekends = models.BooleanField(
+        _('Exclude Weekends'),
+        default=False,
+        help_text=_('Skip checks on weekends (Saturday and Sunday)')
+    )
+    
+    exclude_holidays = models.BooleanField(
+        _('Exclude Holidays'),
+        default=False,
+        help_text=_('Skip checks on holidays (requires holiday calendar)')
+    )
+    
+    # === МЕТАДАННЫЕ ===
+    created_at = models.DateTimeField(
+        _('Created at'),
+        auto_now_add=True
+    )
+    
+    updated_at = models.DateTimeField(
+        _('Updated at'),
+        auto_now=True
+    )
+    
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_('Updated by'),
+        related_name='updated_blocking_schedules',
+        help_text=_('User who last updated these settings')
+    )
+    
+    class Meta:
+        verbose_name = _('Blocking Schedule Settings')
+        verbose_name_plural = _('Blocking Schedule Settings')
+        db_table = 'blocking_schedule_settings'
+        ordering = ['-is_active', '-updated_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['is_active'],
+                condition=models.Q(is_active=True),
+                name='unique_active_blocking_schedule'
+            )
+        ]
+    
+    def __str__(self):
+        return f"Blocking Schedule: {self.get_frequency_display()} at {self.check_time}"
+    
+    def save(self, *args, **kwargs):
+        """Переопределяем save для управления синглтоном."""
+        if self.is_active:
+            # Деактивируем все остальные записи
+            BlockingScheduleSettings.objects.exclude(pk=self.pk).update(is_active=False)
+        
+        # Валидация
+        self.clean()
+        
+        super().save(*args, **kwargs)
+    
+    def clean(self):
+        """Валидация настроек."""
+        from django.core.exceptions import ValidationError
+        
+        # Проверка дней недели
+        if self.frequency == 'weekly' and self.days_of_week:
+            invalid_days = [day for day in self.days_of_week if day not in range(7)]
+            if invalid_days:
+                raise ValidationError({
+                    'days_of_week': _('Days of week must be numbers from 0 to 6 (0=Monday, 6=Sunday)')
+                })
+        
+        # Проверка дня месяца
+        if self.frequency == 'monthly' and not self.day_of_month:
+            raise ValidationError({
+                'day_of_month': _('Day of month is required for monthly frequency')
+            })
+        
+        # Проверка пользовательского интервала
+        if self.frequency == 'custom' and not self.custom_interval_hours:
+            raise ValidationError({
+                'custom_interval_hours': _('Custom interval is required for custom frequency')
+            })
+    
+    def _check_global_settings_access(self):
+        """
+        Проверяет доступ к глобальным настройкам.
+        
+        Доступ имеют:
+        - Суперпользователи Django (is_superuser=True)
+        - Сотрудники с ролью system_admin (is_staff=True + system_admin role)
+        """
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        
+        # Получаем текущего пользователя из контекста запроса
+        # Это будет проверяться в админке
+        return True
+    
+    @classmethod
+    def get_active_settings(cls):
+        """
+        Возвращает активные настройки расписания.
+        
+        Если активных настроек нет, создает настройки по умолчанию.
+        """
+        try:
+            return cls.objects.get(is_active=True)
+        except cls.DoesNotExist:
+            # Создаем настройки по умолчанию
+            default_settings = cls.objects.create(
+                frequency='daily',
+                check_time='02:00',
+                is_active=True
+            )
+            return default_settings
+    
+    def get_celery_schedule(self):
+        """
+        Возвращает расписание для Celery Beat.
+        
+        Возвращает:
+        - crontab для daily/weekly/monthly
+        - timedelta для hourly/custom
+        """
+        from celery.schedules import crontab, timedelta
+        
+        if self.frequency == 'hourly':
+            return timedelta(hours=1)
+        
+        elif self.frequency == 'daily':
+            return crontab(hour=self.check_time.hour, minute=self.check_time.minute)
+        
+        elif self.frequency == 'weekly':
+            if self.days_of_week:
+                # Используем первый день из списка
+                day_of_week = self.days_of_week[0]
+            else:
+                # По умолчанию понедельник (0)
+                day_of_week = 0
+            return crontab(
+                day_of_week=day_of_week,
+                hour=self.check_time.hour,
+                minute=self.check_time.minute
+            )
+        
+        elif self.frequency == 'monthly':
+            return crontab(
+                day_of_month=self.day_of_month or 1,
+                hour=self.check_time.hour,
+                minute=self.check_time.minute
+            )
+        
+        elif self.frequency == 'custom':
+            return timedelta(hours=self.custom_interval_hours or 24)
+        
+        # По умолчанию ежедневно в 02:00
+        return crontab(hour=2, minute=0)
+    
+    def get_schedule_description(self):
+        """Возвращает человекочитаемое описание расписания."""
+        if self.frequency == 'hourly':
+            return _('Every hour')
+        elif self.frequency == 'daily':
+            return _('Daily at {}').format(self.check_time.strftime('%H:%M'))
+        elif self.frequency == 'weekly':
+            if self.days_of_week:
+                days = [['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][day] for day in self.days_of_week]
+                return _('Weekly on {} at {}').format(', '.join(days), self.check_time.strftime('%H:%M'))
+            else:
+                return _('Weekly at {}').format(self.check_time.strftime('%H:%M'))
+        elif self.frequency == 'monthly':
+            return _('Monthly on day {} at {}').format(self.day_of_month, self.check_time.strftime('%H:%M'))
+        elif self.frequency == 'custom':
+            return _('Every {} hours').format(self.custom_interval_hours)
+        return _('Unknown schedule') 

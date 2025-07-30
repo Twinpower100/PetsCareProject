@@ -20,11 +20,7 @@ CELERY_BEAT_SCHEDULE = {
         'schedule': crontab(hour=9, minute=0),
     },
     
-    # Еженедельная отправка уведомлений об изменении цен (по понедельникам в 10:00)
-    'send-price-change-notifications': {
-        'task': 'notifications.tasks.send_price_change_notifications_task',
-        'schedule': crontab(day_of_week=1, hour=10, minute=0),
-    },
+
     
     # Ежедневная проверка истечения инвайтов ролей (в 8:00)
     'check-role-invite-expiration': {

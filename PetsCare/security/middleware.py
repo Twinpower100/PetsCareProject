@@ -1,146 +1,103 @@
 import logging
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, HttpResponseForbidden, HttpResponseTooManyRequests
 from django.utils.deprecation import MiddlewareMixin
 from django.core.cache import cache
 from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
 
-from .services import threat_detection_service, ip_blocking_service
+from .services import threat_detection_service, ip_blocking_service, policy_enforcement_service, session_monitoring_service, access_control_service
 from .models import SecurityThreat
 
 logger = logging.getLogger(__name__)
 
-
 class SecurityMonitoringMiddleware(MiddlewareMixin):
-    """Middleware для мониторинга безопасности и обнаружения угроз"""
-    
     def __init__(self, get_response=None):
         super().__init__(get_response)
-        self.exempt_paths = getattr(settings, 'SECURITY_EXEMPT_PATHS', [
-            '/admin/jsi18n/',
-            '/static/',
-            '/media/',
-            '/favicon.ico',
-        ])
-        self.rate_limit_paths = getattr(settings, 'SECURITY_RATE_LIMIT_PATHS', {
-            '/api/login/': {'limit': 10, 'window': 300},  # 10 попыток за 5 минут
-            '/api/register/': {'limit': 5, 'window': 3600},  # 5 попыток за час
-        })
+        self.get_response = get_response
     
     def process_request(self, request: HttpRequest):
-        """Обработать входящий запрос"""
-        try:
-            # Пропустить исключенные пути
-            if self._is_exempt_path(request.path):
-                return None
-            
-            # Проверить IP в черном списке
-            if self._is_ip_blocked(request):
+        """Обработка входящего запроса"""
+        # Проверить, является ли путь исключенным
+        if self._is_exempt_path(request.path):
+            return None
+        
+        # Проверить блокировку IP
+        if self._is_ip_blocked(request):
+            return self._blocked_response(request)
+        
+        # Проверить rate limiting
+        if self._is_rate_limited(request):
+            return self._rate_limited_response(request)
+        
+        # Анализ угроз безопасности
+        threat = threat_detection_service.analyze_request(request)
+        if threat:
+            logger.warning(f"Security threat detected: {threat.threat_type} from {threat.ip_address}")
+            # Можно заблокировать доступ при критических угрозах
+            if threat.severity == 'critical':
                 return self._blocked_response(request)
-            
-            # Проверить rate limiting
-            if self._is_rate_limited(request):
-                return self._rate_limited_response(request)
-            
-            # Анализировать запрос на угрозы
-            threat = threat_detection_service.analyze_request(request)
-            if threat:
-                # Если обнаружена критическая угроза, заблокировать IP
-                if threat.severity == 'critical':
-                    ip_blocking_service.block_ip(
-                        threat.ip_address,
-                        f"Critical threat detected: {threat.threat_type}",
-                        'automatic'
-                    )
-                    return self._blocked_response(request)
-                
-                # Для других угроз просто логируем
-                logger.warning(f"Security threat detected: {threat.threat_type} from {threat.ip_address}")
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error in SecurityMonitoringMiddleware: {e}")
-            return None
+        
+        # Проверить политики безопасности для авторизованных пользователей
+        if hasattr(request, 'user') and request.user.is_authenticated:
+            self._check_security_policies(request)
+        
+        return None
     
     def process_response(self, request: HttpRequest, response: HttpResponse):
-        """Обработать исходящий ответ"""
-        try:
-            # Добавить заголовки безопасности
-            response = self._add_security_headers(response)
-            
-            # Логировать подозрительные ответы
-            if response.status_code in [403, 404, 500]:
-                self._log_suspicious_response(request, response)
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"Error processing response in SecurityMonitoringMiddleware: {e}")
-            return response
+        """Обработка исходящего ответа"""
+        # Добавить заголовки безопасности
+        response = self._add_security_headers(response)
+        
+        # Логировать подозрительные ответы
+        self._log_suspicious_response(request, response)
+        
+        return response
     
     def _is_exempt_path(self, path: str) -> bool:
-        """Проверить, является ли путь исключенным"""
-        for exempt_path in self.exempt_paths:
-            if path.startswith(exempt_path):
-                return True
-        return False
+        """Проверить, является ли путь исключенным из проверок безопасности"""
+        exempt_paths = getattr(settings, 'SECURITY_EXEMPT_PATHS', [])
+        return any(path.startswith(exempt) for exempt in exempt_paths)
     
     def _is_ip_blocked(self, request: HttpRequest) -> bool:
-        """Проверить, заблокирован ли IP"""
-        try:
-            ip = self._get_client_ip(request)
-            return ip_blocking_service.is_ip_blocked(ip)
-        except Exception as e:
-            logger.error(f"Error checking IP block status: {e}")
-            return False
+        """Проверить, заблокирован ли IP адрес"""
+        client_ip = self._get_client_ip(request)
+        return ip_blocking_service.is_ip_blocked(client_ip)
     
     def _is_rate_limited(self, request: HttpRequest) -> bool:
         """Проверить rate limiting"""
-        try:
-            path = request.path
-            if path not in self.rate_limit_paths:
-                return False
-            
-            ip = self._get_client_ip(request)
-            limit_config = self.rate_limit_paths[path]
-            
-            cache_key = f'rate_limit_{path}_{ip}'
-            current_count = cache.get(cache_key, 0)
-            
-            if current_count >= limit_config['limit']:
-                return True
-            
-            # Увеличить счетчик
-            cache.set(cache_key, current_count + 1, limit_config['window'])
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error checking rate limit: {e}")
-            return False
+        rate_limit_paths = getattr(settings, 'SECURITY_RATE_LIMIT_PATHS', {})
+        
+        for path, config in rate_limit_paths.items():
+            if request.path.startswith(path):
+                limit = config.get('limit', 10)
+                window = config.get('window', 300)  # секунды
+                
+                client_ip = self._get_client_ip(request)
+                cache_key = f"rate_limit:{client_ip}:{path}"
+                
+                requests = cache.get(cache_key, 0)
+                if requests >= limit:
+                    return True
+                
+                cache.set(cache_key, requests + 1, window)
+                break
+        
+        return False
     
     def _blocked_response(self, request: HttpRequest) -> HttpResponse:
-        """Создать ответ для заблокированного IP"""
-        from django.http import HttpResponseForbidden
-        
-        response = HttpResponseForbidden(
-            content="Access denied. Your IP address has been blocked due to suspicious activity.",
+        """Ответ для заблокированных запросов"""
+        return HttpResponseForbidden(
+            "Access denied. Your IP address has been blocked due to security violations.",
             content_type="text/plain"
         )
-        response['X-Blocked-IP'] = self._get_client_ip(request)
-        return response
     
     def _rate_limited_response(self, request: HttpRequest) -> HttpResponse:
-        """Создать ответ для превышения rate limit"""
-        from django.http import HttpResponseTooManyRequests
-        
-        response = HttpResponseTooManyRequests(
-            content="Too many requests. Please try again later.",
+        """Ответ для запросов, превысивших лимит"""
+        return HttpResponseTooManyRequests(
+            "Too many requests. Please try again later.",
             content_type="text/plain"
         )
-        response['Retry-After'] = '300'  # 5 минут
-        return response
     
     def _add_security_headers(self, response: HttpResponse) -> HttpResponse:
         """Добавить заголовки безопасности"""
@@ -156,122 +113,162 @@ class SecurityMonitoringMiddleware(MiddlewareMixin):
         # Referrer-Policy
         response['Referrer-Policy'] = 'strict-origin-when-cross-origin'
         
-        # Content-Security-Policy (базовая)
-        csp_policy = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
-        response['Content-Security-Policy'] = csp_policy
+        # Content Security Policy
+        csp_parts = []
+        
+        # Default source
+        default_src = getattr(settings, 'CSP_DEFAULT_SRC', ["'self'"])
+        if default_src:
+            csp_parts.append(f"default-src {' '.join(default_src)}")
+        
+        # Script source
+        script_src = getattr(settings, 'CSP_SCRIPT_SRC', ["'self'"])
+        if script_src:
+            csp_parts.append(f"script-src {' '.join(script_src)}")
+        
+        # Style source
+        style_src = getattr(settings, 'CSP_STYLE_SRC', ["'self'"])
+        if style_src:
+            csp_parts.append(f"style-src {' '.join(style_src)}")
+        
+        # Image source
+        img_src = getattr(settings, 'CSP_IMG_SRC', ["'self'"])
+        if img_src:
+            csp_parts.append(f"img-src {' '.join(img_src)}")
+        
+        # Font source
+        font_src = getattr(settings, 'CSP_FONT_SRC', ["'self'"])
+        if font_src:
+            csp_parts.append(f"font-src {' '.join(font_src)}")
+        
+        # Connect source
+        connect_src = getattr(settings, 'CSP_CONNECT_SRC', ["'self'"])
+        if connect_src:
+            csp_parts.append(f"connect-src {' '.join(connect_src)}")
+        
+        # Frame ancestors
+        frame_ancestors = getattr(settings, 'CSP_FRAME_ANCESTORS', ["'none'"])
+        if frame_ancestors:
+            csp_parts.append(f"frame-ancestors {' '.join(frame_ancestors)}")
+        
+        if csp_parts:
+            response['Content-Security-Policy'] = '; '.join(csp_parts)
         
         return response
     
     def _log_suspicious_response(self, request: HttpRequest, response: HttpResponse):
         """Логировать подозрительные ответы"""
-        try:
-            ip = self._get_client_ip(request)
-            
-            # Создать запись об угрозе для подозрительных ответов
-            if response.status_code == 403:
-                threat_type = 'unauthorized_access'
-                severity = 'medium'
-                description = f"403 Forbidden response for {request.path}"
-            elif response.status_code == 404:
-                # Проверить, не является ли это попыткой сканирования
-                if self._is_scanning_attempt(request):
-                    threat_type = 'suspicious_ip'
-                    severity = 'low'
-                    description = f"Potential scanning attempt: {request.path}"
-                else:
-                    return  # Обычная 404, не логируем
-            elif response.status_code == 500:
-                threat_type = 'other'
-                severity = 'low'
-                description = f"500 Internal Server Error for {request.path}"
-            else:
-                return
-            
-            # Создать угрозу
-            SecurityThreat.objects.create(
-                threat_type=threat_type,
-                severity=severity,
-                ip_address=ip,
-                user_agent=request.META.get('HTTP_USER_AGENT', ''),
-                request_path=request.path,
-                request_method=request.method,
-                description=description
+        # Логировать 4xx и 5xx ошибки
+        if response.status_code >= 400:
+            client_ip = self._get_client_ip(request)
+            logger.warning(
+                f"Suspicious response: {response.status_code} for {request.path} "
+                f"from {client_ip} (User-Agent: {request.META.get('HTTP_USER_AGENT', 'Unknown')})"
             )
-            
-        except Exception as e:
-            logger.error(f"Error logging suspicious response: {e}")
+        
+        # Логировать попытки сканирования
+        if self._is_scanning_attempt(request):
+            client_ip = self._get_client_ip(request)
+            logger.warning(
+                f"Potential scanning attempt detected from {client_ip} "
+                f"for {request.path}"
+            )
     
     def _is_scanning_attempt(self, request: HttpRequest) -> bool:
-        """Проверить, является ли это попыткой сканирования"""
+        """Определить попытку сканирования"""
         suspicious_paths = [
             '/admin', '/wp-admin', '/phpmyadmin', '/mysql', '/sql',
-            '/config', '/backup', '/.env', '/.git', '/.htaccess',
-            '/robots.txt', '/sitemap.xml', '/test', '/debug',
+            '/config', '/.env', '/.git', '/backup', '/test',
+            '/api/v1', '/api/v2', '/swagger', '/docs'
         ]
         
-        path_lower = request.path.lower()
-        return any(suspicious in path_lower for suspicious in suspicious_paths)
+        return any(suspicious in request.path.lower() for suspicious in suspicious_paths)
     
     def _get_client_ip(self, request: HttpRequest) -> str:
-        """Получить IP-адрес клиента"""
+        """Получить IP адрес клиента"""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
         if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0].strip()
-        else:
-            ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
-        return ip
+            return x_forwarded_for.split(',')[0].strip()
+        return request.META.get('REMOTE_ADDR', '0.0.0.0')
+    
+    def _check_security_policies(self, request: HttpRequest):
+        """Проверить политики безопасности для пользователя"""
+        try:
+            # Проверить соблюдение политик
+            violations = policy_enforcement_service.check_user_compliance(request.user, request)
+            
+            # Проверить политики сессий
+            session_violations = session_monitoring_service.check_session_compliance(request.user, request)
+            violations.extend(session_violations)
+            
+            # Проверить политики доступа
+            access_violations = access_control_service.check_access_compliance(request.user, request)
+            violations.extend(access_violations)
+            
+            # Логировать нарушения
+            for violation in violations:
+                logger.warning(
+                    f"Policy violation detected: {violation.policy.name} "
+                    f"by {violation.user.email} - {violation.description}"
+                )
+                
+                # При критических нарушениях можно заблокировать доступ
+                if violation.severity == 'critical':
+                    logger.critical(
+                        f"Critical policy violation: {violation.policy.name} "
+                        f"by {violation.user.email} - immediate action required"
+                    )
+        
+        except Exception as e:
+            logger.error(f"Error checking security policies: {str(e)}")
 
 
 class SecurityAuditMiddleware(MiddlewareMixin):
-    """Middleware для аудита безопасности"""
-    
     def process_request(self, request: HttpRequest):
-        """Логировать запросы для аудита"""
-        try:
-            # Логировать только важные запросы
-            if self._should_audit_request(request):
-                self._log_request(request)
-        except Exception as e:
-            logger.error(f"Error in SecurityAuditMiddleware: {e}")
-        
-        return None
+        """Аудит входящих запросов"""
+        if self._should_audit_request(request):
+            self._log_request(request)
     
     def _should_audit_request(self, request: HttpRequest) -> bool:
         """Определить, нужно ли аудировать запрос"""
-        audit_paths = [
-            '/api/login/', '/api/register/', '/api/admin/',
-            '/admin/', '/api/users/', '/api/settings/',
+        # Аудировать только авторизованные запросы
+        if not hasattr(request, 'user') or not request.user.is_authenticated:
+            return False
+        
+        # Аудировать запросы к важным ресурсам
+        important_paths = [
+            '/admin/', '/api/', '/users/', '/pets/', '/providers/',
+            '/bookings/', '/billing/', '/settings/'
         ]
         
-        return any(request.path.startswith(path) for path in audit_paths)
+        return any(request.path.startswith(path) for path in important_paths)
     
     def _log_request(self, request: HttpRequest):
-        """Логировать запрос"""
+        """Записать запрос в аудит"""
         try:
-            ip = self._get_client_ip(request)
-            user = getattr(request, 'user', None)
-            user_id = user.id if user and user.is_authenticated else None
+            client_ip = self._get_client_ip(request)
+            user_email = request.user.email if request.user.is_authenticated else 'anonymous'
             
-            log_data = {
+            audit_data = {
                 'timestamp': timezone.now().isoformat(),
-                'ip_address': ip,
-                'user_id': user_id,
+                'user': user_email,
+                'ip_address': client_ip,
                 'method': request.method,
                 'path': request.path,
                 'user_agent': request.META.get('HTTP_USER_AGENT', ''),
                 'referer': request.META.get('HTTP_REFERER', ''),
+                'query_params': dict(request.GET),
+                'post_data': dict(request.POST) if request.method == 'POST' else {},
             }
             
-            logger.info(f"Security audit: {log_data}")
+            logger.info(f"Security audit: {audit_data}")
             
         except Exception as e:
-            logger.error(f"Error logging request: {e}")
+            logger.error(f"Error logging security audit: {str(e)}")
     
     def _get_client_ip(self, request: HttpRequest) -> str:
-        """Получить IP-адрес клиента"""
+        """Получить IP адрес клиента"""
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
         if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0].strip()
-        else:
-            ip = request.META.get('REMOTE_ADDR', '127.0.0.1')
-        return ip 
+            return x_forwarded_for.split(',')[0].strip()
+        return request.META.get('REMOTE_ADDR', '0.0.0.0') 

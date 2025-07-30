@@ -75,6 +75,7 @@ INSTALLED_APPS = [
     'ratings.apps.RatingsConfig',
     'audit.apps.AuditConfig',
     'security.apps.SecurityConfig',
+    'user_analytics.apps.UserAnalyticsConfig',
 ]
 
 # Middleware для обработки запросов
@@ -298,7 +299,7 @@ CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULE = {
     'check-provider-blocking': {
         'task': 'billing.tasks.run_blocking_check',
-        'schedule': 3600.0,  # Каждый час
+        'schedule': crontab(hour=2, minute=0),  # Ежедневно в 02:00 (по умолчанию)
     },
     'update-currency-rates': {
         'task': 'billing.tasks.update_currency_rates',
@@ -359,6 +360,8 @@ REST_FRAMEWORK = {
 
 # Настройки JWT
 from datetime import timedelta
+from celery.schedules import crontab
+
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=1),

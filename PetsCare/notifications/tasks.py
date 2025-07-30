@@ -208,7 +208,7 @@ def send_password_reset_task(user_id: int, reset_token: str):
     try:
         from django.contrib.auth import get_user_model
         from django.urls import reverse
-from django.conf import settings
+        from django.conf import settings
         
         User = get_user_model()
         user = User.objects.get(id=user_id)
@@ -359,9 +359,9 @@ def process_reminders_task():
                 )
                 
                 # Обновляем время последнего уведомления и следующего
-        reminder.last_notified = now
-        reminder.next_notification = reminder.calculate_next_notification()
-        reminder.save()
+                reminder.last_notified = now
+                reminder.next_notification = reminder.calculate_next_notification()
+                reminder.save()
                 
                 logger.info(f"Reminder notification sent for reminder {reminder.id}")
                 
@@ -415,9 +415,9 @@ def send_booking_cancellation_task(booking_id: int, reason: str = None):
         reason: Причина отмены
     """
     try:
-    from booking.models import Booking
+        from booking.models import Booking
 
-    booking = Booking.objects.get(id=booking_id)
+        booking = Booking.objects.get(id=booking_id)
 
         message = _('Your booking has been cancelled')
         if reason:
@@ -473,58 +473,6 @@ def send_debt_reminder_task(user_id: int, debt_amount: float, currency: str = 'E
     except Exception as e:
         logger.error(f"Failed to send debt reminder to user {user_id}: {e}")
 
-
-@shared_task
-def send_price_change_notification_task(service_id: int, old_price: float, new_price: float, currency: str = 'EUR'):
-    """
-    Задача для отправки уведомления об изменении цены услуги.
-    
-    Args:
-        service_id: ID услуги
-        old_price: Старая цена
-        new_price: Новая цена
-        currency: Валюта
-    """
-    try:
-        from catalog.models import Service
-        from booking.models import Booking
-        
-        service = Service.objects.get(id=service_id)
-        
-        # Получаем всех пользователей, которые использовали эту услугу
-        users = User.objects.filter(
-            bookings__service=service
-        ).distinct()
-        
-        notification_service = NotificationService()
-        
-        for user in users:
-            try:
-                notification = notification_service.send_notification(
-        user=user,
-                    notification_type='system',
-                    title=_('Service Price Changed'),
-                    message=_('The price for ') + service.name + _(' has changed.'),
-                    channels=['email', 'push', 'in_app'],
-                    priority='medium',
-                    data={
-                        'service_id': service.id,
-                        'service_name': service.name,
-            'old_price': old_price,
-                        'new_price': new_price,
-                        'currency': currency,
-                        'change_percentage': round(((new_price - old_price) / old_price) * 100, 1)
-                    }
-                )
-                
-                logger.info(f"Price change notification sent to user {user.id}")
-                
-            except Exception as e:
-                logger.error(f"Failed to send price change notification to user {user.id}: {e}")
-                continue
-        
-    except Exception as e:
-        logger.error(f"Failed to send price change notifications for service {service_id}: {e}")
 
 
 @shared_task

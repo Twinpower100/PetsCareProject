@@ -45,7 +45,7 @@
 - `send_push_notification_task`
 - `send_in_app_notification_task`
 - `send_debt_reminder_task`
-- `send_price_change_notification_task`
+
 - `send_new_review_notification_task`
 - `send_role_invite_expired_task`
 - `send_pet_sitting_notification_task`
@@ -153,10 +153,7 @@ preferences.save()
 python manage.py send_debt_reminders --min-amount 10.0 --days-overdue 7
 ```
 
-### Уведомления об изменении цен
-```bash
-python manage.py send_price_change_notifications --min-change-percent 5.0
-```
+
 
 ### Системные уведомления
 ```bash
@@ -187,7 +184,7 @@ python manage.py test_email_notifications --user-id 1
 - `email_verification.html/txt`
 - `password_reset.html/txt`
 - `pet_sitting.html/txt`
-- `price_change.html/txt`
+
 - `new_review.html/txt`
 
 ### Кастомизация шаблонов
