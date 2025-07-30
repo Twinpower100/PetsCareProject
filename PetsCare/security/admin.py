@@ -7,12 +7,63 @@ from django.contrib import messages
 from django.utils import timezone
 from django.db.models import Count, Q
 from django.core.cache import cache
+import logging
 
 from .models import SecurityThreat, IPBlacklist, ThreatPattern
 from .services import ip_blocking_service
 
+logger = logging.getLogger(__name__)
+
+class SecurityAccessMixin:
+    """Миксин для ограничения доступа к моделям безопасности только админам проекта"""
+    
+    def has_module_permission(self, request):
+        return self._check_security_access(request)
+    
+    def has_view_permission(self, request, obj=None):
+        return self._check_security_access(request)
+    
+    def has_add_permission(self, request):
+        return self._check_security_access(request)
+    
+    def has_change_permission(self, request, obj=None):
+        return self._check_security_access(request)
+    
+    def has_delete_permission(self, request, obj=None):
+        return self._check_security_access(request)
+    
+    def _check_security_access(self, request):
+        """Проверить доступ к моделям безопасности"""
+        if not request.user.is_authenticated:
+            self._log_unauthorized_access(request, "Unauthenticated user")
+            return False
+        
+        if request.user.is_superuser:
+            return True
+        
+        if request.user.is_staff and request.user.has_role('system_admin'):
+            return True
+        
+        self._log_unauthorized_access(request, f"User {request.user.email} lacks required permissions")
+        return False
+    
+    def _log_unauthorized_access(self, request, reason):
+        """Логировать попытки несанкционированного доступа"""
+        logger.warning(
+            f"Unauthorized access attempt to security models: {reason}. "
+            f"User: {getattr(request.user, 'email', 'Unknown')}, "
+            f"IP: {request.META.get('REMOTE_ADDR', 'Unknown')}, "
+            f"Path: {request.path}"
+        )
+    
+    def get_queryset(self, request):
+        """Ограничить queryset для неавторизованных пользователей"""
+        if not self._check_security_access(request):
+            return self.model.objects.none()
+        return super().get_queryset(request)
+
 @admin.register(SecurityThreat)
-class SecurityThreatAdmin(admin.ModelAdmin):
+class SecurityThreatAdmin(SecurityAccessMixin, admin.ModelAdmin):
     """Админский интерфейс для угроз безопасности"""
     
     list_display = [
@@ -122,7 +173,7 @@ class SecurityThreatAdmin(admin.ModelAdmin):
 
 
 @admin.register(IPBlacklist)
-class IPBlacklistAdmin(admin.ModelAdmin):
+class IPBlacklistAdmin(SecurityAccessMixin, admin.ModelAdmin):
     """Админский интерфейс для черного списка IP"""
     
     list_display = [
@@ -199,7 +250,7 @@ class IPBlacklistAdmin(admin.ModelAdmin):
 
 
 @admin.register(ThreatPattern)
-class ThreatPatternAdmin(admin.ModelAdmin):
+class ThreatPatternAdmin(SecurityAccessMixin, admin.ModelAdmin):
     """Админский интерфейс для шаблонов угроз"""
     
     list_display = [
@@ -313,7 +364,56 @@ class SecurityDashboardAdmin(admin.ModelAdmin):
         }
 
 
-# Регистрация дашборда
+# Кастомный админский сайт для скрытия моделей безопасности
+class SecurityAdminSite(admin.AdminSite):
+    """Кастомный админский сайт для скрытия моделей безопасности от неавторизованных пользователей"""
+    
+    def get_app_list(self, request):
+        """Переопределить список приложений для скрытия security от неавторизованных пользователей"""
+        app_list = super().get_app_list(request)
+        
+        for app in app_list:
+            if app['app_label'] == 'security':
+                # Проверить доступ к моделям безопасности
+                if not self._check_security_access(request):
+                    # Скрыть приложение security полностью
+                    app_list.remove(app)
+                else:
+                    # Показать только модели, к которым есть доступ
+                    filtered_models = []
+                    for model in app['models']:
+                        model_admin = self._registry.get(model['model'])
+                        if hasattr(model_admin, '_check_security_access'):
+                            if model_admin._check_security_access(request):
+                                filtered_models.append(model)
+                        else:
+                            filtered_models.append(model)
+                    app['models'] = filtered_models
+        
+        return app_list
+    
+    def _check_security_access(self, request):
+        """Проверить доступ к моделям безопасности"""
+        if not request.user.is_authenticated:
+            return False
+        
+        if request.user.is_superuser:
+            return True
+        
+        if request.user.is_staff and request.user.has_role('system_admin'):
+            return True
+        
+        return False
+
+# Создать экземпляр кастомного админского сайта
+security_admin_site = SecurityAdminSite(name='security_admin')
+
+# Регистрация моделей в кастомном админском сайте
+security_admin_site.register(SecurityThreat, SecurityThreatAdmin)
+security_admin_site.register(IPBlacklist, IPBlacklistAdmin)
+security_admin_site.register(ThreatPattern, ThreatPatternAdmin)
+
+# Регистрация в основном админском сайте (с ограничениями доступа)
 admin.site.register(SecurityThreat, SecurityThreatAdmin)
 admin.site.register(IPBlacklist, IPBlacklistAdmin)
 admin.site.register(ThreatPattern, ThreatPatternAdmin)
