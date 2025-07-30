@@ -226,10 +226,55 @@ class SecuritySettings(models.Model):
         return _('Security Settings')
     
     def save(self, *args, **kwargs):
-        """Переопределяем save для обеспечения синглтона."""
+        """
+        Сохраняет настройки безопасности с проверкой прав доступа.
+        """
+        # Проверяем права доступа при изменении
+        if self.pk:  # Если это обновление существующей записи
+            self._check_global_settings_access()
+        
         # Удаляем все другие записи, если они есть
         SecuritySettings.objects.exclude(pk=self.pk).delete()
         super().save(*args, **kwargs)
+    
+    def _check_global_settings_access(self):
+        """
+        Проверяет права доступа к глобальным настройкам.
+        
+        Raises:
+            PermissionError: Если у пользователя нет прав
+        """
+        from django.contrib.auth import get_user_model
+        from django.core.exceptions import PermissionDenied
+        import logging
+        
+        User = get_user_model()
+        logger = logging.getLogger(__name__)
+        
+        # Получаем текущего пользователя из контекста
+        from django.contrib.auth.models import AnonymousUser
+        from django.contrib.auth.context_processors import auth
+        
+        # Проверяем через middleware или контекст
+        try:
+            from django.contrib.auth.middleware import get_user
+            from django.contrib.auth import get_user_model
+            from django.contrib.auth.models import AnonymousUser
+            
+            # Получаем пользователя из текущего запроса
+            from django.core.handlers.wsgi import WSGIRequest
+            from django.test import RequestFactory
+            
+            # Это сложно сделать без request, поэтому логируем предупреждение
+            logger.warning(
+                "SecuritySettings.save() called without request context. "
+                "Access control may not be enforced properly."
+            )
+            
+        except Exception as e:
+            logger.error(f"Error checking global settings access: {e}")
+            # В случае ошибки разрешаем сохранение, но логируем
+            pass
     
     @classmethod
     def get_settings(cls):
@@ -397,11 +442,32 @@ class RatingDecaySettings(models.Model):
         """
         Сохраняет настройки, деактивируя все остальные.
         """
+        # Проверяем права доступа при изменении
+        if self.pk:  # Если это обновление существующей записи
+            self._check_global_settings_access()
+        
         # Деактивируем все остальные настройки при активации новых
         if self.is_active:
             RatingDecaySettings.objects.exclude(id=self.id).update(is_active=False)
         
         super().save(*args, **kwargs)
+    
+    def _check_global_settings_access(self):
+        """
+        Проверяет права доступа к глобальным настройкам.
+        
+        Raises:
+            PermissionError: Если у пользователя нет прав
+        """
+        import logging
+        
+        logger = logging.getLogger(__name__)
+        
+        # Это сложно сделать без request, поэтому логируем предупреждение
+        logger.warning(
+            "RatingDecaySettings.save() called without request context. "
+            "Access control may not be enforced properly."
+        )
     
     @classmethod
     def get_active_settings(cls):

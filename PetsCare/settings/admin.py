@@ -9,10 +9,136 @@
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from django.utils.html import format_html
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, PermissionDenied
 from django import forms
+from django.contrib.auth import get_user_model
+import logging
 
 from .models import SecuritySettings, RatingDecaySettings
+
+User = get_user_model()
+logger = logging.getLogger(__name__)
+
+
+class GlobalSettingsAccessMixin:
+    """
+    Миксин для ограничения доступа к глобальным настройкам только админам проекта.
+    
+    Проверяет:
+    - is_superuser = True (суперпользователь Django)
+    - ИЛИ is_staff = True И имеет роль system_admin
+    """
+    
+    def has_module_permission(self, request):
+        """Проверяет доступ к модулю."""
+        return self._check_global_settings_access(request)
+    
+    def has_view_permission(self, request, obj=None):
+        """Проверяет доступ на просмотр."""
+        return self._check_global_settings_access(request)
+    
+    def has_add_permission(self, request):
+        """Проверяет доступ на добавление."""
+        return self._check_global_settings_access(request)
+    
+    def has_change_permission(self, request, obj=None):
+        """Проверяет доступ на изменение."""
+        return self._check_global_settings_access(request)
+    
+    def has_delete_permission(self, request, obj=None):
+        """Проверяет доступ на удаление."""
+        return self._check_global_settings_access(request)
+    
+    def _check_global_settings_access(self, request):
+        """
+        Проверяет доступ к глобальным настройкам.
+        
+        Доступ имеют:
+        - Суперпользователи Django (is_superuser=True)
+        - Сотрудники с ролью system_admin (is_staff=True + system_admin role)
+        """
+        if not request.user.is_authenticated:
+            self._log_unauthorized_access(request, "Unauthenticated user")
+            return False
+        
+        # Суперпользователи имеют полный доступ
+        if request.user.is_superuser:
+            return True
+        
+        # Сотрудники с ролью system_admin имеют доступ
+        if request.user.is_staff and request.user.has_role('system_admin'):
+            return True
+        
+        # Логируем попытку несанкционированного доступа
+        self._log_unauthorized_access(request, f"User {request.user.email} lacks required permissions")
+        return False
+    
+    def _log_unauthorized_access(self, request, reason):
+        """Логирует попытку несанкционированного доступа."""
+        logger.warning(
+            f"Unauthorized access attempt to global settings: {reason}. "
+            f"User: {getattr(request.user, 'email', 'Unknown')}, "
+            f"IP: {request.META.get('REMOTE_ADDR', 'Unknown')}, "
+            f"Path: {request.path}"
+        )
+    
+    def get_queryset(self, request):
+        """Возвращает queryset с проверкой доступа."""
+        if not self._check_global_settings_access(request):
+            return self.model.objects.none()
+        return super().get_queryset(request)
+
+
+class SettingsAdminSite(admin.AdminSite):
+    """
+    Кастомный админский сайт для приложения settings.
+    
+    Скрывает модели от пользователей без соответствующих прав.
+    """
+    
+    def get_app_list(self, request):
+        """
+        Возвращает список приложений с фильтрацией по правам доступа.
+        """
+        app_list = super().get_app_list(request)
+        
+        # Проверяем права доступа к глобальным настройкам
+        has_global_settings_access = self._check_global_settings_access(request)
+        
+        # Фильтруем модели в приложении settings
+        for app in app_list:
+            if app['app_label'] == 'settings':
+                # Оставляем только модели, к которым есть доступ
+                filtered_models = []
+                for model in app['models']:
+                    model_admin = self._registry.get(model['model'])
+                    if hasattr(model_admin, '_check_global_settings_access'):
+                        if model_admin._check_global_settings_access(request):
+                            filtered_models.append(model)
+                    else:
+                        # Для моделей без специальных проверок оставляем как есть
+                        filtered_models.append(model)
+                
+                app['models'] = filtered_models
+        
+        return app_list
+    
+    def _check_global_settings_access(self, request):
+        """
+        Проверяет доступ к глобальным настройкам.
+        """
+        if not request.user.is_authenticated:
+            return False
+        
+        # Суперпользователи имеют полный доступ
+        if request.user.is_superuser:
+            return True
+        
+        # Сотрудники с ролью system_admin имеют доступ
+        if request.user.is_staff and request.user.has_role('system_admin'):
+            return True
+        
+        return False
 
 
 class SecuritySettingsForm(forms.ModelForm):
@@ -83,11 +209,12 @@ class SecuritySettingsForm(forms.ModelForm):
 
 
 @admin.register(SecuritySettings)
-class SecuritySettingsAdmin(admin.ModelAdmin):
+class SecuritySettingsAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin):
     """
     Админский интерфейс для настроек безопасности.
     
     Особенности:
+    - Ограниченный доступ только для админов проекта
     - Группировка полей по категориям
     - Валидация настроек
     - Автоматическое логирование изменений
@@ -309,11 +436,12 @@ class RatingDecaySettingsForm(forms.ModelForm):
 
 
 @admin.register(RatingDecaySettings)
-class RatingDecaySettingsAdmin(admin.ModelAdmin):
+class RatingDecaySettingsAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin):
     """
     Админский интерфейс для настроек затухания рейтингов.
     
     Особенности:
+    - Ограниченный доступ только для админов проекта
     - Группировка полей по категориям
     - Валидация настроек
     - Автоматическое управление активностью
