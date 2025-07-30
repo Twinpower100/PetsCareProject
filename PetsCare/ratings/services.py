@@ -9,6 +9,7 @@
 """
 
 import os
+import math
 import logging
 from typing import Dict, Any, Optional
 from django.conf import settings
@@ -36,7 +37,7 @@ class RatingCalculationService:
     Сервис для расчета рейтингов.
     
     Основные функции:
-    - Расчет рейтинга на основе отзывов
+    - Расчет рейтинга на основе отзывов с экспоненциальным затуханием
     - Учет жалоб в рейтинге
     - Учет отмен и no-show
     - Взвешенный расчет
@@ -80,7 +81,7 @@ class RatingCalculationService:
     
     def _calculate_reviews_score(self, obj):
         """
-        Рассчитывает оценку на основе отзывов.
+        Рассчитывает оценку на основе отзывов с экспоненциальным затуханием.
         
         Args:
             obj: Объект для расчета
@@ -88,6 +89,9 @@ class RatingCalculationService:
         Returns:
             Decimal: Оценка отзывов
         """
+        # Импортируем настройки затухания
+        from settings.models import RatingDecaySettings
+        
         content_type = ContentType.objects.get_for_model(obj)
         reviews = Review.objects.filter(
             content_type=content_type,
@@ -99,12 +103,87 @@ class RatingCalculationService:
         if not reviews.exists():
             return Decimal('3.00')  # Нейтральная оценка при отсутствии отзывов
         
-        # Средняя оценка отзывов
-        avg_rating = reviews.aggregate(
-            avg_rating=models.Avg('rating')
-        )['avg_rating']
+        # Получаем активные настройки затухания
+        decay_settings = RatingDecaySettings.get_active_settings()
         
-        return Decimal(str(avg_rating))
+        now = timezone.now()
+        weighted_sum = Decimal('0.0')
+        total_weight = Decimal('0.0')
+        
+        for review in reviews:
+            # Рассчитываем возраст отзыва в днях
+            age_days = (now - review.created_at).days
+            
+            # Применяем экспоненциальное затухание через настройки
+            weight = decay_settings.calculate_weight(age_days)
+            
+            # Добавляем к взвешенной сумме
+            weighted_sum += Decimal(str(review.rating)) * Decimal(str(weight))
+            total_weight += Decimal(str(weight))
+        
+        # Рассчитываем взвешенное среднее
+        if total_weight > 0:
+            weighted_average = weighted_sum / total_weight
+            return Decimal(str(round(weighted_average, 2)))
+        else:
+            return Decimal('3.00')  # Fallback при отсутствии весов
+    
+    def get_reviews_weight_details(self, obj):
+        """
+        Возвращает детальную информацию о весах отзывов для анализа.
+        
+        Args:
+            obj: Объект для анализа
+            
+        Returns:
+            Dict: Детали весов отзывов
+        """
+        # Импортируем настройки затухания
+        from settings.models import RatingDecaySettings
+        
+        content_type = ContentType.objects.get_for_model(obj)
+        reviews = Review.objects.filter(
+            content_type=content_type,
+            object_id=obj.id,
+            is_approved=True,
+            is_suspicious=False
+        ).order_by('-created_at')
+        
+        # Получаем активные настройки затухания
+        decay_settings = RatingDecaySettings.get_active_settings()
+        
+        now = timezone.now()
+        review_details = []
+        weighted_sum = Decimal('0.0')
+        total_weight = Decimal('0.0')
+        
+        for review in reviews:
+            age_days = (now - review.created_at).days
+            
+            # Применяем экспоненциальное затухание через настройки
+            weight = decay_settings.calculate_weight(age_days)
+            
+            weighted_sum += Decimal(str(review.rating)) * Decimal(str(weight))
+            total_weight += Decimal(str(weight))
+            
+            review_details.append({
+                'id': review.id,
+                'rating': review.rating,
+                'created_at': review.created_at,
+                'age_days': age_days,
+                'weight': round(weight, 4),
+                'weighted_rating': round(float(review.rating) * weight, 2)
+            })
+        
+        weighted_average = weighted_sum / total_weight if total_weight > 0 else 3.0
+        
+        return {
+            'total_reviews': len(review_details),
+            'weighted_average': round(float(weighted_average), 2),
+            'total_weight': round(float(total_weight), 4),
+            'decay_parameters': decay_settings.get_decay_parameters(),
+            'reviews': review_details
+        }
     
     def _calculate_complaints_score(self, obj):
         """

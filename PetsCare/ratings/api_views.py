@@ -86,6 +86,22 @@ class RatingViewSet(viewsets.ReadOnlyModelViewSet):
                 'error': f'Error recalculating rating: {str(e)}'
             }, status=status.HTTP_400_BAD_REQUEST)
     
+    @action(detail=True, methods=['get'])
+    def review_weights(self, request, pk=None):
+        """
+        Возвращает детальную информацию о весах отзывов с экспоненциальным затуханием.
+        """
+        rating = self.get_object()
+        service = RatingCalculationService()
+        
+        try:
+            weight_details = service.get_reviews_weight_details(rating.content_object)
+            return Response(weight_details)
+        except Exception as e:
+            return Response({
+                'error': f'Error getting review weights: {str(e)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+    
     @action(detail=False, methods=['get'])
     def statistics(self, request):
         """

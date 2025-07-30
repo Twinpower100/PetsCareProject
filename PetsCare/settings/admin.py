@@ -12,7 +12,7 @@ from django.utils.html import format_html
 from django.core.exceptions import ValidationError
 from django import forms
 
-from .models import SecuritySettings
+from .models import SecuritySettings, RatingDecaySettings
 
 
 class SecuritySettingsForm(forms.ModelForm):
@@ -269,4 +269,162 @@ class SecuritySettingsAdmin(admin.ModelAdmin):
         css = {
             'all': ('admin/css/security_settings.css',)
         }
-        js = ('admin/js/security_settings.js',) 
+        js = ('admin/js/security_settings.js',)
+
+
+class RatingDecaySettingsForm(forms.ModelForm):
+    """
+    Форма для настроек затухания рейтингов с дополнительной валидацией.
+    """
+    
+    class Meta:
+        model = RatingDecaySettings
+        fields = '__all__'
+    
+    def clean(self):
+        """Дополнительная валидация настроек затухания."""
+        cleaned_data = super().clean()
+        
+        # Проверяем, что минимальный вес не больше максимального возраста
+        min_weight = cleaned_data.get('min_weight')
+        max_age_days = cleaned_data.get('max_age_days')
+        half_life_days = cleaned_data.get('half_life_days')
+        
+        if min_weight and max_age_days and half_life_days:
+            # Проверяем логику: max_age должен быть больше half_life
+            if max_age_days <= half_life_days:
+                raise ValidationError({
+                    'max_age_days': _('Maximum age must be greater than half-life period')
+                })
+            
+            # Проверяем, что минимальный вес разумен для максимального возраста
+            import math
+            expected_min_weight = math.exp(-max_age_days * math.log(2) / half_life_days)
+            if min_weight > expected_min_weight:
+                raise ValidationError({
+                    'min_weight': _('Minimum weight is too high for the given max age and half-life')
+                })
+        
+        return cleaned_data
+
+
+@admin.register(RatingDecaySettings)
+class RatingDecaySettingsAdmin(admin.ModelAdmin):
+    """
+    Админский интерфейс для настроек затухания рейтингов.
+    
+    Особенности:
+    - Группировка полей по категориям
+    - Валидация настроек
+    - Автоматическое управление активностью
+    - Удобный интерфейс с подсказками
+    """
+    
+    form = RatingDecaySettingsForm
+    
+    # Отключаем возможность удаления (синглтон)
+    def has_delete_permission(self, request, obj=None):
+        return False
+    
+    # Группировка полей
+    fieldsets = (
+        (_('Decay Parameters'), {
+            'fields': (
+                'half_life_days',
+                'min_weight',
+                'max_age_days',
+            ),
+            'description': _('Configure exponential decay parameters for review weights')
+        }),
+        
+        (_('Status'), {
+            'fields': ('is_active',),
+            'description': _('Activate these settings (will deactivate all others)')
+        }),
+        
+        (_('Metadata'), {
+            'fields': (
+                'created_at',
+                'updated_at',
+                'updated_by',
+            ),
+            'classes': ('collapse',),
+            'description': _('System metadata and change tracking')
+        }),
+    )
+    
+    # Только для чтения поля
+    readonly_fields = ('created_at', 'updated_at')
+    
+    # Отображение в списке
+    list_display = ('get_settings_summary', 'is_active', 'updated_at', 'updated_by')
+    list_filter = ('is_active',)
+    search_fields = ()
+    
+    # Настройки страницы
+    save_on_top = True
+    
+    def get_settings_summary(self, obj):
+        """Возвращает краткое описание настроек."""
+        if obj.is_active:
+            status = "🟢 Active"
+        else:
+            status = "🔴 Inactive"
+        
+        return format_html(
+            '<strong>{}</strong><br>'
+            '<small>Half-life: {} days, Min weight: {}, Max age: {} days</small>',
+            status,
+            obj.half_life_days,
+            obj.min_weight,
+            obj.max_age_days
+        )
+    
+    get_settings_summary.short_description = _('Settings Summary')
+    
+    def save_model(self, request, obj, form, change):
+        """Сохраняет модель с логированием изменений."""
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
+        
+        # Логируем изменение
+        if change:
+            from django.contrib import messages
+            messages.success(
+                request,
+                _('Rating decay settings updated successfully. New settings are now active.')
+            )
+    
+    def get_queryset(self, request):
+        """Возвращает queryset с сортировкой."""
+        return super().get_queryset(request).order_by('-is_active', '-updated_at')
+    
+    def changelist_view(self, request, extra_context=None):
+        """Кастомный вид списка для синглтона."""
+        # Перенаправляем на изменение единственной записи
+        settings = RatingDecaySettings.objects.first()
+        if settings:
+            return self.response_change(request, settings)
+        else:
+            # Создаем настройки по умолчанию
+            settings = RatingDecaySettings.objects.create()
+            return self.response_change(request, settings)
+    
+    def response_change(self, request, obj):
+        """Кастомный ответ после изменения."""
+        from django.contrib import messages
+        from django.shortcuts import redirect
+        from django.urls import reverse
+        
+        messages.success(
+            request,
+            _('Rating decay settings saved successfully.')
+        )
+        
+        return redirect(reverse('admin:settings_ratingdecaysettings_changelist'))
+    
+    class Media:
+        """Добавляем CSS для улучшения интерфейса."""
+        css = {
+            'all': ('admin/css/rating_decay_settings.css',)
+        } 

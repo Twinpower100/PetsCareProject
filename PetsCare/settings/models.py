@@ -311,10 +311,152 @@ class SecuritySettings(models.Model):
         }
     
     def get_audit_policy(self):
-        """Возвращает политику аудита в виде словаря."""
+        """
+        Возвращает политику аудита.
+        
+        Returns:
+            dict: Политика аудита
+        """
         return {
-            'enabled': self.audit_logging_enabled,
-            'retention_days': self.audit_log_retention_days,
+            'audit_logging_enabled': self.audit_logging_enabled,
+            'audit_log_retention_days': self.audit_log_retention_days,
             'log_sensitive_data': self.log_sensitive_data,
             'log_failed_login_attempts': self.log_failed_login_attempts,
-        } 
+        }
+
+
+class RatingDecaySettings(models.Model):
+    """
+    Глобальные настройки экспоненциального затухания рейтингов.
+    
+    Использует паттерн синглтона - только одна активная запись в базе данных.
+    Содержит лучшие практики для экспоненциального затухания отзывов.
+    """
+    
+    # === ПАРАМЕТРЫ ЭКСПОНЕНЦИАЛЬНОГО ЗАТУХАНИЯ ===
+    half_life_days = models.PositiveIntegerField(
+        _('Half-life period (days)'),
+        default=365,  # 1 год - стандартная практика
+        validators=[MinValueValidator(30), MaxValueValidator(1825)],  # 1 месяц - 5 лет
+        help_text=_('Period after which review weight is halved (30-1825 days)')
+    )
+    
+    min_weight = models.DecimalField(
+        _('Minimum weight'),
+        max_digits=3,
+        decimal_places=2,
+        default=0.10,  # 10% от исходного веса
+        validators=[MinValueValidator(0.01), MaxValueValidator(1.00)],
+        help_text=_('Minimum weight for old reviews (0.01-1.00)')
+    )
+    
+    max_age_days = models.PositiveIntegerField(
+        _('Maximum age (days)'),
+        default=1095,  # 3 года
+        validators=[MinValueValidator(90), MaxValueValidator(3650)],  # 3 месяца - 10 лет
+        help_text=_('Maximum age of reviews to consider (90-3650 days)')
+    )
+    
+    # === АКТИВНОСТЬ НАСТРОЕК ===
+    is_active = models.BooleanField(
+        _('Is active'),
+        default=True,
+        help_text=_('Whether these settings are currently active')
+    )
+    
+    # === МЕТАДАННЫЕ ===
+    created_at = models.DateTimeField(
+        _('Created at'),
+        auto_now_add=True
+    )
+    
+    updated_at = models.DateTimeField(
+        _('Updated at'),
+        auto_now=True
+    )
+    
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        verbose_name=_('Updated by'),
+        help_text=_('User who last updated these settings')
+    )
+    
+    class Meta:
+        verbose_name = _('Rating Decay Settings')
+        verbose_name_plural = _('Rating Decay Settings')
+        db_table = 'rating_decay_settings'
+        ordering = ['-is_active', '-updated_at']
+    
+    def __str__(self):
+        return f"Rating Decay Settings (Active: {self.is_active}, Half-life: {self.half_life_days} days)"
+    
+    def save(self, *args, **kwargs):
+        """
+        Сохраняет настройки, деактивируя все остальные.
+        """
+        # Деактивируем все остальные настройки при активации новых
+        if self.is_active:
+            RatingDecaySettings.objects.exclude(id=self.id).update(is_active=False)
+        
+        super().save(*args, **kwargs)
+    
+    @classmethod
+    def get_active_settings(cls):
+        """
+        Возвращает активные настройки затухания.
+        
+        Returns:
+            RatingDecaySettings: Активные настройки или созданные по умолчанию
+        """
+        active_settings = cls.objects.filter(is_active=True).first()
+        
+        if not active_settings:
+            # Создаем настройки по умолчанию
+            active_settings = cls.objects.create(
+                is_active=True,
+                half_life_days=365,
+                min_weight=0.10,
+                max_age_days=1095
+            )
+        
+        return active_settings
+    
+    def get_decay_parameters(self):
+        """
+        Возвращает параметры затухания в удобном формате.
+        
+        Returns:
+            dict: Параметры затухания
+        """
+        return {
+            'half_life_days': self.half_life_days,
+            'min_weight': float(self.min_weight),
+            'max_age_days': self.max_age_days,
+            'is_active': self.is_active
+        }
+    
+    def calculate_weight(self, age_days):
+        """
+        Рассчитывает вес отзыва на основе его возраста.
+        
+        Args:
+            age_days: Возраст отзыва в днях
+            
+        Returns:
+            float: Вес отзыва (0.01 - 1.00)
+        """
+        if age_days <= 0:
+            return 1.0  # Новые отзывы имеют полный вес
+        
+        if age_days > self.max_age_days:
+            return 0.0  # Слишком старые отзывы исключаются
+        
+        # Экспоненциальное затухание: weight = e^(-age * ln(2) / half_life)
+        import math
+        decay_factor = math.exp(-age_days * math.log(2) / self.half_life_days)
+        weight = max(float(self.min_weight), decay_factor)
+        
+        return weight 
