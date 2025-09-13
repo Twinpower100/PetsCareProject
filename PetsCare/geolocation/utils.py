@@ -5,12 +5,15 @@
 расчета расстояний и геопространственных операций.
 """
 
+import logging
 from typing import Tuple, Optional, List, Dict, Any
 from decimal import Decimal
 from geopy.distance import geodesic
 from django.db.models import Q
 from django.contrib.gis.geos import Point
 from django.contrib.gis.db.models.functions import Distance
+
+logger = logging.getLogger(__name__)
 
 
 def calculate_distance(
@@ -40,7 +43,7 @@ def calculate_distance(
         
         return geodesic(point1, point2).kilometers
     except (ValueError, TypeError) as e:
-        print(f"Distance calculation error: {e}")
+        logger.error(f"Distance calculation error: {e}")
         return None
 
 
@@ -61,7 +64,7 @@ def calculate_distance_from_coordinates(
     try:
         return geodesic(point1, point2).kilometers
     except (ValueError, TypeError) as e:
-        print(f"Distance calculation error: {e}")
+        logger.error(f"Distance calculation error: {e}")
         return None
 
 
@@ -129,7 +132,7 @@ def filter_by_distance(
         return results
         
     except Exception as e:
-        print(f"PostGIS filter error: {e}")
+        logger.error(f"PostGIS filter error: {e}")
         # Fallback к старому методу если PostGIS недоступен
         return _fallback_filter_by_distance(
             queryset, center_lat, center_lon, radius_km, point_field
@@ -219,7 +222,7 @@ def create_distance_annotation(
             distance=Distance(point_field, center_point)
         )
     except Exception as e:
-        print(f"PostGIS annotation error: {e}")
+        logger.error(f"PostGIS annotation error: {e}")
         # Возвращаем исходный queryset если PostGIS недоступен
         return queryset
 
@@ -346,7 +349,7 @@ def optimize_geospatial_query(queryset, center_lat: float, center_lon: float,
         return optimized_queryset
         
     except Exception as e:
-        print(f"PostGIS optimization error: {e}")
+        logger.error(f"PostGIS optimization error: {e}")
         # Fallback к старому методу если PostGIS недоступен
         return _fallback_optimize_geospatial_query(
             queryset, center_lat, center_lon, radius_km, point_field
@@ -415,7 +418,7 @@ def batch_distance_calculation(queryset, center_lat: float, center_lon: float,
         return results
         
     except Exception as e:
-        print(f"PostGIS batch calculation error: {e}")
+        logger.error(f"PostGIS batch calculation error: {e}")
         # Fallback к старому методу если PostGIS недоступен
         return _fallback_batch_distance_calculation(
             queryset, center_lat, center_lon, batch_size

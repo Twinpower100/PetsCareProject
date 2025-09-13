@@ -819,10 +819,16 @@ class ConversationViewSet(viewsets.ModelViewSet):
         if not text:
             return Response({'error': _('Message text is required')}, status=status.HTTP_400_BAD_REQUEST)
         
+        # Получаем другого участника диалога
+        other_participant = conversation.get_other_participant(request.user)
+        if not other_participant:
+            return Response({'error': _('No other participant found')}, status=status.HTTP_400_BAD_REQUEST)
+        
         # Создаем сообщение
         message = Message.objects.create(
             conversation=conversation,
             sender=request.user,
+            recipient=other_participant,
             text=text
         )
         
@@ -852,11 +858,10 @@ class ConversationViewSet(viewsets.ModelViewSet):
         conversation = self.get_object()
         user = request.user
         
-        # Отмечаем все непрочитанные сообщения от других участников
+        # Отмечаем все непрочитанные сообщения, где текущий пользователь - получатель
         conversation.messages.filter(
-            is_read=False
-        ).exclude(
-            sender=user
+            is_read=False,
+            recipient=user
         ).update(is_read=True)
         
         return Response({'status': 'marked_as_read'})

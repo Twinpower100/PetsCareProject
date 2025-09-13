@@ -1,5 +1,7 @@
 # PetsCare API
 
+[![GitHub](https://img.shields.io/badge/GitHub-Repository-blue?style=flat-square&logo=github)](https://github.com/Twinpower100/PetCare)
+
 ## Описание
 API для системы управления ветеринарной клиникой PetsCare. Предоставляет функционал для работы с контрактами, платежами, счетами и возвратами.
 

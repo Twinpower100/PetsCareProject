@@ -1,12 +1,12 @@
 Django>=5.0.3
 djangorestframework==3.14.0
 django-cors-headers==4.3.1
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.10
 python-decouple==3.8
 django-filter==23.5
 django-allauth==0.58.2
 django-modeltranslation==0.18.11
-Pillow==10.2.0
+Pillow==11.3.0
 celery==5.3.6
 redis==5.0.1
 googlemaps==4.10.0
@@ -38,4 +38,7 @@ google-api-python-client==2.108.0
 google-auth==2.23.4
 google-auth-oauthlib==1.1.0
 google-auth-httplib2==0.1.1
+
+# Encryption dependencies
+cryptography==41.0.7
 

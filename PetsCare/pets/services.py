@@ -87,11 +87,11 @@ class PetOwnerIncapacityService:
     
     def report_pet_lost(self, pet: Pet, reported_by: User, reason: str = "") -> PetOwnerIncapacity:
         """
-        Обрабатывает отчет о потере питомца от совладельца.
+        Обрабатывает отчет о потере питомца от основного владельца.
         
         Args:
             pet: Питомец
-            reported_by: Пользователь, сообщивший о потере
+            reported_by: Пользователь, сообщивший о потере (должен быть основной владелец)
             reason: Причина потери (опционально)
             
         Returns:
@@ -160,11 +160,11 @@ class PetOwnerIncapacityService:
     def confirm_pet_status(self, incapacity_record: PetOwnerIncapacity, confirmed_by: User, 
                           pet_is_ok: bool, notes: str = "") -> bool:
         """
-        Подтверждает статус питомца владельцем.
+        Подтверждает статус питомца основным владельцем.
         
         Args:
             incapacity_record: Запись о недееспособности
-            confirmed_by: Пользователь, подтвердивший статус
+            confirmed_by: Пользователь, подтвердивший статус (должен быть основной владелец)
             pet_is_ok: True если питомец в порядке, False если потерян/умер
             notes: Дополнительные заметки
             
@@ -175,6 +175,11 @@ class PetOwnerIncapacityService:
         
         try:
             with transaction.atomic():
+                # Проверяем права доступа - только основной владелец может подтвердить статус
+                if incapacity_record.pet.main_owner != confirmed_by:
+                    logger.error(f"User {confirmed_by.id} is not the main owner and cannot confirm pet status")
+                    return False
+                
                 # Используем select_for_update для предотвращения гонки
                 incapacity_record = PetOwnerIncapacity.objects.select_for_update().get(id=incapacity_record.id)
                 
@@ -251,32 +256,28 @@ class PetOwnerIncapacityService:
         return stats
     
     def _send_confirmation_notifications(self, incapacity_record: PetOwnerIncapacity) -> None:
-        """Отправляет уведомления о необходимости подтверждения статуса питомца."""
+        """Отправляет уведомления о необходимости подтверждения статуса питомца основному владельцу."""
         deadline_days = self.settings.get_pet_confirmation_deadline_days()
         
-        # Получаем всех владельцев питомца
-        owners = list(incapacity_record.pet.owners.all())
-        if incapacity_record.main_owner not in owners:
-            owners.append(incapacity_record.main_owner)
-        
-        for owner in owners:
-            try:
-                notification = PetIncapacityNotification.objects.create(
-                    incapacity_record=incapacity_record,
-                    notification_type='confirmation_request',
-                    recipient=owner,
-                    subject=_('Pet Status Confirmation Required'),
-                    message=self._get_confirmation_message(incapacity_record, owner, deadline_days)
-                )
-                
-                # Отправляем email
-                self._send_email_notification(notification)
-                
-                # Добавляем в список отправленных уведомлений
-                incapacity_record.notifications_sent.append(notification.id)
-                
-            except Exception as e:
-                logger.error(f"Error sending confirmation notification to {owner.email}: {str(e)}")
+        # Отправляем уведомление только основному владельцу
+        main_owner = incapacity_record.main_owner
+        try:
+            notification = PetIncapacityNotification.objects.create(
+                incapacity_record=incapacity_record,
+                notification_type='confirmation_request',
+                recipient=main_owner,
+                subject=_('Pet Status Confirmation Required'),
+                message=self._get_confirmation_message(incapacity_record, main_owner, deadline_days)
+            )
+            
+            # Отправляем email
+            self._send_email_notification(notification)
+            
+            # Добавляем в список отправленных уведомлений
+            incapacity_record.notifications_sent.append(notification.id)
+            
+        except Exception as e:
+            logger.error(f"Error sending confirmation notification to {main_owner.email}: {str(e)}")
         
         incapacity_record.save()
     

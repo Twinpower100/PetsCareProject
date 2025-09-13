@@ -10,26 +10,27 @@ Serializers для API аудита.
 
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
-from .models import AuditLog, UserActivity, SystemEvent
+from .models import UserAction, SecurityAudit, AuditSettings
 
 
-class AuditLogSerializer(serializers.ModelSerializer):
+class UserActionSerializer(serializers.ModelSerializer):
     """
-    Serializer для логов аудита.
+    Serializer для действий пользователей.
     """
     user_email = serializers.CharField(source='user.email', read_only=True)
     user_full_name = serializers.SerializerMethodField()
-    action_display = serializers.CharField(source='get_action_display', read_only=True)
-    resource_type_display = serializers.CharField(source='get_resource_type_display', read_only=True)
+    action_type_display = serializers.CharField(source='get_action_type_display', read_only=True)
+    object_name = serializers.CharField(source='object_name', read_only=True)
 
     class Meta:
-        model = AuditLog
+        model = UserAction
         fields = [
-            'id', 'user', 'user_email', 'user_full_name', 'action', 'action_display',
-            'resource_type', 'resource_type_display', 'resource_id', 'resource_name',
-            'ip_address', 'user_agent', 'details', 'created_at'
+            'id', 'user', 'user_email', 'user_full_name', 'action_type', 'action_type_display',
+            'content_type', 'object_id', 'object_name', 'details', 'ip_address', 
+            'user_agent', 'http_method', 'url', 'status_code', 'execution_time', 
+            'timestamp', 'session_key'
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['id', 'timestamp']
 
     def get_user_full_name(self, obj):
         """Получает полное имя пользователя."""
@@ -38,33 +39,48 @@ class AuditLogSerializer(serializers.ModelSerializer):
         return "Anonymous"
 
 
-class UserActivitySerializer(serializers.ModelSerializer):
+class SecurityAuditSerializer(serializers.ModelSerializer):
     """
-    Serializer для активности пользователей.
+    Serializer для аудита безопасности.
     """
-    class Meta:
-        model = UserActivity
-        fields = [
-            'id', 'user', 'activity_type', 'description', 'ip_address',
-            'user_agent', 'created_at'
-        ]
-        read_only_fields = ['id', 'created_at']
-
-
-class SystemEventSerializer(serializers.ModelSerializer):
-    """
-    Serializer для системных событий.
-    """
-    event_type_display = serializers.CharField(source='get_event_type_display', read_only=True)
-    severity_display = serializers.CharField(source='get_severity_display', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    user_full_name = serializers.SerializerMethodField()
+    audit_type_display = serializers.CharField(source='get_audit_type_display', read_only=True)
+    review_status_display = serializers.CharField(source='get_review_status_display', read_only=True)
+    object_name = serializers.CharField(source='object_name', read_only=True)
+    reviewed_by_email = serializers.CharField(source='reviewed_by.email', read_only=True)
 
     class Meta:
-        model = SystemEvent
+        model = SecurityAudit
         fields = [
-            'id', 'event_type', 'event_type_display', 'severity', 'severity_display',
-            'description', 'details', 'created_at'
+            'id', 'user', 'user_email', 'user_full_name', 'audit_type', 'audit_type_display',
+            'content_type', 'object_id', 'object_name', 'details', 'old_values', 'new_values',
+            'reason', 'ip_address', 'timestamp', 'is_critical', 'review_status', 
+            'review_status_display', 'reviewed_by', 'reviewed_by_email', 'review_comment'
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['id', 'timestamp']
+
+    def get_user_full_name(self, obj):
+        """Получает полное имя пользователя."""
+        if obj.user:
+            return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.email
+        return "Anonymous"
+
+
+class AuditSettingsSerializer(serializers.ModelSerializer):
+    """
+    Serializer для настроек аудита.
+    """
+    class Meta:
+        model = AuditSettings
+        fields = [
+            'id', 'logging_enabled', 'security_audit_enabled', 'log_retention_days',
+            'security_audit_retention_days', 'log_http_requests', 'log_database_changes',
+            'log_business_operations', 'log_system_events', 'min_log_level',
+            'auto_cleanup_enabled', 'cleanup_frequency_days', 
+            'critical_operation_notifications', 'notification_email', 'updated_at'
+        ]
+        read_only_fields = ['id', 'updated_at']
 
 
 class AuditStatisticsSerializer(serializers.Serializer):

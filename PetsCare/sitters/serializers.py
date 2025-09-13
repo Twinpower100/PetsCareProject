@@ -187,11 +187,13 @@ class MessageSerializer(serializers.ModelSerializer):
     """
     sender_name = serializers.CharField(source='sender.get_full_name', read_only=True)
     sender_avatar = serializers.CharField(source='sender.avatar', read_only=True)
+    recipient_name = serializers.CharField(source='recipient.get_full_name', read_only=True)
+    text = serializers.CharField(source='decrypted_text', read_only=True)
     
     class Meta:
         model = Message
-        fields = ['id', 'sender', 'sender_name', 'sender_avatar', 'text', 'created_at', 'is_read']
-        read_only_fields = ['sender', 'created_at', 'is_read']
+        fields = ['id', 'sender', 'sender_name', 'sender_avatar', 'recipient', 'recipient_name', 'text', 'created_at', 'is_read']
+        read_only_fields = ['sender', 'recipient', 'created_at', 'is_read']
 
     def create(self, validated_data):
         """Автоматически устанавливает отправителя"""
@@ -228,9 +230,10 @@ class ConversationSerializer(serializers.ModelSerializer):
         """Получает последнее сообщение"""
         last_message = obj.messages.last()
         if last_message:
+            decrypted_text = last_message.decrypted_text
             return {
                 'id': last_message.id,
-                'text': last_message.text[:100] + '...' if len(last_message.text) > 100 else last_message.text,
+                'text': decrypted_text[:100] + '...' if len(decrypted_text) > 100 else decrypted_text,
                 'sender_name': last_message.sender.get_full_name(),
                 'created_at': last_message.created_at
             }
@@ -239,7 +242,7 @@ class ConversationSerializer(serializers.ModelSerializer):
     def get_unread_count(self, obj):
         """Получает количество непрочитанных сообщений"""
         user = self.context['request'].user
-        return obj.messages.filter(is_read=False).exclude(sender=user).count()
+        return obj.messages.filter(is_read=False, recipient=user).count()
 
     def get_other_participant(self, obj):
         """Получает другого участника диалога"""

@@ -195,7 +195,9 @@ class Provider(models.Model):
                     self.point = Point(location['lng'], location['lat'], srid=4326)
             except Exception as e:
                 # В случае ошибки сохраняем без координат
-                print(f"Geocoding error: {e}")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Geocoding error: {e}")
         
         super().save(*args, **kwargs)
 

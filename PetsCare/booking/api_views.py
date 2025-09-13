@@ -370,7 +370,7 @@ def auto_book_employee(request):
         # Валидация обязательных полей
         if not all([pet_id, provider_id, service_id, start_time_str, end_time_str, price]):
             return Response({
-                'error': _('Все обязательные поля должны быть заполнены')
+                'error': _('All required fields must be filled')
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Получаем объекты
@@ -380,7 +380,7 @@ def auto_book_employee(request):
             service = Service.objects.get(id=service_id, is_active=True)
         except (Pet.DoesNotExist, Provider.DoesNotExist, Service.DoesNotExist):
             return Response({
-                'error': _('Питомец, учреждение или услуга не найдены')
+                'error': _('Pet, institution or service not found')
             }, status=status.HTTP_404_NOT_FOUND)
         
         # Парсим время
@@ -389,19 +389,19 @@ def auto_book_employee(request):
             end_time = timezone.datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
         except ValueError:
             return Response({
-                'error': _('Неверный формат времени')
+                'error': _('Invalid time format')
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Проверяем, что время в будущем
         if start_time <= timezone.now():
             return Response({
-                'error': _('Время бронирования должно быть в будущем')
+                'error': _('Booking time must be in the future')
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Проверяем, что end_time > start_time
         if end_time <= start_time:
             return Response({
-                'error': _('Время окончания должно быть позже времени начала')
+                'error': _('End time must be later than start time')
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Автоматически выбираем и бронируем работника
@@ -418,13 +418,13 @@ def auto_book_employee(request):
         
         if not booking:
             return Response({
-                'error': _('Нет доступных работников для выбранного времени')
+                'error': _('No available workers for selected time')
             }, status=status.HTTP_404_NOT_FOUND)
         
         # Возвращаем информацию о созданном бронировании
         return Response({
             'success': True,
-            'message': _('Бронирование успешно создано'),
+            'message': _('Booking successfully created'),
             'booking': {
                 'id': booking.id,
                 'employee_name': f"{booking.employee.user.first_name} {booking.employee.user.last_name}",
@@ -438,7 +438,7 @@ def auto_book_employee(request):
         
     except Exception as e:
         return Response({
-            'error': _('Ошибка при создании бронирования'),
+            'error': _('Error creating booking'),
             'details': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
@@ -457,7 +457,7 @@ def get_available_employees(request):
         # Валидация параметров
         if not all([provider_id, service_id, date_str]):
             return Response({
-                'error': _('Необходимо указать provider_id, service_id и date')
+                'error': _('Must specify provider_id, service_id and date')
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Получаем объекты
@@ -466,7 +466,7 @@ def get_available_employees(request):
             service = Service.objects.get(id=service_id, is_active=True)
         except (Provider.DoesNotExist, Service.DoesNotExist):
             return Response({
-                'error': _('Учреждение или услуга не найдены')
+                'error': _('Institution or service not found')
             }, status=status.HTTP_404_NOT_FOUND)
         
         # Парсим дату
@@ -474,7 +474,7 @@ def get_available_employees(request):
             date = datetime.strptime(date_str, '%Y-%m-%d').date()
         except ValueError:
             return Response({
-                'error': _('Неверный формат даты. Используйте YYYY-MM-DD')
+                'error': _('Invalid date format. Use YYYY-MM-DD')
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Получаем доступных работников с их слотами
@@ -510,6 +510,6 @@ def get_available_employees(request):
         
     except Exception as e:
         return Response({
-            'error': _('Ошибка при получении списка работников'),
+            'error': _('Error getting workers list'),
             'details': str(e)
         }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 

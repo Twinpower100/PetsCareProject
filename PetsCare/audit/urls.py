@@ -15,14 +15,11 @@ app_name = 'audit'
 
 urlpatterns = [
     # Основные API для аудита
-    path('api/audit/logs/', api_views.AuditLogListView.as_view(), name='audit-logs'),
-    path('api/audit/logs/export/', api_views.AuditLogExportView.as_view(), name='audit-logs-export'),
+    path('api/audit/actions/', api_views.UserActionViewSet.as_view({'get': 'list'}), name='user-actions'),
+    path('api/audit/actions/statistics/', api_views.UserActionViewSet.as_view({'get': 'statistics'}), name='user-actions-statistics'),
+    path('api/audit/actions/export/', api_views.UserActionViewSet.as_view({'post': 'export'}), name='user-actions-export'),
+    path('api/audit/actions/cleanup/', api_views.UserActionViewSet.as_view({'post': 'cleanup'}), name='user-actions-cleanup'),
     path('api/audit/user-activity/<int:user_id>/', api_views.UserActivityView.as_view(), name='user-activity'),
-    path('api/audit/system-events/', api_views.SystemEventsView.as_view(), name='system-events'),
+    path('api/audit/security/', api_views.SecurityAuditView.as_view(), name='security-audit'),
     path('api/audit/statistics/', api_views.AuditStatisticsView.as_view(), name='audit-statistics'),
-    
-    # Дополнительные endpoints
-    path('api/audit/logs/filter/', api_views.AuditLogFilterView.as_view(), name='audit-logs-filter'),
-    path('api/audit/logs/search/', api_views.AuditLogSearchView.as_view(), name='audit-logs-search'),
-    path('api/audit/logs/cleanup/', api_views.AuditLogCleanupView.as_view(), name='audit-logs-cleanup'),
 ] 

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import time
+import logging
 from datetime import timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from decimal import Decimal
@@ -14,6 +15,8 @@ from django.utils.translation import gettext as _
 
 from users.models import User
 from .models import Address, AddressValidation, AddressCache, UserLocation
+
+logger = logging.getLogger(__name__)
 
 
 class GoogleMapsService:
@@ -65,10 +68,10 @@ class GoogleMapsService:
                 return None
                 
         except requests.RequestException as e:
-            print(f"Error requesting Google Maps API: {e}")
+            logger.error(f"Error requesting Google Maps API: {e}")
             return None
         except Exception as e:
-            print(f"Geocoding error: {e}")
+            logger.error(f"Geocoding error: {e}")
             return None
     
     def autocomplete_address(self, input_text: str, country: str = None, 
@@ -113,10 +116,10 @@ class GoogleMapsService:
                 return []
                 
         except requests.RequestException as e:
-            print(f"Error requesting Google Places API: {e}")
+            logger.error(f"Error requesting Google Places API: {e}")
             return []
         except Exception as e:
-            print(f"Autocomplete error: {e}")
+            logger.error(f"Autocomplete error: {e}")
             return []
     
     def _parse_geocoding_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -212,10 +215,10 @@ class GoogleMapsService:
                 return None
                 
         except requests.RequestException as e:
-            print(f"Error requesting Google Maps API for reverse geocoding: {e}")
+            logger.error(f"Error requesting Google Maps API for reverse geocoding: {e}")
             return None
         except Exception as e:
-            print(f"Reverse geocoding error: {e}")
+            logger.error(f"Reverse geocoding error: {e}")
             return None
 
 
@@ -273,7 +276,7 @@ class AddressValidationService:
             return is_valid
             
         except Exception as e:
-            print(f"Address validation error for address {address.id}: {e}")
+            logger.error(f"Address validation error for address {address.id}: {e}")
             self._save_validation_result(address, False, start_time, error=str(e))
             return False
     

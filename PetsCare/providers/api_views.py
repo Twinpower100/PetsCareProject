@@ -868,7 +868,7 @@ def check_provider_availability(request, provider_id):
         except Provider.DoesNotExist:
             return Response({
                 'success': False,
-                'message': _('Учреждение не найдено')
+                'message': _('Institution not found')
             }, status=404)
         
         # Парсим дату и время

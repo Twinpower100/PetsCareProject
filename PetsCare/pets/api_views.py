@@ -993,6 +993,8 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
         """
         Сообщает о потере питомца.
         
+        Только основной владелец может сообщить о потере питомца.
+        
         Args:
             pet_id: ID питомца
             reason: Причина потери (опционально)
@@ -1012,11 +1014,11 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
                 'error': _('Pet not found.')
             }, status=status.HTTP_404_NOT_FOUND)
         
-        # Проверяем права доступа
+        # Проверяем права доступа - только основной владелец может сообщить о потере питомца
         user = request.user
-        if not (pet.main_owner == user or user in pet.owners.all()):
+        if pet.main_owner != user:
             return Response({
-                'error': _('You do not have access to this pet.')
+                'error': _('Only the main owner can report pet loss.')
             }, status=status.HTTP_403_FORBIDDEN)
         
         # Проверяем, что нет активных случаев недееспособности
@@ -1107,6 +1109,8 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
         """
         Подтверждает статус питомца.
         
+        Только основной владелец может подтвердить статус питомца.
+        
         Args:
             pet_is_ok: True если питомец в порядке, False если потерян/умер
             notes: Дополнительные заметки (опционально)
@@ -1120,11 +1124,11 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
                 'error': _('Pet status confirmation is required.')
             }, status=status.HTTP_400_BAD_REQUEST)
         
-        # Проверяем права доступа
+        # Проверяем права доступа - только основной владелец может подтвердить статус питомца
         user = request.user
-        if not (incapacity_record.pet.main_owner == user or user in incapacity_record.pet.owners.all()):
+        if incapacity_record.pet.main_owner != user:
             return Response({
-                'error': _('You do not have access to this pet.')
+                'error': _('Only the main owner can confirm pet status.')
             }, status=status.HTTP_403_FORBIDDEN)
         
         # Проверяем статус записи

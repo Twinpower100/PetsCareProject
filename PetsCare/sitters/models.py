@@ -11,6 +11,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 from users.models import User
 from django.core.exceptions import ValidationError
+from .encryption import message_encryption
 
 
 class SitterProfile(models.Model):
@@ -353,6 +354,12 @@ class Message(models.Model):
         related_name='sent_messages',
         verbose_name=_('Sender')
     )
+    recipient = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='received_messages',
+        verbose_name=_('Recipient')
+    )
     text = models.TextField(
         verbose_name=_('Text')
     )
@@ -376,4 +383,21 @@ class Message(models.Model):
     def mark_as_read(self):
         """Отмечает сообщение как прочитанное"""
         self.is_read = True
-        self.save() 
+        self.save()
+    
+    def save(self, *args, **kwargs):
+        """Переопределяем save для автоматического шифрования текста"""
+        if self.text and not self.pk:  # Только для новых сообщений
+            self.text = message_encryption.encrypt(self.text)
+        super().save(*args, **kwargs)
+    
+    @property
+    def decrypted_text(self):
+        """Возвращает расшифрованный текст сообщения"""
+        if not self.text:
+            return ""
+        try:
+            return message_encryption.decrypt(self.text)
+        except Exception:
+            # Если не удается расшифровать, возвращаем как есть (для старых сообщений)
+            return self.text 

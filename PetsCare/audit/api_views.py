@@ -22,80 +22,81 @@ from django.http import HttpResponse
 import csv
 import json
 
-from .models import AuditLog, UserActivity, SystemEvent
+from .models import UserAction, SecurityAudit, AuditSettings
 from .serializers import (
-    AuditLogSerializer, UserActivitySerializer, 
-    SystemEventSerializer, AuditStatisticsSerializer
+    UserActionSerializer, SecurityAuditSerializer, 
+    AuditSettingsSerializer, AuditStatisticsSerializer
 )
 from users.models import User
 
 logger = logging.getLogger(__name__)
 
 
-class AuditLogFilter(filters.FilterSet):
-    """Фильтры для логов аудита."""
+class UserActionFilter(filters.FilterSet):
+    """Фильтры для действий пользователей."""
     user = filters.NumberFilter(field_name='user_id')
-    action = filters.CharFilter(field_name='action')
-    resource_type = filters.CharFilter(field_name='resource_type')
-    resource_id = filters.NumberFilter(field_name='resource_id')
-    created_after = filters.DateTimeFilter(field_name='created_at', lookup_expr='gte')
-    created_before = filters.DateTimeFilter(field_name='created_at', lookup_expr='lte')
+    action_type = filters.CharFilter(field_name='action_type')
+    content_type = filters.NumberFilter(field_name='content_type_id')
+    object_id = filters.NumberFilter(field_name='object_id')
+    created_after = filters.DateTimeFilter(field_name='timestamp', lookup_expr='gte')
+    created_before = filters.DateTimeFilter(field_name='timestamp', lookup_expr='lte')
     ip_address = filters.CharFilter(field_name='ip_address')
     user_agent = filters.CharFilter(field_name='user_agent')
+    http_method = filters.CharFilter(field_name='http_method')
 
     class Meta:
-        model = AuditLog
-        fields = ['user', 'action', 'resource_type', 'resource_id', 'created_after', 'created_before', 'ip_address', 'user_agent']
+        model = UserAction
+        fields = ['user', 'action_type', 'content_type', 'object_id', 'created_after', 'created_before', 'ip_address', 'user_agent', 'http_method']
 
 
-class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+class UserActionViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    ViewSet для работы с логами аудита.
+    ViewSet для работы с действиями пользователей.
     
     Предоставляет endpoints для:
-    - Просмотра логов аудита
-    - Фильтрации логов
-    - Экспорта логов
+    - Просмотра действий пользователей
+    - Фильтрации действий
+    - Экспорта действий
     """
-    serializer_class = AuditLogSerializer
-    filterset_class = AuditLogFilter
+    serializer_class = UserActionSerializer
+    filterset_class = UserActionFilter
     permission_classes = [permissions.IsAdminUser]
 
     def get_queryset(self):
-        """Возвращает queryset логов аудита."""
-        return AuditLog.objects.select_related('user').order_by('-created_at')
+        """Возвращает queryset действий пользователей."""
+        return UserAction.objects.select_related('user', 'content_type').order_by('-timestamp')
 
     @action(detail=False, methods=['get'])
     def statistics(self, request):
-        """Получает статистику логов аудита."""
+        """Получает статистику действий пользователей."""
         try:
             # Общая статистика
-            total_logs = AuditLog.objects.count()
-            today_logs = AuditLog.objects.filter(
-                created_at__date=timezone.now().date()
+            total_actions = UserAction.objects.count()
+            today_actions = UserAction.objects.filter(
+                timestamp__date=timezone.now().date()
             ).count()
             
-            # Статистика по действиям
-            action_stats = AuditLog.objects.values('action').annotate(
+            # Статистика по типам действий
+            action_stats = UserAction.objects.values('action_type').annotate(
                 count=Count('id')
             ).order_by('-count')[:10]
             
             # Статистика по пользователям
-            user_stats = AuditLog.objects.values('user__email').annotate(
+            user_stats = UserAction.objects.values('user__email').annotate(
                 count=Count('id')
             ).order_by('-count')[:10]
             
-            # Статистика по ресурсам
-            resource_stats = AuditLog.objects.values('resource_type').annotate(
+            # Статистика по типам контента
+            content_stats = UserAction.objects.values('content_type__model').annotate(
                 count=Count('id')
             ).order_by('-count')
             
             return Response({
-                'total_logs': total_logs,
-                'today_logs': today_logs,
+                'total_actions': total_actions,
+                'today_actions': today_actions,
                 'action_stats': list(action_stats),
                 'user_stats': list(user_stats),
-                'resource_stats': list(resource_stats)
+                'content_stats': list(content_stats)
             })
             
         except Exception as e:
@@ -107,7 +108,7 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=False, methods=['post'])
     def export(self, request):
-        """Экспортирует логи аудита в CSV."""
+        """Экспортирует действия пользователей в CSV."""
         try:
             format_type = request.data.get('format', 'csv')
             filters = request.data.get('filters', {})
@@ -116,26 +117,28 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = self.get_queryset()
             if filters:
                 for key, value in filters.items():
-                    if hasattr(AuditLog, key):
+                    if hasattr(UserAction, key):
                         queryset = queryset.filter(**{key: value})
             
             if format_type == 'csv':
                 response = HttpResponse(content_type='text/csv')
-                response['Content-Disposition'] = f'attachment; filename="audit_logs_{timezone.now().strftime("%Y%m%d")}.csv"'
+                response['Content-Disposition'] = f'attachment; filename="user_actions_{timezone.now().strftime("%Y%m%d")}.csv"'
                 
                 writer = csv.writer(response)
-                writer.writerow(['ID', 'User', 'Action', 'Resource Type', 'Resource ID', 'IP Address', 'User Agent', 'Created At'])
+                writer.writerow(['ID', 'User', 'Action Type', 'Content Type', 'Object ID', 'IP Address', 'User Agent', 'HTTP Method', 'URL', 'Timestamp'])
                 
-                for log in queryset[:10000]:  # Ограничиваем экспорт
+                for action in queryset[:10000]:  # Ограничиваем экспорт
                     writer.writerow([
-                        log.id,
-                        log.user.email if log.user else 'Anonymous',
-                        log.action,
-                        log.resource_type,
-                        log.resource_id,
-                        log.ip_address,
-                        log.user_agent,
-                        log.created_at.isoformat()
+                        action.id,
+                        action.user.email if action.user else 'Anonymous',
+                        action.action_type,
+                        action.content_type.model if action.content_type else '',
+                        action.object_id,
+                        action.ip_address,
+                        action.user_agent,
+                        action.http_method,
+                        action.url,
+                        action.timestamp.isoformat()
                     ])
                 
                 return response
@@ -146,33 +149,33 @@ class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
                 )
                 
         except Exception as e:
-            logger.error(f"Failed to export audit logs: {e}")
+            logger.error(f"Failed to export user actions: {e}")
             return Response(
-                {'error': _('Failed to export audit logs')},
+                {'error': _('Failed to export user actions')},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
     @action(detail=False, methods=['post'])
     def cleanup(self, request):
-        """Очищает старые логи аудита."""
+        """Очищает старые действия пользователей."""
         try:
             days_to_keep = request.data.get('days', 90)
             cutoff_date = timezone.now() - timedelta(days=days_to_keep)
             
-            deleted_count = AuditLog.objects.filter(
-                created_at__lt=cutoff_date
+            deleted_count = UserAction.objects.filter(
+                timestamp__lt=cutoff_date
             ).delete()[0]
             
             return Response({
-                'message': _('Audit logs cleaned up successfully'),
+                'message': _('User actions cleaned up successfully'),
                 'deleted_count': deleted_count,
                 'cutoff_date': cutoff_date.isoformat()
             })
             
         except Exception as e:
-            logger.error(f"Failed to cleanup audit logs: {e}")
+            logger.error(f"Failed to cleanup user actions: {e}")
             return Response(
-                {'error': _('Failed to cleanup audit logs')},
+                {'error': _('Failed to cleanup user actions')},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -186,20 +189,20 @@ class UserActivityView(APIView):
         try:
             user = User.objects.get(id=user_id)
             
-            # Получаем логи активности пользователя
-            activity_logs = AuditLog.objects.filter(
+            # Получаем действия пользователя
+            user_actions = UserAction.objects.filter(
                 user=user
-            ).order_by('-created_at')[:100]
+            ).order_by('-timestamp')[:100]
             
             # Статистика активности
-            activity_stats = AuditLog.objects.filter(
+            activity_stats = UserAction.objects.filter(
                 user=user
-            ).values('action').annotate(
+            ).values('action_type').annotate(
                 count=Count('id')
             ).order_by('-count')
             
             # Последние действия
-            recent_actions = activity_logs[:10]
+            recent_actions = user_actions[:10]
             
             return Response({
                 'user': {
@@ -208,8 +211,8 @@ class UserActivityView(APIView):
                     'is_active': user.is_active
                 },
                 'activity_stats': list(activity_stats),
-                'recent_actions': AuditLogSerializer(recent_actions, many=True).data,
-                'total_actions': activity_logs.count()
+                'recent_actions': UserActionSerializer(recent_actions, many=True).data,
+                'total_actions': user_actions.count()
             })
             
         except User.DoesNotExist:
@@ -225,30 +228,30 @@ class UserActivityView(APIView):
             )
 
 
-class SystemEventsView(APIView):
-    """API для просмотра системных событий."""
+class SecurityAuditView(APIView):
+    """API для просмотра аудита безопасности."""
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
-        """Получает системные события."""
+        """Получает записи аудита безопасности."""
         try:
-            # Получаем системные события
-            events = SystemEvent.objects.order_by('-created_at')[:100]
+            # Получаем записи аудита безопасности
+            security_audits = SecurityAudit.objects.order_by('-timestamp')[:100]
             
-            # Статистика событий
-            event_stats = SystemEvent.objects.values('event_type').annotate(
+            # Статистика аудита
+            audit_stats = SecurityAudit.objects.values('audit_type').annotate(
                 count=Count('id')
             ).order_by('-count')
             
             return Response({
-                'events': SystemEventSerializer(events, many=True).data,
-                'event_stats': list(event_stats)
+                'security_audits': SecurityAuditSerializer(security_audits, many=True).data,
+                'audit_stats': list(audit_stats)
             })
             
         except Exception as e:
-            logger.error(f"Failed to get system events: {e}")
+            logger.error(f"Failed to get security audit: {e}")
             return Response(
-                {'error': _('Failed to get system events')},
+                {'error': _('Failed to get security audit')},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -265,30 +268,30 @@ class AuditStatisticsView(APIView):
             start_date = timezone.now() - timedelta(days=days)
             
             # Общая статистика
-            total_logs = AuditLog.objects.filter(
-                created_at__gte=start_date
+            total_actions = UserAction.objects.filter(
+                timestamp__gte=start_date
             ).count()
             
             # Статистика по дням
-            daily_stats = AuditLog.objects.filter(
-                created_at__gte=start_date
+            daily_stats = UserAction.objects.filter(
+                timestamp__gte=start_date
             ).extra(
-                select={'day': 'date(created_at)'}
+                select={'day': 'date(timestamp)'}
             ).values('day').annotate(
                 count=Count('id')
             ).order_by('day')
             
             # Топ пользователей по активности
-            top_users = AuditLog.objects.filter(
-                created_at__gte=start_date
+            top_users = UserAction.objects.filter(
+                timestamp__gte=start_date
             ).values('user__email').annotate(
                 count=Count('id')
             ).order_by('-count')[:10]
             
             # Топ действий
-            top_actions = AuditLog.objects.filter(
-                created_at__gte=start_date
-            ).values('action').annotate(
+            top_actions = UserAction.objects.filter(
+                timestamp__gte=start_date
+            ).values('action_type').annotate(
                 count=Count('id')
             ).order_by('-count')[:10]
             
@@ -298,7 +301,7 @@ class AuditStatisticsView(APIView):
                     'start_date': start_date.isoformat(),
                     'end_date': timezone.now().isoformat()
                 },
-                'total_logs': total_logs,
+                'total_actions': total_actions,
                 'daily_stats': list(daily_stats),
                 'top_users': list(top_users),
                 'top_actions': list(top_actions)

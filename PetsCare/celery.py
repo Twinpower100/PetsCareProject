@@ -9,9 +9,12 @@
 
 from __future__ import absolute_import, unicode_literals
 import os
+import logging
 from celery import Celery
 from django.conf import settings
 from celery.schedules import crontab
+
+logger = logging.getLogger(__name__)
 
 # Установка переменной окружения для настроек проекта
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'PetsCare.settings')
@@ -35,4 +38,4 @@ app.conf.beat_schedule = {
 @app.task(bind=True)
 def debug_task(self):
     """Тестовая задача для проверки работы Celery"""
-    print(f'Request: {self.request!r}') 
+    logger.info(f'Request: {self.request!r}') 

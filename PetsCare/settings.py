@@ -19,6 +19,8 @@ Django settings for PetsCare project.
 from pathlib import Path
 from decouple import config, Csv
 from django.utils.translation import gettext_lazy as _
+from datetime import timedelta
+from celery.schedules import crontab
 import os
 
 # Базовые пути проекта
@@ -89,10 +91,11 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'allauth.account.middleware.AccountMiddleware',
-    'billing.middleware.ProviderBlockingMiddleware',  # Middleware для блокировки заблокированных учреждений
-    'audit.services.AuditMiddleware',  # Middleware для логирования HTTP запросов
-    'security.middleware.SecurityMonitoringMiddleware',  # Middleware для мониторинга безопасности
-    'security.middleware.SecurityAuditMiddleware',  # Middleware для аудита безопасности
+    # Временно отключены кастомные middleware для диагностики
+    # 'billing.middleware.ProviderBlockingMiddleware',  # Middleware для блокировки заблокированных учреждений
+    # 'audit.services.AuditMiddleware',  # Middleware для логирования HTTP запросов
+    # 'security.middleware.SecurityMonitoringMiddleware',  # Middleware для мониторинга безопасности
+    # 'security.middleware.SecurityAuditMiddleware',  # Middleware для аудита безопасности
 ]
 
 # Настройки URL и шаблонов
@@ -364,8 +367,6 @@ REST_FRAMEWORK = {
 }
 
 # Настройки JWT
-from datetime import timedelta
-from celery.schedules import crontab
 
 SIMPLE_JWT = {
     'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
@@ -465,4 +466,21 @@ CSP_STYLE_SRC = ("'self'", "'unsafe-inline'")
 CSP_IMG_SRC = ("'self'", "data:", "https:")
 CSP_FONT_SRC = ("'self'", "https:")
 CSP_CONNECT_SRC = ("'self'",)
-CSP_FRAME_ANCESTORS = ("'none'",) 
+CSP_FRAME_ANCESTORS = ("'none'",)
+
+# Django Security Settings
+SECURE_HSTS_SECONDS = 31536000  # 1 год
+SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+SECURE_HSTS_PRELOAD = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+SECURE_CROSS_ORIGIN_OPENER_POLICY = 'same-origin'
+SECURE_SSL_REDIRECT = False  # True только для продакшена с HTTPS
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_FRAME_DENY = True
+X_FRAME_OPTIONS = 'DENY'
+
+# Django 5.0+ Settings
+USE_TZ = True
+USE_I18N = True
+USE_L10N = True 

@@ -26,7 +26,7 @@ def test_employee_role_logic():
     """
     Тестирует правильную логику назначения роли employee.
     """
-    print("=== Тест логики роли employee ===\n")
+    print("=== Employee role logic test ===\n")
     
     # Создаем тестового пользователя
     user = User.objects.create_user(
@@ -37,8 +37,8 @@ def test_employee_role_logic():
         last_name='Сотрудник'
     )
     
-    print(f"1. Создан пользователь: {user}")
-    print(f"   Роли: {list(user.user_types.values_list('name', flat=True))}")
+    print(f"1. Created user: {user}")
+    print(f"   Roles: {list(user.user_types.values_list('name', flat=True))}")
     print()
     
     # Создаем тестовое учреждение
@@ -50,7 +50,7 @@ def test_employee_role_logic():
         email='clinic@example.com'
     )
     
-    print(f"2. Создано учреждение: {provider}")
+    print(f"2. Created institution: {provider}")
     print()
     
     # Создаем профиль сотрудника (БЕЗ связи с учреждением)
@@ -60,9 +60,9 @@ def test_employee_role_logic():
         bio='Тестовый сотрудник'
     )
     
-    print(f"3. Создан профиль сотрудника: {employee_profile}")
-    print(f"   Роли: {list(user.user_types.values_list('name', flat=True))}")
-    print("   ❌ Роль employee НЕ добавлена (правильно - нет связи с учреждением)")
+    print(f"3. Created employee profile: {employee_profile}")
+    print(f"   Roles: {list(user.user_types.values_list('name', flat=True))}")
+    print("   ❌ Employee role NOT added (correct - no institution connection)")
     print()
     
     # Создаем связь с учреждением (end_date=None - активно работает)
@@ -74,18 +74,18 @@ def test_employee_role_logic():
         is_confirmed=True
     )
     
-    print(f"4. Создана активная связь с учреждением: {employment}")
-    print(f"   Роли: {list(user.user_types.values_list('name', flat=True))}")
-    print("   ✅ Роль employee добавлена (правильно - есть активная связь)")
+    print(f"4. Created active connection with institution: {employment}")
+    print(f"   Roles: {list(user.user_types.values_list('name', flat=True))}")
+    print("   ✅ Employee role added (correct - active connection exists)")
     print()
     
     # Устанавливаем дату окончания (увольнение)
     employment.end_date = date.today()
     employment.save()
     
-    print(f"5. Установлена дата окончания работы: {employment.end_date}")
-    print(f"   Роли: {list(user.user_types.values_list('name', flat=True))}")
-    print("   ❌ Роль employee удалена (правильно - нет активных связей)")
+    print(f"5. Set end date: {employment.end_date}")
+    print(f"   Roles: {list(user.user_types.values_list('name', flat=True))}")
+    print("   ❌ Employee role removed (correct - no active connections)")
     print()
     
     # Создаем новую активную связь
@@ -97,16 +97,16 @@ def test_employee_role_logic():
         is_confirmed=True
     )
     
-    print(f"6. Создана новая активная связь: {new_employment}")
-    print(f"   Роли: {list(user.user_types.values_list('name', flat=True))}")
-    print("   ✅ Роль employee снова добавлена (правильно - есть активная связь)")
+    print(f"6. Created new active connection: {new_employment}")
+    print(f"   Roles: {list(user.user_types.values_list('name', flat=True))}")
+    print("   ✅ Employee role added again (correct - active connection exists)")
     print()
     
     # Очистка
     user.delete()
     provider.delete()
     
-    print("=== Тест завершен ===")
+    print("=== Test completed ===")
 
 if __name__ == '__main__':
     test_employee_role_logic() 
