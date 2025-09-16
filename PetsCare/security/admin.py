@@ -10,7 +10,7 @@ from django.core.cache import cache
 import logging
 
 from .models import SecurityThreat, IPBlacklist, ThreatPattern, SecurityPolicy, PolicyViolation, SessionPolicy, AccessPolicy, DataClassificationPolicy
-from .services import ip_blocking_service
+from .services import get_ip_blocking_service
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class SecurityThreatAdmin(SecurityAccessMixin, admin.ModelAdmin):
     
     list_filter = [
         'threat_type', 'severity', 'status', 'detected_at',
-        ('user', admin.RelatedOnlyFieldFilter),
+        ('user', admin.RelatedOnlyFieldListFilter),
     ]
     
     search_fields = [
@@ -148,7 +148,7 @@ class SecurityThreatAdmin(SecurityAccessMixin, admin.ModelAdmin):
         """Заблокировать IP-адреса"""
         count = 0
         for threat in queryset:
-            if ip_blocking_service.block_ip(
+            if get_ip_blocking_service().block_ip(
                 threat.ip_address,
                 f"Blocked due to threat: {threat.threat_type}",
                 'manual',
@@ -183,7 +183,7 @@ class IPBlacklistAdmin(SecurityAccessMixin, admin.ModelAdmin):
     
     list_filter = [
         'block_type', 'is_active', 'blocked_at',
-        ('blocked_by', admin.RelatedOnlyFieldFilter),
+        ('blocked_by', admin.RelatedOnlyFieldListFilter),
     ]
     
     search_fields = ['ip_address', 'reason']
@@ -219,7 +219,7 @@ class IPBlacklistAdmin(SecurityAccessMixin, admin.ModelAdmin):
         """Разблокировать выбранные IP"""
         count = 0
         for ip_block in queryset.filter(is_active=True):
-            if ip_blocking_service.unblock_ip(ip_block.ip_address, request.user):
+            if get_ip_blocking_service().unblock_ip(ip_block.ip_address, request.user):
                 count += 1
         
         self.message_user(
@@ -322,7 +322,7 @@ class SecurityPolicyAdmin(SecurityAccessMixin, admin.ModelAdmin):
     
     list_filter = [
         'policy_type', 'severity', 'is_active', 'created_at',
-        ('created_by', admin.RelatedOnlyFieldFilter),
+        ('created_by', admin.RelatedOnlyFieldListFilter),
     ]
     
     search_fields = ['name', 'description']
@@ -427,8 +427,8 @@ class PolicyViolationAdmin(SecurityAccessMixin, admin.ModelAdmin):
     
     list_filter = [
         'policy__policy_type', 'severity', 'status', 'detected_at',
-        ('user', admin.RelatedOnlyFieldFilter),
-        ('policy', admin.RelatedOnlyFieldFilter),
+        ('user', admin.RelatedOnlyFieldListFilter),
+        ('policy', admin.RelatedOnlyFieldListFilter),
     ]
     
     search_fields = [
@@ -718,6 +718,40 @@ class SecurityDashboardAdmin(admin.ModelAdmin):
     
     def _get_security_stats(self):
         """Получить статистику безопасности"""
+        try:
+            # Проверить, готова ли база данных
+            from django.db import connection
+            if not connection.introspection.table_names():
+                # Если таблицы еще не созданы, возвращаем пустую статистику
+                return {
+                    'threats_24h': 0,
+                    'threats_7d': 0,
+                    'active_threats': 0,
+                    'threat_types': [],
+                    'blocked_ips': 0,
+                    'recent_blocks': 0,
+                    'top_ips': [],
+                    'active_policies': 0,
+                    'policy_violations_24h': 0,
+                    'policy_violations_7d': 0,
+                    'policy_types': [],
+                }
+        except:
+            # Если БД еще не готова, возвращаем пустую статистику
+            return {
+                'threats_24h': 0,
+                'threats_7d': 0,
+                'active_threats': 0,
+                'threat_types': [],
+                'blocked_ips': 0,
+                'recent_blocks': 0,
+                'top_ips': [],
+                'active_policies': 0,
+                'policy_violations_24h': 0,
+                'policy_violations_7d': 0,
+                'policy_types': [],
+            }
+        
         now = timezone.now()
         last_24h = now - timezone.timedelta(hours=24)
         last_7d = now - timezone.timedelta(days=7)
@@ -828,12 +862,4 @@ security_admin_site.register(SessionPolicy, SessionPolicyAdmin)
 security_admin_site.register(AccessPolicy, AccessPolicyAdmin)
 security_admin_site.register(DataClassificationPolicy, DataClassificationPolicyAdmin)
 
-# Регистрация в основном админском сайте (с ограничениями доступа)
-admin.site.register(SecurityThreat, SecurityThreatAdmin)
-admin.site.register(IPBlacklist, IPBlacklistAdmin)
-admin.site.register(ThreatPattern, ThreatPatternAdmin)
-admin.site.register(SecurityPolicy, SecurityPolicyAdmin)
-admin.site.register(PolicyViolation, PolicyViolationAdmin)
-admin.site.register(SessionPolicy, SessionPolicyAdmin)
-admin.site.register(AccessPolicy, AccessPolicyAdmin)
-admin.site.register(DataClassificationPolicy, DataClassificationPolicyAdmin)
+# Регистрация в основном админском сайте происходит через @admin.register декораторы

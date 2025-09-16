@@ -19,7 +19,7 @@ from django.shortcuts import get_object_or_404
 from django.db import models
 from django.db.models import Avg, Q
 from notifications.models import Notification
-from notifications.tasks import send_notification
+from notifications.tasks import send_notification_task
 from django.utils.translation import gettext_lazy as _
 from geolocation.services import DeviceLocationService
 from access.models import PetAccess
@@ -157,7 +157,7 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
             channel='both',
             data={'ad_id': response.ad.id, 'response_id': response.id}
         )
-        send_notification.delay(notification.id)
+        send_notification_task.delay(notification.id)
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
     def accept(self, request, pk=None):
@@ -188,7 +188,7 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
             channel='both',
             data={'ad_id': response.ad.id, 'response_id': response.id}
         )
-        send_notification.delay(notification.id)
+        send_notification_task.delay(notification.id)
         # После response.save()
         other_responses = PetSittingResponse.objects.filter(
             ad=response.ad,
@@ -207,7 +207,7 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
                 channel='both',
                 data={'ad_id': other.ad.id, 'response_id': other.id}
             )
-            send_notification.delay(notification.id)
+            send_notification_task.delay(notification.id)
         return Response({'status': 'accepted'})
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
@@ -229,7 +229,7 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
             channel='both',
             data={'ad_id': response.ad.id, 'response_id': response.id}
         )
-        send_notification.delay(notification.id)
+        send_notification_task.delay(notification.id)
         return Response({'status': 'rejected'})
 
 
@@ -291,7 +291,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                 channel='both',
                 data={'sitting_id': sitting.id}
             )
-            send_notification.delay(notification.id)
+            send_notification_task.delay(notification.id)
         else:
             notification = Notification.objects.create(
                 user=sitting.ad.owner,
@@ -301,7 +301,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                 channel='both',
                 data={'sitting_id': sitting.id}
             )
-            send_notification.delay(notification.id)
+            send_notification_task.delay(notification.id)
         # Если обе стороны подтвердили — статус active, создать PetAccess и уведомить обеих
         if sitting.owner_confirmed_start and sitting.sitter_confirmed_start:
             sitting.status = 'active'
@@ -333,7 +333,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                     channel='both',
                     data={'sitting_id': sitting.id}
                 )
-                send_notification.delay(notification.id)
+                send_notification_task.delay(notification.id)
         return Response(PetSittingSerializer(sitting).data)
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
@@ -360,7 +360,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                 channel='both',
                 data={'sitting_id': sitting.id}
             )
-            send_notification.delay(notification.id)
+            send_notification_task.delay(notification.id)
         else:
             notification = Notification.objects.create(
                 user=sitting.ad.owner,
@@ -370,7 +370,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                 channel='both',
                 data={'sitting_id': sitting.id}
             )
-            send_notification.delay(notification.id)
+            send_notification_task.delay(notification.id)
         # Если обе стороны подтвердили — статус waiting_review, отозвать PetAccess и уведомить владельца
         if sitting.owner_confirmed_end and sitting.sitter_confirmed_end:
             sitting.status = 'waiting_review'
@@ -392,7 +392,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                 channel='both',
                 data={'sitting_id': sitting.id}
             )
-            send_notification.delay(notification.id)
+            send_notification_task.delay(notification.id)
         return Response(PetSittingSerializer(sitting).data)
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
@@ -430,7 +430,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
             channel='both',
             data={'sitting_id': sitting.id, 'review_id': review.id}
         )
-        send_notification.delay(notification.id)
+        send_notification_task.delay(notification.id)
         return Response({'review_id': review.id, 'status': 'completed'})
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
@@ -457,7 +457,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                 channel='both',
                 data={'sitting_id': sitting.id}
             )
-            send_notification.delay(notification.id)
+            send_notification_task.delay(notification.id)
         return Response({'status': 'cancelled'})
 
     @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
@@ -508,7 +508,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
             channel='both',
             data={'sitting_id': sitting.id}
         )
-        send_notification.delay(notification.id)
+        send_notification_task.delay(notification.id)
         
         return Response({'status': 'access_granted'})
 
@@ -539,7 +539,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
             channel='both',
             data={'sitting_id': sitting.id}
         )
-        send_notification.delay(notification.id)
+        send_notification_task.delay(notification.id)
         
         return Response({'status': 'access_revoked'})
 
@@ -563,7 +563,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                             channel='both',
                             data={'sitting_id': sitting.id}
                         )
-                        send_notification.delay(notification.id)
+                        send_notification_task.delay(notification.id)
                         count += 1
             elif sitting.status == 'waiting_end':
                 for notify_user, role in [(sitting.ad.owner, 'owner'), (sitting.sitter.user, 'sitter')]:
@@ -576,7 +576,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                             channel='both',
                             data={'sitting_id': sitting.id}
                         )
-                        send_notification.delay(notification.id)
+                        send_notification_task.delay(notification.id)
                         count += 1
             elif sitting.status == 'waiting_review' and not sitting.review_left:
                 notification = Notification.objects.create(
@@ -587,7 +587,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                     channel='both',
                     data={'sitting_id': sitting.id}
                 )
-                send_notification.delay(notification.id)
+                send_notification_task.delay(notification.id)
                 count += 1
         return Response({'reminders_sent': count})
 
@@ -846,7 +846,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
                     'message_id': message.id
                 }
             )
-            send_notification.delay(notification.id)
+            send_notification_task.delay(notification.id)
         
         return Response(MessageSerializer(message).data)
 

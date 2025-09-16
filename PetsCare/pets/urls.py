@@ -18,8 +18,8 @@ router.register(r'medical-records', api_views.MedicalRecordViewSet)
 router.register(r'pet-records', api_views.PetRecordViewSet)
 router.register(r'pet-access', api_views.PetAccessViewSet)
 router.register(r'document-types', api_views.DocumentTypeViewSet)
-router.register(r'incapacity', api_views.PetOwnerIncapacityViewSet)
-router.register(r'incapacity-notifications', api_views.PetIncapacityNotificationViewSet)
+router.register(r'incapacity', api_views.PetOwnerIncapacityViewSet, basename='incapacity')
+router.register(r'incapacity-notifications', api_views.PetIncapacityNotificationViewSet, basename='incapacity-notifications')
 
 app_name = 'pets'
 

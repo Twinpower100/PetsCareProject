@@ -4,6 +4,48 @@
 
 PetCare использует PostgreSQL с расширением PostGIS для эффективного геопоиска и пространственных запросов. Все координатные поля переведены с `DecimalField` на `PointField` для оптимизации производительности.
 
+## Необходимые расширения PostgreSQL
+
+### Обязательные расширения для PetCare
+
+```sql
+-- Основные расширения для Django
+CREATE EXTENSION IF NOT EXISTS plpgsql;  -- Процедурный язык (обычно уже установлен)
+
+-- Геолокация и пространственные данные
+CREATE EXTENSION IF NOT EXISTS postgis;
+CREATE EXTENSION IF NOT EXISTS postgis_topology;
+
+-- Поиск и индексы
+CREATE EXTENSION IF NOT EXISTS unaccent;  -- Поиск без диакритических знаков
+CREATE EXTENSION IF NOT EXISTS pg_trgm;   -- Быстрый поиск по тексту
+CREATE EXTENSION IF NOT EXISTS btree_gin; -- Оптимизированные индексы
+
+-- Уникальные идентификаторы
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp"; -- Генерация UUID
+```
+
+### Проверка установленных расширений
+
+```sql
+SELECT extname FROM pg_extension ORDER BY extname;
+```
+
+Ожидаемый результат:
+```
+extname
+--------
+btree_gin
+pg_trgm
+plpgsql
+postgis
+postgis_topology
+unaccent
+uuid-ossp
+```
+
+> **Примечание:** Подробная инструкция по установке и настройке базы данных находится в файле `DATABASE_SETUP.md`
+
 ## Основные функции
 
 ### 1. Фильтрация по расстоянию

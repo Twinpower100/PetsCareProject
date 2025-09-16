@@ -20,7 +20,37 @@ class LoggingService:
     
     def __init__(self):
         """Инициализация сервиса логирования"""
-        self.settings = AuditSettings.get_settings()
+        self._settings = None
+    
+    @property
+    def settings(self):
+        """Ленивая загрузка настроек аудита"""
+        if self._settings is None:
+            try:
+                # Ленивая инициализация - только при первом обращении
+                from django.db import connection
+                if connection.introspection.table_names():
+                    self._settings = AuditSettings.get_settings()
+                else:
+                    # Если таблицы еще не созданы, используем значения по умолчанию
+                    self._settings = type('Settings', (), {
+                        'logging_enabled': True,
+                        'security_audit_enabled': True,
+                        'log_retention_days': 365,
+                        'security_audit_retention_days': 2555,
+                        'log_http_requests': True,
+                        'log_database_changes': True,
+                        'log_business_operations': True,
+                        'log_system_events': True,
+                    })()
+            except:
+                # Если БД еще не готова, используем дефолтные настройки
+                from django.conf import settings
+                self._settings = type('Settings', (), {
+                    'logging_enabled': getattr(settings, 'AUDIT_LOGGING_ENABLED', True),
+                    'security_audit_enabled': getattr(settings, 'AUDIT_SECURITY_ENABLED', True),
+                })()
+        return self._settings
     
     def log_action(self, user: Optional[Any], action_type: str, 
                   content_object: Optional[Any] = None, details: Dict[str, Any] = None,
@@ -219,7 +249,42 @@ class SecurityAuditService:
     
     def __init__(self):
         """Инициализация сервиса аудита"""
-        self.settings = AuditSettings.get_settings()
+        self._settings = None
+    
+    @property
+    def settings(self):
+        """Ленивая загрузка настроек аудита"""
+        if self._settings is None:
+            try:
+                # Ленивая инициализация - только при первом обращении
+                from django.db import connection
+                if connection.introspection.table_names():
+                    self._settings = AuditSettings.get_settings()
+                else:
+                    # Если таблицы еще не созданы, используем значения по умолчанию
+                    self._settings = type('Settings', (), {
+                        'logging_enabled': True,
+                        'security_audit_enabled': True,
+                        'log_retention_days': 365,
+                        'security_audit_retention_days': 2555,
+                        'log_http_requests': True,
+                        'log_database_changes': True,
+                        'log_business_operations': True,
+                        'log_system_events': True,
+                    })()
+            except:
+                # Если БД еще не готова, используем дефолтные настройки
+                self._settings = type('Settings', (), {
+                    'logging_enabled': True,
+                    'security_audit_enabled': True,
+                    'log_retention_days': 365,
+                    'security_audit_retention_days': 2555,
+                    'log_http_requests': True,
+                    'log_database_changes': True,
+                    'log_business_operations': True,
+                    'log_system_events': True,
+                })()
+        return self._settings
     
     def audit_role_change(self, user: Any, target_user: Any, 
                          old_roles: List[str], new_roles: List[str],

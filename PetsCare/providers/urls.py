@@ -22,10 +22,10 @@ from . import api_views
 
 # Создаем роутер для ViewSets
 router = DefaultRouter()
-router.register(r'providers', api_views.ProviderViewSet, basename='provider')
-router.register(r'employees', api_views.EmployeeViewSet, basename='employee')
-router.register(r'schedules', api_views.ScheduleViewSet, basename='schedule')
-router.register(r'provider-services', api_views.ProviderServiceViewSet, basename='provider-service')
+# router.register(r'providers', api_views.ProviderViewSet, basename='provider')  # не существует
+# router.register(r'employees', api_views.EmployeeViewSet, basename='employee')  # не существует
+# router.register(r'schedules', api_views.ScheduleViewSet, basename='schedule')  # не существует
+# router.register(r'provider-services', api_views.ProviderServiceViewSet, basename='provider-service')  # не существует
 
 # URL-паттерны для API
 urlpatterns = [

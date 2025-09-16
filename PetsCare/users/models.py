@@ -88,9 +88,10 @@ class UserType(models.Model):
     - system_admin: Администратор системы
     - provider_admin: Администратор учреждения
     - billing_manager: Менеджер по биллингу
-    - pet_owner: Владелец питомца
+    - booking_manager: Менеджер по бронированиям
     - employee: Сотрудник учреждения
-    - pet_sitter: Передержка питомцев
+    - pet_owner: Владелец питомца (автоматически)
+    - pet_sitter: Передержка питомцев (автоматически)
     """
     name = models.CharField(
         _('Name'),
@@ -130,6 +131,60 @@ class UserType(models.Model):
 
     def __str__(self):
         return self.name
+    
+    def get_permissions(self):
+        """
+        Возвращает список разрешений для роли.
+        
+        Returns:
+            list: Список разрешений
+        """
+        return self.permissions
+    
+    def get_permission_descriptions(self):
+        """
+        Возвращает словарь разрешений с описаниями.
+        
+        Returns:
+            dict: Словарь {permission: description}
+        """
+        from .permissions import get_permission_description
+        return {perm: get_permission_description(perm) for perm in self.permissions}
+    
+    def has_permission(self, permission):
+        """
+        Проверяет, есть ли у роли указанное разрешение.
+        
+        Args:
+            permission (str): Код разрешения
+            
+        Returns:
+            bool: True, если разрешение есть
+        """
+        return permission in self.permissions
+    
+    def clean(self):
+        """
+        Валидация модели.
+        """
+        from django.core.exceptions import ValidationError
+        from .permissions import validate_permissions
+        
+        # Валидация разрешений
+        valid_permissions, invalid_permissions = validate_permissions(self.permissions)
+        if invalid_permissions:
+            raise ValidationError({
+                'permissions': _('Invalid permissions: %(permissions)s') % {
+                    'permissions': ', '.join(invalid_permissions)
+                }
+            })
+    
+    def save(self, *args, **kwargs):
+        """
+        Сохранение модели с валидацией.
+        """
+        self.clean()
+        super().save(*args, **kwargs)
 
 
 class User(AbstractUser):
@@ -200,22 +255,32 @@ class User(AbstractUser):
         help_text=_('Optional. Unique phone number.')
     )
     
-    # Структурированный адрес пользователя
-    address = models.ForeignKey(
-        'geolocation.Address',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='users',
-        verbose_name=_('Address'),
-        help_text=_('Structured address for user location')
-    )
+    # Структурированный адрес пользователя (убрано для избежания циклических зависимостей)
+    # Адрес пользователя можно получить через geolocation.Location
     
     user_types = models.ManyToManyField(
         UserType,
         blank=True,
         verbose_name=_('User Types'),
         help_text=_('Roles of the user in the system.'),
+    )
+
+    # Переопределяем поля для избежания конфликтов related_name
+    groups = models.ManyToManyField(
+        'auth.Group',
+        verbose_name=_('Groups'),
+        blank=True,
+        help_text=_('The groups this user belongs to. A user will get all permissions granted to each of their groups.'),
+        related_name='custom_user_set',
+        related_query_name='custom_user',
+    )
+    user_permissions = models.ManyToManyField(
+        'auth.Permission',
+        verbose_name=_('User permissions'),
+        blank=True,
+        help_text=_('Specific permissions for this user.'),
+        related_name='custom_user_set',
+        related_query_name='custom_user',
     )
 
     # Настройки аутентификации
@@ -399,16 +464,8 @@ class ProviderForm(models.Model):
         verbose_name=_('Provider Address')
     )
     
-    # Новая структурированная модель адреса
-    structured_address = models.ForeignKey(
-        'geolocation.Address',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='provider_forms',
-        verbose_name=_('Structured Address'),
-        help_text=_('Structured address for provider location')
-    )
+    # Новая структурированная модель адреса (убрано для избежания циклических зависимостей)
+    # Адрес провайдера можно получить через geolocation.Location
     
     provider_phone = PhoneNumberField(
         verbose_name=_('Provider Phone')

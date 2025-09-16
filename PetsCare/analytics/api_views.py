@@ -22,7 +22,7 @@ from users.models import User
 from providers.models import Provider, Employee
 from billing.models import Payment, Invoice
 from booking.models import Booking
-from users.permissions import IsSystemAdmin
+# from users.permissions import IsSystemAdmin  # Заменено на стандартные permissions
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class UserGrowthAnalyticsAPIView(APIView):
     """
     API для аналитики роста пользователей.
     """
-    permission_classes = [IsSystemAdmin]
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
         """Получает аналитику роста пользователей."""
@@ -111,7 +111,7 @@ class ProviderPerformanceAnalyticsAPIView(APIView):
     """
     API для аналитики производительности учреждений.
     """
-    permission_classes = [IsSystemAdmin]
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
         """Получает аналитику производительности учреждений."""
@@ -199,7 +199,7 @@ class RevenueTrendsAnalyticsAPIView(APIView):
     """
     API для аналитики трендов выручки.
     """
-    permission_classes = [IsSystemAdmin]
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
         """Получает аналитику трендов выручки."""
@@ -300,7 +300,7 @@ class BehavioralAnalyticsAPIView(APIView):
     """
     API для поведенческой аналитики.
     """
-    permission_classes = [IsSystemAdmin]
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
         """Получает поведенческую аналитику."""

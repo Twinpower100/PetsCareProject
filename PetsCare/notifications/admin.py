@@ -65,17 +65,17 @@ class ReminderAdmin(admin.ModelAdmin):
 
 
 class UserNotificationSettingsAdmin(admin.ModelAdmin):
-    list_display = ('user', 'notification_type', 'email_enabled', 'push_enabled')
-    list_filter = ('email_enabled', 'push_enabled', 'notification_type')
-    search_fields = ('user__username', 'user__email', 'notification_type')
+    list_display = ('user', 'event_type', 'channel', 'is_enabled')
+    list_filter = ('is_enabled', 'event_type', 'channel')
+    search_fields = ('user__username', 'user__email', 'event_type')
     readonly_fields = ('created_at', 'updated_at')
     
     fieldsets = (
         (None, {
-            'fields': ('user', 'notification_type')
+            'fields': ('user', 'event_type', 'channel')
         }),
-        (_('Notification Channels'), {
-            'fields': ('email_enabled', 'push_enabled')
+        (_('Notification Settings'), {
+            'fields': ('notification_time', 'is_enabled')
         }),
         (_('Timestamps'), {
             'fields': ('created_at', 'updated_at'),

@@ -23,8 +23,7 @@ from django.utils.translation import gettext as _
 from .models import Address, AddressValidation, AddressCache
 from .serializers import (
     AddressSerializer, AddressValidationSerializer, AddressCacheSerializer,
-    AddressAutocompleteSerializer, AddressGeocodeSerializer, AddressReverseGeocodeSerializer,
-    AddressBulkValidationSerializer
+    AddressAutocompleteSerializer, AddressGeocodeSerializer, AddressReverseGeocodeSerializer
 )
 from .services import AddressValidationService, GoogleMapsService
 

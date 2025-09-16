@@ -3,7 +3,7 @@ from django.dispatch import receiver
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from .models import UserActivity, UserConversion
-from .services import user_analytics_service
+# from .services import user_analytics_service  # Ленивый импорт
 
 User = get_user_model()
 
@@ -11,11 +11,16 @@ User = get_user_model()
 def track_user_registration(sender, instance, created, **kwargs):
     """Отслеживание регистрации нового пользователя"""
     if created:
-        # Создаем запись о конверсии "регистрация"
-        user_analytics_service.track_user_conversion(instance, 'registration')
-        
-        # Создаем запись об активности
-        user_analytics_service.track_user_activity(instance, 'login')
+        try:
+            from .services import user_analytics_service
+            # Создаем запись о конверсии "регистрация"
+            user_analytics_service.track_user_conversion(instance, 'registration')
+            
+            # Создаем запись об активности
+            user_analytics_service.track_user_activity(instance, 'login')
+        except:
+            # Если БД еще не готова, пропускаем
+            pass
 
 @receiver(post_save, sender=UserActivity)
 def update_user_activity_cache(sender, instance, **kwargs):

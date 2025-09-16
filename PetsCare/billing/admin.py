@@ -18,6 +18,12 @@ from .models import (
 )
 from django.urls import path
 from django.shortcuts import render, redirect
+
+def user_has_role(user, role_name):
+    """Безопасная проверка роли пользователя"""
+    if not user.is_authenticated:
+        return False
+    return hasattr(user, 'has_role') and user.has_role(role_name)
 from django.contrib import messages
 from providers.models import Provider
 from django.utils import timezone
@@ -162,7 +168,7 @@ class ContractAdmin(admin.ModelAdmin):
         Возвращает queryset с учетом прав доступа пользователя.
         """
         qs = super().get_queryset(request)
-        if request.user.has_role('billing_manager'):
+        if user_has_role(request.user, 'billing_manager'):
             # Менеджер по биллингу видит все активные провайдеры
             return qs.filter(provider__in=Provider.objects.filter(is_active=True))
         return qs
@@ -171,9 +177,9 @@ class ContractAdmin(admin.ModelAdmin):
         """
         Проверяет права на изменение контракта.
         """
-        if request.user.is_superuser or request.user.has_role('system_admin'):
+        if request.user.is_superuser or user_has_role(request.user, 'system_admin'):
             return True
-        if request.user.has_role('billing_manager'):
+        if user_has_role(request.user, 'billing_manager'):
             # Менеджер по биллингу может изменять контракты всех активных провайдеров
             if obj is None:
                 return True
@@ -368,7 +374,7 @@ class BillingManagerProviderAdmin(admin.ModelAdmin):
         Возвращает queryset с учетом прав доступа пользователя.
         """
         qs = super().get_queryset(request)
-        if request.user.has_role('billing_manager'):
+        if user_has_role(request.user, 'billing_manager'):
             # Менеджер по биллингу видит только свои связи
             return qs.filter(billing_manager=request.user)
         return qs
@@ -377,9 +383,9 @@ class BillingManagerProviderAdmin(admin.ModelAdmin):
         """
         Проверяет права на изменение связи.
         """
-        if request.user.is_superuser or request.user.has_role('system_admin'):
+        if request.user.is_superuser or user_has_role(request.user, 'system_admin'):
             return True
-        if request.user.has_role('billing_manager'):
+        if user_has_role(request.user, 'billing_manager'):
             # Менеджер по биллингу может изменять только свои связи
             if obj is None:
                 return True
@@ -390,9 +396,9 @@ class BillingManagerProviderAdmin(admin.ModelAdmin):
         """
         Проверяет права на удаление связи.
         """
-        if request.user.is_superuser or request.user.has_role('system_admin'):
+        if request.user.is_superuser or user_has_role(request.user, 'system_admin'):
             return True
-        if request.user.has_role('billing_manager'):
+        if user_has_role(request.user, 'billing_manager'):
             # Менеджер по биллингу может удалять только свои связи
             if obj is None:
                 return True
@@ -404,8 +410,8 @@ class BillingManagerProviderAdmin(admin.ModelAdmin):
         Проверяет права на добавление связи.
         """
         return (request.user.is_superuser or 
-                request.user.has_role('system_admin') or 
-                request.user.has_role('billing_manager'))
+                user_has_role(request.user, 'system_admin') or 
+                user_has_role(request.user, 'billing_manager'))
 
 
 class BillingManagerEventAdmin(admin.ModelAdmin):
@@ -438,7 +444,7 @@ class BillingManagerEventAdmin(admin.ModelAdmin):
         Возвращает queryset с учетом прав доступа пользователя.
         """
         qs = super().get_queryset(request)
-        if request.user.has_role('billing_manager'):
+        if user_has_role(request.user, 'billing_manager'):
             # Менеджер по биллингу видит только события своих связей
             return qs.filter(billing_manager_provider__billing_manager=request.user)
         return qs
@@ -447,9 +453,9 @@ class BillingManagerEventAdmin(admin.ModelAdmin):
         """
         Проверяет права на изменение события.
         """
-        if request.user.is_superuser or request.user.has_role('system_admin'):
+        if request.user.is_superuser or user_has_role(request.user, 'system_admin'):
             return True
-        if request.user.has_role('billing_manager'):
+        if user_has_role(request.user, 'billing_manager'):
             # Менеджер по биллингу может изменять только события своих связей
             if obj is None:
                 return True
@@ -528,7 +534,7 @@ class BlockingTemplateAdmin(admin.ModelAdmin):
     """
     Административное представление для шаблонов блокировки.
     """
-    list_display = ('name', 'country', 'region', 'city', 'debt_threshold', 'overdue_threshold_1', 'overdue_threshold_2', 'overdue_threshold_3', 'is_active')
+    list_display = ('name', 'country', 'region', 'city', 'debt_threshold', 'threshold1_days', 'threshold2_days', 'threshold3_days', 'is_active')
     list_filter = ('is_active', 'country', 'region', 'city')
     search_fields = ('name', 'country', 'region', 'city', 'description')
     inlines = [BlockingTemplateHistoryInline]
@@ -543,7 +549,7 @@ class BlockingTemplateAdmin(admin.ModelAdmin):
             'description': _('Set geographic scope for this template. Leave empty for global scope.')
         }),
         (_('Blocking Thresholds'), {
-            'fields': ('debt_threshold', 'overdue_threshold_1', 'overdue_threshold_2', 'overdue_threshold_3'),
+            'fields': ('debt_threshold', 'threshold1_days', 'threshold2_days', 'threshold3_days'),
             'description': _('Set thresholds for different blocking levels.')
         }),
         (_('Notification Settings'), {

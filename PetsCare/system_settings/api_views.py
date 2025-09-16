@@ -18,7 +18,7 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 
-from users.permissions import IsSystemAdmin
+# from users.permissions import IsSystemAdmin  # Заменено на стандартные permissions
 from audit.models import AuditLog
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class SystemSettingsAPIView(APIView):
     """
     API для управления системными настройками.
     """
-    permission_classes = [IsSystemAdmin]
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
         """Получает системные настройки."""
@@ -107,7 +107,7 @@ class FeatureSettingsAPIView(APIView):
     """
     API для управления функциями системы.
     """
-    permission_classes = [IsSystemAdmin]
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
         """Получает настройки функций."""
@@ -206,7 +206,7 @@ class SystemHealthAPIView(APIView):
     """
     API для проверки здоровья системы.
     """
-    permission_classes = [IsSystemAdmin]
+    permission_classes = [permissions.IsAuthenticated, permissions.IsAdminUser]
 
     def get(self, request):
         """Проверяет здоровье системы."""

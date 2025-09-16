@@ -723,13 +723,13 @@ class DocumentType(models.Model):
         blank=True,
         help_text=_('Description of the document type')
     )
-    service_categories = models.ManyToManyField(
-        'catalog.ServiceCategory',
-        verbose_name=_('Service Categories'),
-        related_name='document_types',
-        blank=True,
-        help_text=_('Service categories associated with this document type')
-    )
+    # service_categories = models.ManyToManyField(
+    #     'catalog.ServiceCategory',
+    #     verbose_name=_('Service Categories'),
+    #     related_name='document_types',
+    #     blank=True,
+    #     help_text=_('Service categories associated with this document type')
+    # )
     requires_issue_date = models.BooleanField(
         _('Requires Issue Date'),
         default=False,
@@ -833,7 +833,7 @@ class PetOwnerIncapacity(models.Model):
     
     flow_type = models.CharField(
         _('Flow Type'),
-        max_length=30,
+        max_length=35,
         choices=FLOW_CHOICES,
         help_text=_('Type of incapacity handling flow')
     )

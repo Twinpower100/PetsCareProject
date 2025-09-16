@@ -42,9 +42,9 @@ class ProviderAdmin(admin.ModelAdmin):
     - Кнопка для перехода на страницу экспорта расписания
     - Отдельный URL для отчета
     """
-    list_display = ('name', 'email', 'phone', 'address', 'rating', 'is_active', 'created_at')
+    list_display = ('name', 'email', 'phone_number', 'address', 'rating', 'is_active', 'created_at')
     list_filter = ('is_active', 'rating', 'created_at')
-    search_fields = ('name', 'email', 'phone', 'address')
+    search_fields = ('name', 'email', 'phone_number', 'address')
     readonly_fields = ('created_at', 'updated_at')
     
     def save_model(self, request, obj, form, change):

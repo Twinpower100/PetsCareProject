@@ -36,8 +36,9 @@ from .serializers import (
 from rest_framework.serializers import ValidationError
 from django.db.models import Q
 from geolocation.utils import filter_by_distance, validate_coordinates
-from django.utils.log import logger
-from .models import AuditLog
+import logging
+logger = logging.getLogger(__name__)
+# from audit.models import AuditLog  # временно отключено - приложение audit отключено
 
 User = get_user_model()
 
@@ -908,21 +909,21 @@ class BulkRoleAssignmentAPIView(APIView):
                     # Назначаем роль
                     user.add_role(role)
                     
-                    # Логируем действие
-                    AuditLog.objects.create(
-                        user=request.user,
-                        action='role_assigned',
-                        resource_type='user',
-                        resource_id=user.id,
-                        resource_name=user.email,
-                        details={
-                            'assigned_role': role,
-                            'reason': reason,
-                            'assigned_by': request.user.email
-                        },
-                        ip_address=request.META.get('REMOTE_ADDR'),
-                        user_agent=request.META.get('HTTP_USER_AGENT')
-                    )
+                    # Логируем действие (временно отключено)
+                    # AuditLog.objects.create(
+                    #     user=request.user,
+                    #     action='role_assigned',
+                    #     resource_type='user',
+                    #     resource_id=user.id,
+                    #     resource_name=user.email,
+                    #     details={
+                    #         'assigned_role': role,
+                    #         'reason': reason,
+                    #         'assigned_by': request.user.email
+                    #     },
+                    #     ip_address=request.META.get('REMOTE_ADDR'),
+                    #     user_agent=request.META.get('HTTP_USER_AGENT')
+                    # )
 
                     results['success'].append({
                         'user_id': user_id,
@@ -978,20 +979,20 @@ class BulkUserDeactivationAPIView(APIView):
                     user.is_active = False
                     user.save()
                     
-                    # Логируем действие
-                    AuditLog.objects.create(
-                        user=request.user,
-                        action='user_deactivated',
-                        resource_type='user',
-                        resource_id=user.id,
-                        resource_name=user.email,
-                        details={
-                            'reason': reason,
-                            'deactivated_by': request.user.email
-                        },
-                        ip_address=request.META.get('REMOTE_ADDR'),
-                        user_agent=request.META.get('HTTP_USER_AGENT')
-                    )
+                    # Логируем действие (временно отключено)
+                    # AuditLog.objects.create(
+                    #     user=request.user,
+                    #     action='user_deactivated',
+                    #     resource_type='user',
+                    #     resource_id=user.id,
+                    #     resource_name=user.email,
+                    #     details={
+                    #         'reason': reason,
+                    #         'deactivated_by': request.user.email
+                    #     },
+                    #     ip_address=request.META.get('REMOTE_ADDR'),
+                    #     user_agent=request.META.get('HTTP_USER_AGENT')
+                    # )
 
                     results['success'].append({
                         'user_id': user_id,
@@ -1046,20 +1047,20 @@ class BulkUserActivationAPIView(APIView):
                     user.is_active = True
                     user.save()
                     
-                    # Логируем действие
-                    AuditLog.objects.create(
-                        user=request.user,
-                        action='user_activated',
-                        resource_type='user',
-                        resource_id=user.id,
-                        resource_name=user.email,
-                        details={
-                            'reason': reason,
-                            'activated_by': request.user.email
-                        },
-                        ip_address=request.META.get('REMOTE_ADDR'),
-                        user_agent=request.META.get('HTTP_USER_AGENT')
-                    )
+                    # Логируем действие (временно отключено)
+                    # AuditLog.objects.create(
+                    #     user=request.user,
+                    #     action='user_activated',
+                    #     resource_type='user',
+                    #     resource_id=user.id,
+                    #     resource_name=user.email,
+                    #     details={
+                    #         'reason': reason,
+                    #         'activated_by': request.user.email
+                    #     },
+                    #     ip_address=request.META.get('REMOTE_ADDR'),
+                    #     user_agent=request.META.get('HTTP_USER_AGENT')
+                    # )
 
                     results['success'].append({
                         'user_id': user_id,

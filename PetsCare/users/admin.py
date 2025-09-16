@@ -21,7 +21,7 @@ class CustomUserAdmin(UserAdmin):
     """
     Кастомная админка для модели User.
     """
-    list_display = ('username', 'email', 'first_name', 'last_name', 'user_types', 'is_active')
+    list_display = ('username', 'email', 'first_name', 'last_name', 'is_active')
     list_filter = ('user_types', 'is_active')
     search_fields = ('email', 'first_name', 'last_name', 'username', 'user_types__name')
     ordering = ('email',)
@@ -56,8 +56,36 @@ class UserTypeAdmin(admin.ModelAdmin):
     """
     Админка для типов пользователей.
     """
-    list_display = ('name',)
-    search_fields = ('name',)
+    list_display = ('name', 'description', 'is_active', 'created_at')
+    list_filter = ('is_active', 'created_at')
+    search_fields = ('name', 'description')
+    readonly_fields = ('created_at', 'updated_at')
+    
+    fieldsets = (
+        (_('Basic Information'), {
+            'fields': ('name', 'description', 'is_active')
+        }),
+        (_('Permissions'), {
+            'fields': ('permissions',),
+            'description': _('List of permissions for this role. Use the format: app.action_model (e.g., users.add_user)')
+        }),
+        (_('Timestamps'), {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def get_permissions_display(self, obj):
+        """Показывает разрешения с описаниями."""
+        if not obj.permissions:
+            return _('No permissions')
+        
+        from .permissions import get_permission_description
+        descriptions = [get_permission_description(perm) for perm in obj.permissions[:5]]
+        if len(obj.permissions) > 5:
+            descriptions.append(f'... and {len(obj.permissions) - 5} more')
+        return ', '.join(descriptions)
+    get_permissions_display.short_description = _('Permissions')
 
     def has_module_permission(self, request):
         """
@@ -72,8 +100,8 @@ class ProviderFormAdmin(admin.ModelAdmin):
     """
     Админка для форм учреждений.
     """
-    list_display = ('provider_name', 'status', 'has_documents', 'created_at')
-    list_filter = ('status', 'has_documents')
+    list_display = ('provider_name', 'status', 'created_at')
+    list_filter = ('status',)
     search_fields = ('provider_name', 'provider_address')
     readonly_fields = ('created_at', 'updated_at', 'approved_at')
     
@@ -131,25 +159,36 @@ class ProviderAdministratorAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        if request.user.has_role('provider_admin'):
+        if (request.user.is_authenticated and 
+            hasattr(request.user, 'has_role') and 
+            request.user.has_role('provider_admin')):
             return qs.filter(provider__in=request.user.get_managed_providers())
         return qs
 
     def has_add_permission(self, request):
-        return request.user.has_role('system_admin')
+        if not request.user.is_authenticated:
+            return False
+        return hasattr(request.user, 'has_role') and request.user.has_role('system_admin')
 
     def has_change_permission(self, request, obj=None):
+        if not request.user.is_authenticated:
+            return False
         if not obj:
             return True
-        if request.user.has_role('provider_admin'):
+        if hasattr(request.user, 'has_role') and request.user.has_role('provider_admin'):
             return obj.provider in request.user.get_managed_providers()
-        return request.user.has_role('system_admin')
+        return hasattr(request.user, 'has_role') and request.user.has_role('system_admin')
 
     def has_delete_permission(self, request, obj=None):
-        return request.user.has_role('system_admin')
+        if not request.user.is_authenticated:
+            return False
+        return hasattr(request.user, 'has_role') and request.user.has_role('system_admin')
 
     def has_module_permission(self, request):
-        return request.user.has_role('system_admin') or request.user.has_role('provider_admin')
+        if not request.user.is_authenticated:
+            return False
+        return (hasattr(request.user, 'has_role') and 
+                (request.user.has_role('system_admin') or request.user.has_role('provider_admin')))
 
 custom_admin_site.register(User, CustomUserAdmin)
 custom_admin_site.register(UserType, UserTypeAdmin)

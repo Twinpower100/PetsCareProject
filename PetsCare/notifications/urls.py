@@ -11,15 +11,15 @@ URL маршруты для уведомлений.
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import api_views
-from .api_views import (
-    NotificationTypeListCreateAPIView, NotificationTypeRetrieveUpdateDestroyAPIView,
-    NotificationTemplateListCreateAPIView, NotificationTemplateRetrieveUpdateDestroyAPIView,
-    NotificationPreferenceListCreateAPIView, NotificationPreferenceRetrieveUpdateDestroyAPIView,
-    NotificationListCreateAPIView, NotificationRetrieveUpdateDestroyAPIView,
-    NotificationMarkAsReadAPIView, ReminderListCreateAPIView,
-    ReminderRetrieveUpdateDestroyAPIView, UserNotificationSettingsListCreateAPIView,
-    UserNotificationSettingsRetrieveUpdateDestroyAPIView
-)
+# from .api_views import (
+#     NotificationTypeListCreateAPIView, NotificationTypeRetrieveUpdateDestroyAPIView,
+#     NotificationTemplateListCreateAPIView, NotificationTemplateRetrieveUpdateDestroyAPIView,
+#     NotificationPreferenceListCreateAPIView, NotificationPreferenceRetrieveUpdateDestroyAPIView,
+#     NotificationListCreateAPIView, NotificationRetrieveUpdateDestroyAPIView,
+#     NotificationMarkAsReadAPIView, ReminderListCreateAPIView,
+#     ReminderRetrieveUpdateDestroyAPIView, UserNotificationSettingsListCreateAPIView,
+#     UserNotificationSettingsRetrieveUpdateDestroyAPIView
+# )
 
 # Создаем роутер для API
 router = DefaultRouter()
@@ -89,8 +89,8 @@ urlpatterns = [
          api_views.ReminderSettingsViewSet.as_view({'get': 'preview'}),
          name='reminder-settings-preview'),
     
-    # API endpoints для уведомлений
-    path('api/notifications/', api_views.get_notifications, name='api_notifications'),
+    # API endpoints для уведомлений (временно отключены - функции не существуют)
+    # path('api/notifications/', api_views.get_notifications, name='api_notifications'),
     path('api/notifications/<int:notification_id>/read/', api_views.mark_notification_as_read, name='api_mark_read'),
     path('api/notifications/read-all/', api_views.mark_all_notifications_as_read, name='api_mark_all_read'),
     path('api/notifications/<int:notification_id>/delete/', api_views.delete_notification, name='api_delete_notification'),
@@ -101,12 +101,12 @@ urlpatterns = [
     path('api/notifications/test/', api_views.test_notification, name='api_test_notification'),
     path('api/notifications/history/', api_views.get_notification_history, name='api_notification_history'),
     
-    # Webhook для push-уведомлений
-    path('api/notifications/push-token/', api_views.update_push_token, name='api_update_push_token'),
+    # Webhook для push-уведомлений (временно отключены - функции не существуют)
+    # path('api/notifications/push-token/', api_views.update_push_token, name='api_update_push_token'),
     
-    # Админские endpoints
-    path('api/admin/notifications/', api_views.admin_get_notifications, name='api_admin_notifications'),
-    path('api/admin/notifications/send/', api_views.admin_send_notification, name='api_admin_send_notification'),
-    path('api/admin/notifications/bulk-send/', api_views.admin_bulk_send_notifications, name='api_admin_bulk_send'),
-    path('api/admin/notifications/analytics/', api_views.admin_get_analytics, name='api_admin_analytics'),
+    # Админские endpoints (временно отключены - функции не существуют)
+    # path('api/admin/notifications/', api_views.admin_get_notifications, name='api_admin_notifications'),
+    # path('api/admin/notifications/send/', api_views.admin_send_notification, name='api_admin_send_notification'),
+    # path('api/admin/notifications/bulk-send/', api_views.admin_bulk_send_notifications, name='api_admin_bulk_send'),
+    # path('api/admin/notifications/analytics/', api_views.admin_get_analytics, name='api_admin_analytics'),
 ] 

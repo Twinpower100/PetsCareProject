@@ -13,7 +13,7 @@ class Location(models.Model):
     Содержит информацию о географических координатах и адресе пользователя.
     Поддерживает валидацию координат и автоматическое добавление даты создания.
     """
-    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'))
+    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'), related_name='locations', null=True, blank=True)
     point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
     address = models.CharField(max_length=255, verbose_name=_('Address'))
     city = models.CharField(max_length=100, verbose_name=_('City'), blank=True)
@@ -46,7 +46,7 @@ class SearchRadius(models.Model):
     Позволяет настраивать радиус поиска для каждого пользователя,
     с возможностью активации/деактивации.
     """
-    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'))
+    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'), related_name='search_radius', null=True, blank=True)
     name = models.CharField(_('Name'), max_length=100)
     radius = models.PositiveIntegerField(_('Radius In Meters'))
     is_active = models.BooleanField(_('Is Active'), default=True)
@@ -66,7 +66,7 @@ class LocationHistory(models.Model):
     Хранит историю всех местоположений пользователя с временными метками.
     Используется для анализа перемещений и поиска ближайших поставщиков услуг.
     """
-    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'))
+    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'), related_name='location_history', null=True, blank=True)
     point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
     address = models.CharField(max_length=255, verbose_name=_('Address'))
     city = models.CharField(max_length=100, verbose_name=_('City'), blank=True)
@@ -153,7 +153,6 @@ class Address(models.Model):
         indexes = [
             gis_models.Index(fields=['point'], name='idx_address_coordinates'),
             gis_models.Index(fields=['point', 'validation_status'], name='idx_address_coordinates_status'),
-            gis_models.Index(fields=['point', 'is_valid'], name='idx_address_coordinates_valid'),
             gis_models.Index(fields=['validation_status'], name='idx_address_validation_status'),
             gis_models.Index(fields=['city', 'region'], name='idx_address_city_region'),
             gis_models.Index(fields=['postal_code'], name='idx_address_postal_code'),
@@ -348,8 +347,10 @@ class UserLocation(models.Model):
     user = models.OneToOneField(
         'users.User',
         on_delete=models.CASCADE,
-        related_name='location',
-        verbose_name=_('User')
+        related_name='user_location',
+        verbose_name=_('User'),
+        null=True,
+        blank=True
     )
     point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
     accuracy = models.FloatField(

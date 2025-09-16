@@ -5,7 +5,7 @@ from .models import Location, SearchRadius, LocationHistory, Address, AddressVal
 
 @admin.register(Location, site=custom_admin_site)
 class LocationAdmin(admin.ModelAdmin):
-    list_display = ('user', 'address', 'city', 'country', 'postal_code', 'latitude', 'longitude', 'created_at')
+    list_display = ('user', 'address', 'city', 'country', 'postal_code', 'created_at')
     search_fields = ('user__email', 'address', 'city', 'country', 'postal_code')
     list_filter = ('created_at', 'country', 'city')
     readonly_fields = ('created_at',)
@@ -18,7 +18,7 @@ class SearchRadiusAdmin(admin.ModelAdmin):
 
 @admin.register(LocationHistory, site=custom_admin_site)
 class LocationHistoryAdmin(admin.ModelAdmin):
-    list_display = ('user', 'address', 'city', 'country', 'postal_code', 'latitude', 'longitude', 'created_at')
+    list_display = ('user', 'address', 'city', 'country', 'postal_code', 'created_at')
     search_fields = ('user__email', 'address', 'city', 'country', 'postal_code')
     list_filter = ('created_at', 'country', 'city')
     readonly_fields = ('created_at',)

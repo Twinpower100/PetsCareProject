@@ -25,7 +25,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils.translation import gettext_lazy as _
 from django_filters.rest_framework import DjangoFilterBackend
 
-from PetsCare.users.serializers import UserSerializer
+from users.serializers import UserSerializer
 from .models import Provider, Employee, EmployeeProvider, Schedule, ProviderService, ProviderSchedule, EmployeeWorkSlot, EmployeeJoinRequest, SchedulePattern
 from booking.models import Booking
 from .serializers import (
@@ -36,8 +36,26 @@ from .serializers import (
     ProviderScheduleSerializer, EmployeeWorkSlotSerializer,
     EmployeeJoinRequestSerializer, EmployeeProviderConfirmSerializer
 )
-from users.permissions import IsProviderAdmin
+# from users.permissions import IsProviderAdmin  # Класс определен ниже в этом файле
 from users.models import User
+
+
+class IsProviderAdmin(permissions.BasePermission):
+    """
+    Проверка прав администратора провайдера.
+    
+    Проверяет:
+    - Наличие типа пользователя
+    - Соответствие типа 'provider_admin'
+    """
+    def has_permission(self, request, view):
+        """
+        Проверяет права доступа.
+        
+        Returns:
+            bool: True, если пользователь является администратором провайдера
+        """
+        return hasattr(request.user, 'user_type') and request.user.user_type.name == 'provider_admin'
 from django.core.mail import send_mail
 from django.utils.timezone import timezone
 from django.shortcuts import get_object_or_404
@@ -310,24 +328,6 @@ class EmployeeDeactivateAPIView(APIView):
     - Требуются права администратора провайдера
     """
     permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
-
-
-class IsProviderAdmin(permissions.BasePermission):
-    """
-    Проверка прав администратора провайдера.
-    
-    Проверяет:
-    - Наличие типа пользователя
-    - Соответствие типа 'provider_admin'
-    """
-    def has_permission(self, request, view):
-        """
-        Проверяет права доступа.
-        
-        Returns:
-            bool: True, если пользователь является администратором провайдера
-        """
-        return hasattr(request.user, 'user_type') and request.user.user_type.name == 'provider_admin'
 
 
 class ProviderScheduleViewSet(viewsets.ModelViewSet):

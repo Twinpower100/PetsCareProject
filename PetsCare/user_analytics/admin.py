@@ -83,7 +83,7 @@ class UserActivityAdmin(AnalyticsAccessMixin, admin.ModelAdmin):
         'user', 'date', 'login_count', 'page_views', 'actions_count',
         'searches_count', 'bookings_count', 'session_duration_formatted'
     ]
-    list_filter = ['date', 'user__user_type']
+    list_filter = ['date']
     search_fields = ['user__username', 'user__email']
     readonly_fields = ['created_at', 'updated_at', 'first_activity', 'last_activity']
     ordering = ['-date', '-last_activity']
@@ -253,4 +253,4 @@ class AnalyticsDashboardAdmin(AnalyticsAccessMixin, admin.ModelAdmin):
 
 
 # Регистрируем дашборд
-admin.site.register(UserMetrics, AnalyticsDashboardAdmin)
+# admin.site.register(UserMetrics, AnalyticsDashboardAdmin)  # Уже зарегистрирован через @admin.register

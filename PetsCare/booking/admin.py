@@ -274,12 +274,13 @@ class BookingAutoCompleteSettingsAdmin(admin.ModelAdmin):
     ]
     
     list_editable = [
-        'auto_complete_enabled',
         'auto_complete_days',
         'auto_complete_status',
         'service_periodicity_hours',
         'service_start_time'
     ]
+    
+    list_display_links = ['auto_complete_enabled']
     
     fieldsets = (
         (_('Main Settings'), {

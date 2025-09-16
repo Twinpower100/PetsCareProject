@@ -303,6 +303,34 @@ class AuditDashboard:
     @staticmethod
     def get_statistics():
         """Получает статистику аудита"""
+        try:
+            # Проверить, готова ли база данных
+            from django.db import connection
+            if not connection.introspection.table_names():
+                # Если таблицы еще не созданы, возвращаем пустую статистику
+                return {
+                    'total_actions': 0,
+                    'total_audits': 0,
+                    'actions_today': 0,
+                    'audits_today': 0,
+                    'critical_audits': 0,
+                    'pending_reviews': 0,
+                    'top_actions': [],
+                    'top_users': [],
+                }
+        except:
+            # Если БД еще не готова, возвращаем пустую статистику
+            return {
+                'total_actions': 0,
+                'total_audits': 0,
+                'actions_today': 0,
+                'audits_today': 0,
+                'critical_audits': 0,
+                'pending_reviews': 0,
+                'top_actions': [],
+                'top_users': [],
+            }
+        
         now = timezone.now()
         yesterday = now - timedelta(days=1)
         week_ago = now - timedelta(days=7)

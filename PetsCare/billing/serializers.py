@@ -296,6 +296,52 @@ class ProviderBlockingSerializer(serializers.ModelSerializer):
         read_only_fields = ['blocked_at', 'resolved_at']
 
 
+class BillingManagerProviderSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для связи менеджера по биллингу с провайдером.
+    """
+    billing_manager_name = serializers.CharField(source='billing_manager.get_full_name', read_only=True)
+    provider_name = serializers.CharField(source='provider.name', read_only=True)
+    
+    class Meta:
+        model = BillingManagerProvider
+        fields = [
+            'id', 'billing_manager', 'billing_manager_name', 'provider', 'provider_name',
+            'status', 'start_date', 'end_date', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+
+class BillingManagerProviderCreateSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для создания связи менеджера по биллингу с провайдером.
+    """
+    
+    class Meta:
+        model = BillingManagerProvider
+        fields = [
+            'billing_manager', 'provider', 'status', 'start_date', 'end_date'
+        ]
+
+
+class BillingManagerEventSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для событий менеджера по биллингу.
+    """
+    billing_manager_name = serializers.CharField(source='billing_manager_provider.billing_manager.get_full_name', read_only=True)
+    provider_name = serializers.CharField(source='billing_manager_provider.provider.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    
+    class Meta:
+        model = BillingManagerEvent
+        fields = [
+            'id', 'billing_manager_provider', 'billing_manager_name', 'provider_name',
+            'event_type', 'effective_date', 'notes', 'created_by', 'created_by_name',
+            'created_at'
+        ]
+        read_only_fields = ['created_at']
+
+
 class BlockingNotificationSerializer(serializers.ModelSerializer):
     """
     Сериализатор для уведомлений о блокировках.

@@ -51,11 +51,10 @@ urlpatterns = [
     path('api/', include('geolocation.urls')),
     path('api/', include('notifications.urls')),
     path('api/', include('access.urls')),
-    path('api/', include('reports.urls')),  # Добавляем отчеты
-    path('api/', include('ratings.urls')),  # Добавляем рейтинги
-    path('api/', include('audit.urls')),    # Добавляем аудит
-    path('api/', include('settings.urls')), # Добавляем системные настройки
-    path('api/', include('analytics.urls')), # Добавляем аналитику
+    path('api/', include('reports.urls')),
+    path('api/', include('ratings.urls')),
+    # path('api/', include('audit.urls')),  # временно отключено - приложение audit отключено
+    path('api/', include('analytics.urls')),
     
     # Аутентификация
     path('accounts/', include('allauth.urls')),

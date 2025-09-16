@@ -488,7 +488,7 @@ class BookingCancellation(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         verbose_name=_('Cancelled By'),
-        related_name='cancelled_bookings'
+        related_name='booking_cancellations'
     )
     reason = models.TextField(_('Reason'), blank=True)
     is_abuse = models.BooleanField(_('Is Abuse'), default=False)

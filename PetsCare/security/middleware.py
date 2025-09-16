@@ -6,7 +6,7 @@ from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
 
-from .services import threat_detection_service, ip_blocking_service, policy_enforcement_service, session_monitoring_service, access_control_service
+from .services import get_threat_detection_service, get_ip_blocking_service, get_policy_enforcement_service, get_session_monitoring_service, get_access_control_service
 from .models import SecurityThreat
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ class SecurityMonitoringMiddleware(MiddlewareMixin):
             return self._rate_limited_response(request)
         
         # Анализ угроз безопасности
-        threat = threat_detection_service.analyze_request(request)
+        threat = get_threat_detection_service().analyze_request(request)
         if threat:
             logger.warning(f"Security threat detected: {threat.threat_type} from {threat.ip_address}")
             # Можно заблокировать доступ при критических угрозах
@@ -62,7 +62,7 @@ class SecurityMonitoringMiddleware(MiddlewareMixin):
     def _is_ip_blocked(self, request: HttpRequest) -> bool:
         """Проверить, заблокирован ли IP адрес"""
         client_ip = self._get_client_ip(request)
-        return ip_blocking_service.is_ip_blocked(client_ip)
+        return get_ip_blocking_service().is_ip_blocked(client_ip)
     
     def _is_rate_limited(self, request: HttpRequest) -> bool:
         """Проверить rate limiting"""
@@ -195,14 +195,14 @@ class SecurityMonitoringMiddleware(MiddlewareMixin):
         """Проверить политики безопасности для пользователя"""
         try:
             # Проверить соблюдение политик
-            violations = policy_enforcement_service.check_user_compliance(request.user, request)
+            violations = get_policy_enforcement_service().check_user_compliance(request.user, request)
             
             # Проверить политики сессий
-            session_violations = session_monitoring_service.check_session_compliance(request.user, request)
+            session_violations = get_session_monitoring_service().check_session_compliance(request.user, request)
             violations.extend(session_violations)
             
             # Проверить политики доступа
-            access_violations = access_control_service.check_access_compliance(request.user, request)
+            access_violations = get_access_control_service().check_access_compliance(request.user, request)
             violations.extend(access_violations)
             
             # Логировать нарушения
