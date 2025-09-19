@@ -14,11 +14,12 @@ from django.utils.translation import gettext as _
 from django.db import transaction
 from django.db.models import Q
 from rest_framework import status, viewsets, permissions, serializers
+from rest_framework.views import APIView
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.pagination import PageNumberPagination
 from django_filters import rest_framework as filters
-from .models import Notification, NotificationPreference, UserNotificationSettings, NotificationTemplate, NotificationRule
+from .models import Notification, NotificationPreference, UserNotificationSettings, NotificationTemplate, NotificationRule, ReminderSettings
 from .serializers import (
     NotificationSerializer,
     NotificationPreferenceSerializer,
@@ -80,6 +81,8 @@ class NotificationViewSet(viewsets.ReadOnlyModelViewSet):
         Returns:
             QuerySet: Уведомления пользователя
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Notification.objects.none()
         return Notification.objects.filter(user=self.request.user)
 
     @action(detail=False, methods=['get'])
@@ -254,6 +257,8 @@ class NotificationPreferenceViewSet(viewsets.ModelViewSet):
         Returns:
             QuerySet: Настройки пользователя
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return NotificationPreference.objects.none()
         return NotificationPreference.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
@@ -340,6 +345,8 @@ class UserNotificationSettingsViewSet(viewsets.ModelViewSet):
         Returns:
             QuerySet: Детальные настройки пользователя
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return UserNotificationSettings.objects.none()
         return UserNotificationSettings.objects.filter(user=self.request.user)
 
     def perform_create(self, serializer):
@@ -1086,7 +1093,8 @@ class ReminderSettingsViewSet(viewsets.ModelViewSet):
         Returns:
             QuerySet: Настройки напоминаний пользователя
         """
-        from .models import ReminderSettings
+        if getattr(self, 'swagger_fake_view', False):
+            return ReminderSettings.objects.none()
         return ReminderSettings.objects.filter(user=self.request.user)
     
     def get_serializer_class(self):
@@ -1126,7 +1134,6 @@ class ReminderSettingsViewSet(viewsets.ModelViewSet):
         Returns:
             Response: Текущие настройки напоминаний
         """
-        from .models import ReminderSettings
         from django.conf import settings
         
         reminder_settings, created = ReminderSettings.objects.get_or_create(
@@ -1258,4 +1265,72 @@ class ReminderSettingsViewSet(viewsets.ModelViewSet):
             'settings': self.get_serializer(reminder_settings).data,
             'preview': preview_data,
             'test_booking_time': test_booking_time
-        }) 
+        })
+
+
+class UpdatePushTokenAPIView(APIView):
+    """
+    API для обновления push-токена устройства.
+    Используется для регистрации устройств для получения push-уведомлений.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        """
+        Обновляет или создает push-токен для пользователя.
+        
+        Параметры:
+        - token: Push-токен устройства
+        - device_type: Тип устройства (android, ios, web)
+        - device_id: Уникальный идентификатор устройства (опционально)
+        """
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        
+        try:
+            token = request.data.get('token')
+            device_type = request.data.get('device_type', 'web')
+            device_id = request.data.get('device_id')
+            
+            if not token:
+                return Response({
+                    'error': 'Token is required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Импортируем модели push-уведомлений
+            from push_notifications.models import GCMDevice, APNSDevice, WebPushDevice
+            
+            # Определяем модель устройства
+            if device_type == 'android':
+                device_model = GCMDevice
+            elif device_type == 'ios':
+                device_model = APNSDevice
+            else:  # web
+                device_model = WebPushDevice
+            
+            # Создаем или обновляем устройство
+            device, created = device_model.objects.get_or_create(
+                user=request.user,
+                registration_id=token,
+                defaults={
+                    'active': True,
+                    'device_id': device_id or token[:50]  # Ограничиваем длину device_id
+                }
+            )
+            
+            if not created:
+                # Обновляем существующее устройство
+                device.active = True
+                device.device_id = device_id or device.device_id
+                device.save()
+            
+            return Response({
+                'message': 'Push token updated successfully',
+                'device_id': device.id,
+                'created': created
+            })
+            
+        except Exception as e:
+            return Response({
+                'error': f'Failed to update push token: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 

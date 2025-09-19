@@ -258,7 +258,7 @@ class PetSitting(models.Model):
         return f"PetSitting: {self.pet} with {self.sitter} ({self.start_date}-{self.end_date})"
 
 
-class Review(models.Model):
+class SitterReview(models.Model):
     """
     Модель отзыва о передержке.
     Связывает историю передержки, автора, рейтинг, текст отзыва.

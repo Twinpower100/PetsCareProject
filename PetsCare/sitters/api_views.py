@@ -13,8 +13,8 @@ from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
-from .models import SitterProfile, PetSittingAd, PetSittingResponse, Review, PetSitting
-from .serializers import SitterProfileSerializer, PetSittingAdSerializer, PetSittingResponseSerializer, ReviewSerializer, PetSittingSerializer
+from .models import SitterProfile, PetSittingAd, PetSittingResponse, SitterReview, PetSitting
+from .serializers import SitterProfileSerializer, PetSittingAdSerializer, PetSittingResponseSerializer, SitterReviewSerializer, PetSittingSerializer
 from django.shortcuts import get_object_or_404
 from django.db import models
 from django.db.models import Avg, Q
@@ -62,8 +62,7 @@ class SitterProfileViewSet(viewsets.ModelViewSet):
     queryset = SitterProfile.objects.all()
     serializer_class = SitterProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['is_active']
+    filter_backends = [SearchFilter, OrderingFilter]  # Убираем DjangoFilterBackend для Swagger
     search_fields = ['name', 'description']
     ordering_fields = ['name', 'price', 'rating']
 
@@ -78,7 +77,14 @@ class SitterProfileViewSet(viewsets.ModelViewSet):
         Returns:
             QuerySet: Отфильтрованный список профилей
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return SitterProfile.objects.none()
         queryset = SitterProfile.objects.all()
+        
+        # Фильтрация по активности
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
         
         # Фильтрация по ценовому диапазону
         min_price = self.request.query_params.get('min_price')
@@ -100,8 +106,7 @@ class PetSittingAdViewSet(viewsets.ModelViewSet):
     """
     serializer_class = PetSittingAdSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['start_date', 'end_date', 'compensation_type', 'status', 'pet']
+    filter_backends = [SearchFilter, OrderingFilter]  # Убираем DjangoFilterBackend для Swagger
     search_fields = ['description', 'pet__name']
     ordering_fields = ['start_date', 'created_at', 'rating']
 
@@ -109,11 +114,33 @@ class PetSittingAdViewSet(viewsets.ModelViewSet):
         """
         Возвращает queryset с аннотированным рейтингом для сортировки.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return PetSittingAd.objects.none()
         queryset = PetSittingAd.objects.all()
+        
+        # Кастомная фильтрация (заменяет django_filters)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        compensation_type = self.request.query_params.get('compensation_type')
+        status = self.request.query_params.get('status')
+        pet = self.request.query_params.get('pet')
+        
+        if start_date:
+            queryset = queryset.filter(start_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(end_date__lte=end_date)
+        if compensation_type:
+            queryset = queryset.filter(compensation_type=compensation_type)
+        if status:
+            queryset = queryset.filter(status=status)
+        if pet:
+            queryset = queryset.filter(pet=pet)
+        
         # Аннотируем рейтинг ситтера, связанного с объявлением
-        queryset = queryset.annotate(
-            rating=Avg('responses__sitter__user__sitter_rating')
-        )
+        # Временно отключаем аннотацию рейтинга из-за отсутствия поля sitter_rating
+        # queryset = queryset.annotate(
+        #     rating=Avg('responses__sitter__user__sitter_rating')
+        # )
         return queryset
 
     def perform_create(self, serializer):
@@ -233,13 +260,13 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         return Response({'status': 'rejected'})
 
 
-class ReviewViewSet(viewsets.ModelViewSet):
+class SitterReviewViewSet(viewsets.ModelViewSet):
     """
     ViewSet для отзывов о передержке.
     Позволяет оставлять и просматривать отзывы.
     """
-    queryset = Review.objects.all()
-    serializer_class = ReviewSerializer
+    queryset = SitterReview.objects.all()
+    serializer_class = SitterReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def perform_create(self, serializer):
@@ -262,6 +289,9 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         """
         Фильтрует передержки по текущему пользователю (как владелец или ситтер).
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return PetSitting.objects.none()
+        
         user = self.request.user
         return PetSitting.objects.filter(
             models.Q(sitter__user=user) | models.Q(ad__owner=user)
@@ -411,8 +441,8 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         text = request.data.get('text', '')
         if not rating:
             return Response({'error': 'Rating is required'}, status=status.HTTP_400_BAD_REQUEST)
-        from .models import Review
-        review = Review.objects.create(
+        from .models import SitterReview
+        review = SitterReview.objects.create(
             history=sitting,
             author=user,
             rating=rating,
@@ -797,6 +827,9 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Возвращает диалоги текущего пользователя"""
+        if getattr(self, 'swagger_fake_view', False):
+            return Conversation.objects.none()
+        
         return Conversation.objects.filter(
             participants=self.request.user,
             is_active=True
@@ -935,8 +968,15 @@ class PetFilterForSittingAPIView(generics.ListAPIView):
     - Весу (weight)
     - Удаленности (distance)
     """
-    serializer_class = PetSerializer
     permission_classes = [permissions.IsAuthenticated]
+    
+    def get_serializer_class(self):
+        """Возвращает сериализатор для Swagger"""
+        if getattr(self, 'swagger_fake_view', False):
+            from pets.serializers import PetSerializer
+            return PetSerializer
+        from pets.serializers import PetSerializer
+        return PetSerializer
     
     def get_queryset(self):
         """
@@ -945,6 +985,9 @@ class PetFilterForSittingAPIView(generics.ListAPIView):
         Returns:
             QuerySet: Отфильтрованный список питомцев
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Pet.objects.none()
+            
         user = self.request.user
         
         # Базовый queryset - только питомцы пользователя

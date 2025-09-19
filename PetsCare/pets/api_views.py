@@ -61,6 +61,8 @@ class PetViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Возвращает список питомцев текущего пользователя"""
+        if getattr(self, 'swagger_fake_view', False):
+            return Pet.objects.none()
         return self.queryset.filter(owners=self.request.user)
 
     @action(detail=False, methods=['get'])
@@ -221,6 +223,8 @@ class MedicalRecordViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Возвращает медицинские записи питомцев текущего пользователя"""
+        if getattr(self, 'swagger_fake_view', False):
+            return MedicalRecord.objects.none()
         return self.queryset.filter(pet__owners=self.request.user)
 
     def perform_create(self, serializer):
@@ -246,6 +250,8 @@ class PetRecordViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Возвращает записи питомцев текущего пользователя"""
+        if getattr(self, 'swagger_fake_view', False):
+            return PetRecord.objects.none()
         return self.queryset.filter(pet__owners=self.request.user)
 
     def perform_create(self, serializer):
@@ -294,6 +300,8 @@ class PetAccessViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Возвращает доступы к питомцам текущего пользователя"""
+        if getattr(self, 'swagger_fake_view', False):
+            return PetAccess.objects.none()
         return self.queryset.filter(pet__owners=self.request.user)
 
     def perform_create(self, serializer):
@@ -395,6 +403,8 @@ class PetListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         """Возвращает список питомцев текущего пользователя"""
+        if getattr(self, 'swagger_fake_view', False):
+            return Pet.objects.none()
         return self.queryset.filter(owners=self.request.user)
 
 
@@ -404,6 +414,8 @@ class PetRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return Pet.objects.none()
         return self.queryset.filter(owners=self.request.user)
 
 
@@ -412,6 +424,8 @@ class MedicalRecordListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return MedicalRecord.objects.none()
         return MedicalRecord.objects.filter(pet__owners=self.request.user)
 
 
@@ -420,6 +434,8 @@ class MedicalRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return MedicalRecord.objects.none()
         return MedicalRecord.objects.filter(pet__owners=self.request.user)
 
 
@@ -428,6 +444,8 @@ class PetRecordListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return PetRecord.objects.none()
         return PetRecord.objects.filter(pet__owners=self.request.user)
 
 
@@ -436,6 +454,8 @@ class PetRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIVie
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return PetRecord.objects.none()
         return PetRecord.objects.filter(pet__owners=self.request.user)
 
 
@@ -444,6 +464,8 @@ class PetAccessListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return PetAccess.objects.none()
         return PetAccess.objects.filter(pet__owners=self.request.user)
 
 
@@ -452,6 +474,8 @@ class PetAccessRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIVie
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return PetAccess.objects.none()
         return PetAccess.objects.filter(pet__owners=self.request.user)
 
 
@@ -975,6 +999,9 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
     
     def get_queryset(self):
         """Возвращает queryset в зависимости от роли пользователя."""
+        if getattr(self, 'swagger_fake_view', False):
+            return PetOwnerIncapacity.objects.none()
+        
         user = self.request.user
         
         if user.is_staff:
@@ -1209,6 +1236,8 @@ class PetIncapacityNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     
     def get_queryset(self):
         """Возвращает уведомления пользователя."""
+        if getattr(self, 'swagger_fake_view', False):
+            return PetIncapacityNotification.objects.none()
         return PetIncapacityNotification.objects.filter(recipient=self.request.user).order_by('-created_at')
     
     @action(detail=True, methods=['post'])
@@ -1260,6 +1289,9 @@ class PetSearchAPIView(generics.ListAPIView):
     
     def get_queryset(self):
         """Возвращает queryset с учетом прав доступа пользователя."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Pet.objects.none()
+        
         user = self.request.user
         
         if user.is_staff:
@@ -1290,6 +1322,8 @@ class PetTypeSearchAPIView(generics.ListAPIView):
     
     def get_queryset(self):
         """Возвращает активные типы питомцев."""
+        if getattr(self, 'swagger_fake_view', False):
+            return PetType.objects.none()
         return PetType.objects.all()
 
 
@@ -1306,6 +1340,8 @@ class BreedSearchAPIView(generics.ListAPIView):
     
     def get_queryset(self):
         """Возвращает породы с предзагрузкой типов питомцев."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Breed.objects.none()
         return Breed.objects.select_related('pet_type').all()
 
 
@@ -1324,6 +1360,9 @@ class PetRecommendationsAPIView(generics.ListAPIView):
     
     def get_queryset(self):
         """Возвращает персонализированные рекомендации."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Pet.objects.none()
+        
         user = self.request.user
         limit = int(self.request.query_params.get('limit', 10))
         

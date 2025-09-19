@@ -17,6 +17,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from django_filters import rest_framework as filters
+from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Count, Q
 from django.http import HttpResponse
 import csv
@@ -27,48 +28,59 @@ from .serializers import (
     UserActionSerializer, SecurityAuditSerializer, 
     AuditSettingsSerializer, AuditStatisticsSerializer
 )
+from rest_framework import serializers
 from users.models import User
 
 logger = logging.getLogger(__name__)
 
 
+class SimpleUserActionSerializer(serializers.ModelSerializer):
+    """Простой сериализатор для UserAction без проблемных полей."""
+    class Meta:
+        model = UserAction
+        fields = ['id', 'user', 'action_type', 'details', 'ip_address', 
+                 'user_agent', 'http_method', 'url', 'status_code', 
+                 'execution_time', 'timestamp', 'session_key']
+        read_only_fields = ['id', 'timestamp']
+
+
 class UserActionFilter(filters.FilterSet):
     """Фильтры для действий пользователей."""
-    user = filters.NumberFilter(field_name='user_id')
-    action_type = filters.CharFilter(field_name='action_type')
-    content_type = filters.NumberFilter(field_name='content_type_id')
-    object_id = filters.NumberFilter(field_name='object_id')
+    # Простые фильтры без field_name для совместимости со Swagger
+    action_type = filters.CharFilter()
     created_after = filters.DateTimeFilter(field_name='timestamp', lookup_expr='gte')
     created_before = filters.DateTimeFilter(field_name='timestamp', lookup_expr='lte')
-    ip_address = filters.CharFilter(field_name='ip_address')
-    user_agent = filters.CharFilter(field_name='user_agent')
-    http_method = filters.CharFilter(field_name='http_method')
 
     class Meta:
         model = UserAction
-        fields = ['user', 'action_type', 'content_type', 'object_id', 'created_after', 'created_before', 'ip_address', 'user_agent', 'http_method']
+        fields = ['action_type', 'created_after', 'created_before']
 
 
-class UserActionViewSet(viewsets.ReadOnlyModelViewSet):
+class UserActionViewSet(APIView):
     """
-    ViewSet для работы с действиями пользователей.
-    
-    Предоставляет endpoints для:
-    - Просмотра действий пользователей
-    - Фильтрации действий
-    - Экспорта действий
+    API для работы с действиями пользователей.
     """
-    serializer_class = UserActionSerializer
-    filterset_class = UserActionFilter
     permission_classes = [permissions.IsAdminUser]
 
-    def get_queryset(self):
-        """Возвращает queryset действий пользователей."""
-        return UserAction.objects.select_related('user', 'content_type').order_by('-timestamp')
+    def get(self, request):
+        """Получает список действий пользователей."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response([])
+        try:
+            actions = UserAction.objects.all().order_by('-timestamp')[:100]
+            serializer = SimpleUserActionSerializer(actions, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            logger.error(f"Failed to get user actions: {e}")
+            return Response(
+                {'error': _('Failed to get user actions')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-    @action(detail=False, methods=['get'])
     def statistics(self, request):
         """Получает статистику действий пользователей."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
         try:
             # Общая статистика
             total_actions = UserAction.objects.count()
@@ -106,9 +118,10 @@ class UserActionViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-    @action(detail=False, methods=['post'])
     def export(self, request):
         """Экспортирует действия пользователей в CSV."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
         try:
             format_type = request.data.get('format', 'csv')
             filters = request.data.get('filters', {})
@@ -155,9 +168,141 @@ class UserActionViewSet(viewsets.ReadOnlyModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-    @action(detail=False, methods=['post'])
     def cleanup(self, request):
         """Очищает старые действия пользователей."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            days_to_keep = request.data.get('days', 90)
+            cutoff_date = timezone.now() - timedelta(days=days_to_keep)
+            
+            deleted_count = UserAction.objects.filter(
+                timestamp__lt=cutoff_date
+            ).delete()[0]
+            
+            return Response({
+                'message': _('User actions cleaned up successfully'),
+                'deleted_count': deleted_count,
+                'cutoff_date': cutoff_date.isoformat()
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to cleanup user actions: {e}")
+            return Response(
+                {'error': _('Failed to cleanup user actions')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class UserActionStatisticsView(APIView):
+    """API для получения статистики действий пользователей."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        """Получает статистику действий пользователей."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            # Общая статистика
+            total_actions = UserAction.objects.count()
+            today_actions = UserAction.objects.filter(
+                timestamp__date=timezone.now().date()
+            ).count()
+            
+            # Статистика по типам действий
+            action_stats = UserAction.objects.values('action_type').annotate(
+                count=Count('id')
+            ).order_by('-count')[:10]
+            
+            # Статистика по пользователям
+            user_stats = UserAction.objects.values('user__email').annotate(
+                count=Count('id')
+            ).order_by('-count')[:10]
+            
+            # Статистика по типам контента
+            content_stats = UserAction.objects.values('content_type__model').annotate(
+                count=Count('id')
+            ).order_by('-count')
+            
+            return Response({
+                'total_actions': total_actions,
+                'today_actions': today_actions,
+                'action_stats': list(action_stats),
+                'user_stats': list(user_stats),
+                'content_stats': list(content_stats)
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to get audit statistics: {e}")
+            return Response(
+                {'error': _('Failed to get audit statistics')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class UserActionExportView(APIView):
+    """API для экспорта действий пользователей."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        """Экспортирует действия пользователей в CSV."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            format_type = request.data.get('format', 'csv')
+            filters = request.data.get('filters', {})
+            
+            # Применяем фильтры
+            queryset = UserAction.objects.all()
+            if filters:
+                for key, value in filters.items():
+                    if hasattr(UserAction, key):
+                        queryset = queryset.filter(**{key: value})
+            
+            if format_type == 'csv':
+                response = HttpResponse(content_type='text/csv')
+                response['Content-Disposition'] = f'attachment; filename="user_actions_{timezone.now().strftime("%Y%m%d")}.csv"'
+                
+                writer = csv.writer(response)
+                writer.writerow(['ID', 'User', 'Action Type', 'Content Type', 'Object ID', 'IP Address', 'User Agent', 'HTTP Method', 'URL', 'Timestamp'])
+                
+                for action in queryset[:10000]:  # Ограничиваем экспорт
+                    writer.writerow([
+                        action.id,
+                        action.user.email if action.user else 'Anonymous',
+                        action.action_type,
+                        action.content_type.model if action.content_type else '',
+                        action.object_id,
+                        action.ip_address,
+                        action.user_agent,
+                        action.http_method,
+                        action.url,
+                        action.timestamp.isoformat()
+                    ])
+                
+                return response
+            else:
+                return Response(
+                    {'error': _('Unsupported export format')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+                
+        except Exception as e:
+            logger.error(f"Failed to export user actions: {e}")
+            return Response(
+                {'error': _('Failed to export user actions')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class UserActionCleanupView(APIView):
+    """API для очистки старых действий пользователей."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        """Очищает старые действия пользователей."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
         try:
             days_to_keep = request.data.get('days', 90)
             cutoff_date = timezone.now() - timedelta(days=days_to_keep)

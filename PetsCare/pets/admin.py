@@ -6,12 +6,12 @@ from django import forms
 
 
 class PetTypeAdmin(admin.ModelAdmin):
-    list_display = ('name', 'description')
+    list_display = ('name', 'code', 'description')
     search_fields = ('name',)
 
 
 class BreedAdmin(admin.ModelAdmin):
-    list_display = ('name', 'pet_type', 'description')
+    list_display = ('name', 'code', 'pet_type', 'description')
     list_filter = ('pet_type',)
     search_fields = ('name', 'pet_type__name')
 

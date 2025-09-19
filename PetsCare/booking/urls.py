@@ -22,9 +22,9 @@ urlpatterns = [
     path('api/auto-book-employee/', api_views.auto_book_employee, name='auto_book_employee'),
     path('api/available-employees/', api_views.get_available_employees, name='get_available_employees'),
     
-    # Существующие URL (временно отключены - функции не существуют)
-    # path('api/bookings/<int:booking_id>/cancel/', api_views.cancel_booking, name='cancel_booking'),
-    # path('api/bookings/<int:booking_id>/complete/', api_views.complete_booking, name='complete_booking'),
-    # path('api/bookings/<int:booking_id>/no-show/', api_views.mark_no_show, name='mark_no_show'),
-    # path('api/bookings/<int:booking_id>/time-slots/', api_views.get_available_time_slots, name='get_available_time_slots'),
+    # Существующие URL - восстановлены
+    path('api/bookings/<int:booking_id>/cancel/', api_views.CancelBookingAPIView.as_view(), name='cancel_booking'),
+    path('api/bookings/<int:booking_id>/complete/', api_views.CompleteBookingAPIView.as_view(), name='complete_booking'),
+    path('api/bookings/<int:booking_id>/no-show/', api_views.MarkNoShowAPIView.as_view(), name='mark_no_show'),
+    path('api/bookings/<int:booking_id>/time-slots/', api_views.GetAvailableTimeSlotsAPIView.as_view(), name='get_available_time_slots'),
 ] 

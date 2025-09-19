@@ -44,6 +44,30 @@ class BookingStatus(models.Model):
         unique=True,
         choices=STATUS_CHOICES
     )
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=50,
+        blank=True,
+        help_text=_('Name in English')
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=50,
+        blank=True,
+        help_text=_('Name in Russian')
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrian)'),
+        max_length=50,
+        blank=True,
+        help_text=_('Name in Montenegrian')
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=50,
+        blank=True,
+        help_text=_('Name in German')
+    )
     description = models.TextField(_('Description'), blank=True)
 
     class Meta:
@@ -51,7 +75,32 @@ class BookingStatus(models.Model):
         verbose_name_plural = _('Booking Statuses')
 
     def __str__(self):
-        return self.get_name_display()
+        return self.get_localized_name()
+    
+    def get_localized_name(self, language_code=None):
+        """
+        Получает локализованное название статуса бронирования.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        elif language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        elif language_code == 'me' and self.name_me:
+            return self.name_me
+        elif language_code == 'de' and self.name_de:
+            return self.name_de
+        else:
+            return self.get_name_display()
 
 
 class TimeSlot(models.Model):

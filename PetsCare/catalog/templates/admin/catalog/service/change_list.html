@@ -1,0 +1,144 @@
+{% extends "admin/change_list.html" %}
+{% load i18n admin_urls static admin_list %}
+
+{% block extrastyle %}
+{{ block.super }}
+<style>
+    /* Базовые стили для древовидного отображения */
+    .field-get_tree_name {
+        font-family: monospace !important;
+        white-space: nowrap !important;
+    }
+    
+    .field-get_tree_name a {
+        text-decoration: none !important;
+    }
+    
+    .field-get_tree_name a:hover {
+        text-decoration: underline !important;
+    }
+    
+    /* Цвета для разных уровней */
+    .field-get_tree_name a.level-0 {
+        font-weight: bold !important;
+        color: #2c3e50 !important;
+    }
+    
+    .field-get_tree_name a.level-1 {
+        color: #34495e !important;
+    }
+    
+    .field-get_tree_name a.level-2 {
+        color: #7f8c8d !important;
+    }
+    
+    .field-get_tree_name a.level-3 {
+        color: #bdc3c7 !important;
+    }
+</style>
+{% endblock %}
+
+{% block extrahead %}
+{{ block.super }}
+<style>
+    
+    /* Стили для таблицы админки */
+    #result_list tbody tr {
+        border-bottom: 1px solid #ddd;
+    }
+    
+    #result_list tbody tr:hover {
+        background-color: #f5f5f5;
+    }
+    
+    /* Стили для колонки с древом */
+    .field-get_tree_name {
+        font-family: monospace;
+        white-space: nowrap;
+    }
+    
+    .field-get_tree_name a {
+        text-decoration: none !important;
+        color: inherit;
+    }
+    
+    .field-get_tree_name a:hover {
+        text-decoration: underline !important;
+    }
+    
+    /* Стили для разных уровней в таблице - более специфичные селекторы */
+    #result_list .field-get_tree_name a.level-0 {
+        font-weight: bold !important;
+        color: #2c3e50 !important;
+    }
+    
+    #result_list .field-get_tree_name a.level-1 {
+        color: #34495e !important;
+    }
+    
+    #result_list .field-get_tree_name a.level-2 {
+        color: #7f8c8d !important;
+    }
+    
+    #result_list .field-get_tree_name a.level-3 {
+        color: #bdc3c7 !important;
+    }
+    
+    /* Дополнительные стили для улучшения отображения */
+    #result_list .field-get_tree_name {
+        padding-left: 5px;
+    }
+    
+    /* Стили для неактивных элементов */
+    #result_list tr.inactive .field-get_tree_name a {
+        opacity: 0.6;
+        text-decoration: line-through;
+    }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Применяем дополнительные стили к таблице
+    const table = document.getElementById('result_list');
+    if (table) {
+        const rows = table.querySelectorAll('tbody tr');
+        rows.forEach(function(row) {
+            const treeNameCell = row.querySelector('.field-get_tree_name');
+            if (treeNameCell) {
+                const link = treeNameCell.querySelector('a');
+                if (link) {
+                    // Добавляем класс для стилизации
+                    const levelMatch = link.className.match(/level-(\d+)/);
+                    if (levelMatch) {
+                        const level = levelMatch[1];
+                        link.style.fontFamily = 'monospace';
+                        link.style.whiteSpace = 'nowrap';
+                        
+                        // Применяем цвета в зависимости от уровня
+                        switch(level) {
+                            case '0':
+                                link.style.fontWeight = 'bold';
+                                link.style.color = '#2c3e50';
+                                break;
+                            case '1':
+                                link.style.color = '#34495e';
+                                break;
+                            case '2':
+                                link.style.color = '#7f8c8d';
+                                break;
+                            case '3':
+                                link.style.color = '#bdc3c7';
+                                break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+});
+</script>
+{% endblock %}
+
+{% block content %}
+{{ block.super }}
+{% endblock %}

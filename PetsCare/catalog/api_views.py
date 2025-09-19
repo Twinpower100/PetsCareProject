@@ -1,9 +1,10 @@
-from rest_framework import viewsets, generics, permissions
+from rest_framework import viewsets, generics, permissions, status
 from django.db.models import Q
 from .models import Service
-from .serializers import ServiceSerializer
+from .serializers import ServiceSerializer, ServiceCompatibilitySerializer
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from pets.models import PetType
 
 
 class ServiceViewSet(viewsets.ModelViewSet):
@@ -67,6 +68,45 @@ class ServiceViewSet(viewsets.ModelViewSet):
         )
         serializer = self.get_serializer(mandatory_services, many=True)
         return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'])
+    def for_pet_type(self, request):
+        """
+        Получить услуги, доступные для конкретного типа животного.
+        """
+        pet_type_id = request.query_params.get('pet_type_id')
+        if not pet_type_id:
+            return Response(
+                {'error': 'pet_type_id parameter is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            pet_type = PetType.objects.get(id=pet_type_id)
+        except PetType.DoesNotExist:
+            return Response(
+                {'error': 'Pet type not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Получаем услуги, доступные для данного типа животного
+        available_services = Service.objects.filter(
+            Q(allowed_pet_types__isnull=True) |  # Доступны для всех типов
+            Q(allowed_pet_types=pet_type)        # Или специально для этого типа
+        ).distinct()
+        
+        serializer = self.get_serializer(available_services, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['post'])
+    def check_compatibility(self, request):
+        """
+        Проверить совместимость услуги с типом животного.
+        """
+        serializer = ServiceCompatibilitySerializer(data=request.data)
+        if serializer.is_valid():
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ServiceCategoryListCreateAPIView(generics.ListCreateAPIView):

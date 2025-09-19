@@ -174,7 +174,32 @@ class ContractType(models.Model):
         ordering = ['name']
 
     def __str__(self):
-        return f"{self.name}"
+        return self.get_localized_name()
+    
+    def get_localized_name(self, language_code=None):
+        """
+        Получает локализованное название типа договора.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        elif language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        elif language_code == 'me' and self.name_me:
+            return self.name_me
+        elif language_code == 'de' and self.name_de:
+            return self.name_de
+        else:
+            return self.name
 
 
 INVOICE_PERIOD_CHOICES = [

@@ -9,6 +9,7 @@ API views для модуля бронирования.
 """
 
 from rest_framework import viewsets, permissions, status, serializers
+from rest_framework.views import APIView
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
@@ -60,6 +61,9 @@ class TimeSlotViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Возвращает отфильтрованный список слотов"""
+        if getattr(self, 'swagger_fake_view', False):
+            return TimeSlot.objects.none()
+        
         queryset = TimeSlot.objects.filter(
             start_time__gte=timezone.now()
         )
@@ -129,6 +133,9 @@ class BookingViewSet(viewsets.ModelViewSet):
         """
         Возвращает список бронирований для текущего пользователя.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Booking.objects.none()
+        
         queryset = Booking.objects.all()
         
         # Для клиентов - только их бронирования
@@ -332,6 +339,8 @@ class BookingPaymentViewSet(viewsets.ModelViewSet):
         """
         Возвращает список платежей для бронирований текущего пользователя.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return BookingPayment.objects.none()
         return BookingPayment.objects.filter(booking__pet__owner=self.request.user)
 
 
@@ -346,6 +355,8 @@ class BookingReviewViewSet(viewsets.ModelViewSet):
         """
         Возвращает список отзывов для бронирований текущего пользователя.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return BookingReview.objects.none()
         return BookingReview.objects.filter(booking__pet__owner=self.request.user)
 
 
@@ -512,4 +523,83 @@ def get_available_employees(request):
         return Response({
             'error': _('Error getting workers list'),
             'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class CancelBookingAPIView(APIView):
+    """API для отмены бронирования."""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request, booking_id):
+        """Отменяет бронирование."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            booking = Booking.objects.get(id=booking_id)
+            booking.status = BookingStatus.CANCELLED
+            booking.save()
+            return Response({'message': 'Booking cancelled successfully'})
+        except Booking.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class CompleteBookingAPIView(APIView):
+    """API для завершения бронирования."""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request, booking_id):
+        """Завершает бронирование."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            booking = Booking.objects.get(id=booking_id)
+            booking.status = BookingStatus.COMPLETED
+            booking.save()
+            return Response({'message': 'Booking completed successfully'})
+        except Booking.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class MarkNoShowAPIView(APIView):
+    """API для отметки о неявке."""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request, booking_id):
+        """Отмечает неявку."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            booking = Booking.objects.get(id=booking_id)
+            booking.status = BookingStatus.NO_SHOW
+            booking.save()
+            return Response({'message': 'Booking marked as no-show'})
+        except Booking.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GetAvailableTimeSlotsAPIView(APIView):
+    """API для получения доступных временных слотов."""
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request, booking_id):
+        """Получает доступные временные слоты для бронирования."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response([])
+        try:
+            booking = Booking.objects.get(id=booking_id)
+            # Логика получения доступных слотов
+            available_slots = TimeSlot.objects.filter(
+                provider=booking.provider,
+                is_available=True
+            ).values('id', 'start_time', 'end_time')
+            return Response(list(available_slots))
+        except Booking.DoesNotExist:
+            return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST) 

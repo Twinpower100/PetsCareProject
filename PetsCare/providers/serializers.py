@@ -219,7 +219,7 @@ class ProviderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Provider
         fields = [
-            'id', 'name', 'description', 'address', 'location',
+            'id', 'name', 'description', 'address', 'structured_address', 'point',
             'phone_number', 'email', 'website', 'logo', 'rating',
             'is_active', 'created_at', 'updated_at', 'available_category_levels', 'available_categories',
             'services', 'employees', 'distance', 'price_info', 'availability_info'
@@ -339,13 +339,12 @@ class EmployeeProviderSerializer(serializers.ModelSerializer):
             'id',
             'employee',
             'provider',
-            'position',
             'start_date',
             'end_date',
+            'is_manager',
             'is_confirmed',
             'confirmation_requested_at',
-            'confirmed_at',
-            'is_active'
+            'confirmed_at'
         ]
         read_only_fields = [
             'id',
@@ -353,8 +352,7 @@ class EmployeeProviderSerializer(serializers.ModelSerializer):
             'provider',
             'is_confirmed',
             'confirmation_requested_at',
-            'confirmed_at',
-            'is_active'
+            'confirmed_at'
         ]
 
     def validate(self, data):

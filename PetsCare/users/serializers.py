@@ -218,20 +218,12 @@ class RoleInviteSerializer(serializers.ModelSerializer):
     """
     Сериализатор для инвайтов на роли.
     """
-    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
-    provider_name = serializers.CharField(source='provider.name', read_only=True)
-    role_display = serializers.CharField(source='get_role_display', read_only=True)
-    status_display = serializers.CharField(source='get_status_display', read_only=True)
-    is_expired = serializers.BooleanField(read_only=True)
-    can_be_accepted = serializers.BooleanField(read_only=True)
-    
+    # Упрощенная версия без проблемных полей для Swagger
     class Meta:
-        model = 'users.RoleInvite'
+        model = RoleInvite
         fields = [
-            'id', 'email', 'role', 'role_display', 'provider', 'provider_name',
-            'position', 'comment', 'status', 'status_display', 'created_by',
-            'created_by_name', 'created_at', 'expires_at', 'is_expired',
-            'can_be_accepted', 'accepted_at', 'declined_at'
+            'id', 'email', 'role', 'provider', 'position', 'comment', 'status',
+            'created_by', 'created_at', 'expires_at', 'accepted_at', 'declined_at'
         ]
         read_only_fields = [
             'id', 'token', 'qr_code', 'status', 'created_at', 'expires_at',

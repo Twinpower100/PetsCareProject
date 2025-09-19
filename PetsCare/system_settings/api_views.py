@@ -19,7 +19,7 @@ from django.db import transaction
 from django.utils import timezone
 
 # from users.permissions import IsSystemAdmin  # Заменено на стандартные permissions
-from audit.models import AuditLog
+from audit.models import UserAction
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class SystemSettingsAPIView(APIView):
                 # В реальной реализации здесь будет сохранение в модель настроек
                 
                 # Логируем изменение настроек
-                AuditLog.objects.create(
+                UserAction.objects.create(
                     user=request.user,
                     action='settings_updated',
                     resource_type='system',
@@ -169,7 +169,7 @@ class FeatureSettingsAPIView(APIView):
             # и перезагрузка конфигурации
 
             # Логируем изменение функции
-            AuditLog.objects.create(
+            UserAction.objects.create(
                 user=request.user,
                 action='feature_toggled',
                 resource_type='system',

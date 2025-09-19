@@ -21,9 +21,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
-from .models import Service
-from .serializers import ServiceSerializer, ServiceSearchSerializer
-from catalog.models import ServiceCategory
+from catalog.models import Service
+from catalog.serializers import ServiceSerializer
 
 
 class ServiceViewSet(viewsets.ModelViewSet):
@@ -72,6 +71,9 @@ class ServiceViewSet(viewsets.ModelViewSet):
         Returns:
             QuerySet: Отфильтрованный список услуг
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Service.objects.none()
+        
         queryset = Service.objects.all()
         
         # Фильтрация по категории
@@ -109,14 +111,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
             400 Bad Request: Если параметры поиска невалидны
         """
         # Валидация входных данных
-        serializer = ServiceSearchSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(
-                serializer.errors,
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        data = serializer.validated_data
+        data = request.data
         queryset = self.get_queryset()
 
         # Применение фильтров поиска

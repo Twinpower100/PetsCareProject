@@ -67,13 +67,47 @@ class UserTypeAdmin(admin.ModelAdmin):
         }),
         (_('Permissions'), {
             'fields': ('permissions',),
-            'description': _('List of permissions for this role. Use the format: app.action_model (e.g., users.add_user)')
+            'description': _('Select permissions for this role. You can choose from predefined sets or add custom permissions.')
         }),
         (_('Timestamps'), {
             'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         }),
     )
+    
+    def formfield_for_dbfield(self, db_field, request, **kwargs):
+        """Кастомизация полей формы"""
+        if db_field.name == 'permissions':
+            # Получаем все доступные разрешения
+            from .permissions import PERMISSION_DESCRIPTIONS, ROLE_PERMISSION_SETS
+            
+            # Создаем выборы для предопределенных наборов
+            choices = []
+            
+            # Добавляем предопределенные наборы
+            for role_key, role_data in ROLE_PERMISSION_SETS.items():
+                choices.append((
+                    f"SET:{role_key}",
+                    f"{role_data['name']} - {role_data['description']}"
+                ))
+            
+            # Добавляем отдельные разрешения
+            for perm, desc in PERMISSION_DESCRIPTIONS.items():
+                choices.append((perm, f"{perm} - {desc}"))
+            
+            # Создаем поле с выбором
+            from django import forms
+            field = forms.MultipleChoiceField(
+                choices=choices,
+                widget=admin.widgets.FilteredSelectMultiple(
+                    verbose_name=_('Permissions'),
+                    is_stacked=False
+                ),
+                required=False
+            )
+            return field
+            
+        return super().formfield_for_dbfield(db_field, request, **kwargs)
     
     def get_permissions_display(self, obj):
         """Показывает разрешения с описаниями."""
@@ -86,6 +120,14 @@ class UserTypeAdmin(admin.ModelAdmin):
             descriptions.append(f'... and {len(obj.permissions) - 5} more')
         return ', '.join(descriptions)
     get_permissions_display.short_description = _('Permissions')
+    
+    def save_model(self, request, obj, form, change):
+        """Обработка сохранения модели"""
+        # Обработка предопределенных наборов теперь в модели.clean()
+        super().save_model(request, obj, form, change)
+    
+    class Media:
+        js = ('admin/js/user_type_admin.js',)
 
     def has_module_permission(self, request):
         """

@@ -33,6 +33,7 @@ class PetAccessSerializer(serializers.ModelSerializer):
             'id', 'pet', 'granted_to', 'granted_by', 'token',
             'created_at', 'expires_at', 'permissions', 'is_active'
         ]
+        ref_name = 'AccessPetAccess'
         read_only_fields = ['id', 'token', 'created_at', 'granted_by']
 
     def validate_permissions(self, value):

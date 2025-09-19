@@ -28,8 +28,9 @@ from rest_framework_simplejwt.views import TokenRefreshView, TokenBlacklistView
 # Имя приложения для использования в URL
 app_name = 'users'
 
-# API маршруты
+# API маршруты (возвращаем по одному)
 urlpatterns = [
+    # Основные endpoints согласно ФД
     path('api/register/', api_views.UserRegistrationAPIView.as_view(), name='api_register'),
     path('api/login/', api_views.UserLoginAPIView.as_view(), name='api_login'),
     path('api/profile/', api_views.UserProfileAPIView.as_view(), name='api_profile'),
@@ -37,40 +38,32 @@ urlpatterns = [
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/token/blacklist/', TokenBlacklistView.as_view(), name='token_blacklist'),
     
-    # Новые маршруты для управления ролями
+    # Управление ролями согласно ФД
     path('assign-role/', api_views.UserRoleAssignmentAPIView.as_view(), name='assign-role'),
     path('deactivate/<int:user_id>/', api_views.UserDeactivationAPIView.as_view(), name='deactivate-user'),
     
-    # Маршруты для форм учреждений
+    # Формы учреждений согласно ФД
     path('provider-forms/', api_views.ProviderFormListCreateAPIView.as_view(), name='provider-forms'),
     path('provider-forms/approve/', api_views.ProviderFormApprovalAPIView.as_view(), name='approve-provider-form'),
     
-    # Маршруты для управления сотрудниками
+    # Управление сотрудниками согласно ФД
     path('employees/deactivate/<int:employee_id>/', 
          api_views.EmployeeDeactivationAPIView.as_view(), 
          name='deactivate-employee'),
-    path('me/delete/', UserSelfDeleteAPIView.as_view(), name='user-self-delete'),
+    path('me/delete/', api_views.UserSelfDeleteAPIView.as_view(), name='user-self-delete'),
     
-    # Маршруты для поиска по геолокации
+    # Поиск по геолокации согласно ФД
     path('search/distance/', api_views.UserSearchByDistanceAPIView.as_view(), name='user-search-distance'),
     path('search/sitters/distance/', api_views.SitterSearchByDistanceAPIView.as_view(), name='sitter-search-distance'),
     
-    # Маршруты для массовых операций
+    # Массовые операции согласно ФД
     path('api/users/bulk-role-assignment/', api_views.BulkRoleAssignmentAPIView.as_view(), name='bulk-role-assignment'),
     path('api/users/bulk-deactivation/', api_views.BulkUserDeactivationAPIView.as_view(), name='bulk-user-deactivation'),
     path('api/users/bulk-activation/', api_views.BulkUserActivationAPIView.as_view(), name='bulk-user-activation'),
     
-    # Role Invite URLs
-    path('role-invites/', api_views.RoleInviteViewSet.as_view({
-        'get': 'list',
-        'post': 'create'
-    }), name='role-invites'),
-    path('role-invites/<int:pk>/', api_views.RoleInviteViewSet.as_view({
-        'get': 'retrieve',
-        'put': 'update',
-        'patch': 'partial_update',
-        'delete': 'destroy'
-    }), name='role-invite-detail'),
+    # Role Invite URLs согласно ФД
+    path('role-invites/', api_views.RoleInviteViewSet.as_view(), name='role-invites'),
+    path('role-invites/<int:pk>/', api_views.RoleInviteDetailView.as_view(), name='role-invite-detail'),
     path('role-invites/accept/', api_views.RoleInviteAcceptAPIView.as_view(), name='role-invite-accept'),
     path('role-invites/decline/', api_views.RoleInviteDeclineAPIView.as_view(), name='role-invite-decline'),
     path('role-invites/token/<str:token>/', api_views.RoleInviteByTokenAPIView.as_view(), name='role-invite-by-token'),

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PetsCare API Documentation</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #2c3e50;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .endpoint {
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+            padding: 15px;
+            margin: 15px 0;
+            border-radius: 5px;
+        }
+        .method {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 3px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .get { background: #28a745; color: white; }
+        .post { background: #007bff; color: white; }
+        .put { background: #ffc107; color: black; }
+        .delete { background: #dc3545; color: white; }
+        .url {
+            font-family: monospace;
+            font-size: 16px;
+            color: #495057;
+        }
+        .description {
+            margin-top: 10px;
+            color: #6c757d;
+        }
+        .auth-required {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 20px 0;
+        }
+        .auth-required strong {
+            color: #856404;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🐾 PetsCare API Documentation</h1>
+        
+        <div class="auth-required">
+            <strong>⚠️ Аутентификация:</strong> Большинство endpoints требуют JWT токен в заголовке Authorization: Bearer &lt;token&gt;
+        </div>
+
+        <h2>🔐 Аутентификация</h2>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/api/register/</span>
+            <div class="description">Регистрация нового пользователя</div>
+        </div>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/api/login/</span>
+            <div class="description">Вход в систему</div>
+        </div>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/api/google-auth/</span>
+            <div class="description">Аутентификация через Google</div>
+        </div>
+
+        <h2>🐕 Питомцы</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/pets/</span>
+            <div class="description">Список питомцев пользователя</div>
+        </div>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/pets/</span>
+            <div class="description">Добавить нового питомца</div>
+        </div>
+
+        <h2>🏢 Поставщики услуг</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/providers/</span>
+            <div class="description">Список поставщиков услуг</div>
+        </div>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/providers/</span>
+            <div class="description">Регистрация поставщика услуг</div>
+        </div>
+
+        <h2>📅 Бронирование</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/booking/</span>
+            <div class="description">Список бронирований</div>
+        </div>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/booking/</span>
+            <div class="description">Создать новое бронирование</div>
+        </div>
+
+        <h2>🔔 Уведомления</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/notifications/</span>
+            <div class="description">Список уведомлений</div>
+        </div>
+
+        <h2>💳 Биллинг</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/billing/</span>
+            <div class="description">Список платежей</div>
+        </div>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/billing/</span>
+            <div class="description">Создать новый платеж</div>
+        </div>
+
+        <h2>⭐ Рейтинги</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/ratings/</span>
+            <div class="description">Список рейтингов</div>
+        </div>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/ratings/</span>
+            <div class="description">Оставить отзыв</div>
+        </div>
+
+        <h2>📍 Геолокация</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/geolocation/</span>
+            <div class="description">Поиск по адресам</div>
+        </div>
+
+        <h2>📊 Аналитика</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/analytics/</span>
+            <div class="description">Аналитические данные</div>
+        </div>
+
+        <h2>👥 Пользователи</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/api/</span>
+            <div class="description">Информация о пользователе</div>
+        </div>
+
+        <h2>🔧 Администрирование</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/admin/</span>
+            <div class="description">Административный интерфейс Django</div>
+        </div>
+
+        <div style="margin-top: 40px; padding: 20px; background: #e9ecef; border-radius: 5px; text-align: center;">
+            <p><strong>PetsCare API v1.0</strong></p>
+            <p>Для получения JWT токена используйте endpoint /api/api/login/</p>
+            <p>Все запросы к защищенным endpoints должны содержать заголовок: <code>Authorization: Bearer &lt;your_token&gt;</code></p>
+        </div>
+    </div>
+</body>
+</html>

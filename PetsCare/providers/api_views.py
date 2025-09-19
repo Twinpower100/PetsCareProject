@@ -94,6 +94,12 @@ class ProviderListCreateAPIView(generics.ListCreateAPIView):
     filterset_fields = ['is_active']
     search_fields = ['name', 'description', 'address']
     ordering_fields = ['name', 'rating']
+    
+    def get_queryset(self):
+        """Возвращает queryset с проверкой swagger_fake_view."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Provider.objects.none()
+        return self.queryset
 
 
 class ProviderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -134,6 +140,12 @@ class EmployeeListCreateAPIView(generics.ListCreateAPIView):
     filterset_fields = ['is_active', 'position']
     search_fields = ['user__first_name', 'user__last_name', 'position', 'bio']
     ordering_fields = ['user__first_name', 'user__last_name', 'position']
+    
+    def get_queryset(self):
+        """Возвращает queryset с проверкой swagger_fake_view."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Employee.objects.none()
+        return self.queryset
 
 
 class EmployeeRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -206,6 +218,12 @@ class ScheduleListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['employee', 'day_of_week', 'is_working']
+    
+    def get_queryset(self):
+        """Возвращает queryset с проверкой swagger_fake_view."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Schedule.objects.none()
+        return self.queryset
 
 
 class ScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -244,6 +262,12 @@ class ProviderServiceListCreateAPIView(generics.ListCreateAPIView):
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['provider', 'service', 'is_active']
     ordering_fields = ['price']
+    
+    def get_queryset(self):
+        """Возвращает queryset с проверкой swagger_fake_view."""
+        if getattr(self, 'swagger_fake_view', False):
+            return ProviderService.objects.none()
+        return self.queryset
 
 
 class ProviderServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):

@@ -9,11 +9,6 @@ class SecurityConfig(AppConfig):
 
     def ready(self):
         """Инициализация приложения"""
-        try:
-            # Ленивый импорт сигналов - только если БД готова
-            from django.db import connection
-            if connection.introspection.table_names():
-                import security.signals
-        except (ImportError, Exception):
-            # Если БД еще не готова или есть другие ошибки, пропускаем
-            pass
+        # Импортируем сигналы без проверки БД
+        # Django сам управляет порядком инициализации
+        import security.signals

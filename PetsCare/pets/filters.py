@@ -180,11 +180,11 @@ class PetFilter(django_filters.FilterSet):
         help_text=_('Filter by main owner ID')
     )
     
-    # Фильтрация по статусу
-    is_active = django_filters.BooleanFilter(
-        method='filter_active_status',
-        help_text=_('Filter active/inactive pets')
-    )
+    # Фильтрация по статусу (убрано - поле is_active не существует в модели Pet)
+    # is_active = django_filters.BooleanFilter(
+    #     method='filter_active_status',
+    #     help_text=_('Filter active/inactive pets')
+    # )
     
     class Meta:
         model = Pet
@@ -305,19 +305,19 @@ class PetFilter(django_filters.FilterSet):
                 ).distinct()
         return queryset
     
-    def filter_active_status(self, queryset, name, value):
-        """Фильтрация по активному статусу."""
-        if value is True:
-            # Активные питомцы - без недееспособности владельцев
-            return queryset.exclude(
-                incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
-            )
-        elif value is False:
-            # Неактивные питомцы - с недееспособностью владельцев
-            return queryset.filter(
-                incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
-            )
-        return queryset 
+    # def filter_active_status(self, queryset, name, value):
+    #     """Фильтрация по активному статусу."""
+    #     if value is True:
+    #         # Активные питомцы - без недееспособности владельцев
+    #         return queryset.exclude(
+    #             incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
+    #         )
+    #     elif value is False:
+    #         # Неактивные питомцы - с недееспособностью владельцев
+    #         return queryset.filter(
+    #             incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
+    #         )
+    #     return queryset 
 
 
 class PetTypeFilter(django_filters.FilterSet):

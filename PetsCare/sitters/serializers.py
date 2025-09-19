@@ -8,7 +8,7 @@
 """
 
 from rest_framework import serializers
-from .models import SitterProfile, PetSittingAd, PetSittingResponse, Review, PetSitting
+from .models import SitterProfile, PetSittingAd, PetSittingResponse, SitterReview, PetSitting
 from users.models import User
 from django.utils.translation import gettext_lazy as _
 from .models import Message, Conversation
@@ -168,13 +168,13 @@ class PetSittingSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'created_at', 'updated_at', 'review_left']
 
 
-class ReviewSerializer(serializers.ModelSerializer):
+class SitterReviewSerializer(serializers.ModelSerializer):
     """
     Сериализатор для модели отзыва о передержке.
     Позволяет оставлять и просматривать отзывы, связанные с PetSitting.
     """
     class Meta:
-        model = Review
+        model = SitterReview
         fields = [
             'id', 'history', 'author', 'rating', 'text', 'created_at'
         ]

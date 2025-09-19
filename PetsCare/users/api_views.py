@@ -174,6 +174,7 @@ class ProviderFormListCreateAPIView(generics.ListCreateAPIView):
     """
     serializer_class = ProviderFormSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = []  # Отключаем django_filters для совместимости со Swagger
     
     def get_queryset(self):
         """
@@ -338,7 +339,7 @@ class UserSelfDeleteAPIView(APIView):
         user.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
-class RoleInviteViewSet(ModelViewSet):
+class RoleInviteViewSet(APIView):
     """
     ViewSet для управления инвайтами на роли.
     
@@ -348,53 +349,120 @@ class RoleInviteViewSet(ModelViewSet):
     - Детали инвайта
     - Отмена инвайта
     """
-    serializer_class = RoleInviteSerializer
     permission_classes = [permissions.IsAuthenticated]
     
-    def get_queryset(self):
-        """
-        Возвращает queryset в зависимости от роли пользователя.
-        """
-        user = self.request.user
-        
-        if user.is_system_admin():
-            # Системный админ видит все инвайты
-            return RoleInvite.objects.all()
-        elif user.is_employee():
-            # Менеджер учреждения видит инвайты для своего учреждения
-            managed_providers = user.employee_profile.employeeprovider_set.filter(
-                is_manager=True, is_confirmed=True
-            ).values_list('provider_id', flat=True)
-            return RoleInvite.objects.filter(provider_id__in=managed_providers)
-        else:
-            # Обычные пользователи видят только свои инвайты
-            return RoleInvite.objects.filter(email=user.email)
+    def get(self, request):
+        """Получает список инвайтов."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response([])
+        try:
+            user = request.user
+            
+            if user.has_role('system_admin') or user.is_superuser:
+                invites = RoleInvite.objects.all()
+            elif user.has_role('employee'):
+                try:
+                    from providers.models import Employee, EmployeeProvider
+                    employee = Employee.objects.get(user=user)
+                    managed_providers = EmployeeProvider.objects.filter(
+                        employee=employee,
+                        is_manager=True,
+                        status='active'
+                    ).values_list('provider_id', flat=True)
+                    invites = RoleInvite.objects.filter(provider_id__in=managed_providers)
+                except Employee.DoesNotExist:
+                    invites = RoleInvite.objects.none()
+            else:
+                invites = RoleInvite.objects.filter(email=user.email)
+            
+            serializer = RoleInviteSerializer(invites, many=True)
+            return Response(serializer.data)
+        except Exception as e:
+            return Response(
+                {'error': 'Failed to get role invites'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
     
-    def get_serializer_class(self):
-        """
-        Возвращает соответствующий сериализатор.
-        """
-        if self.action == 'create':
-            return RoleInviteCreateSerializer
-        return RoleInviteSerializer
+    def post(self, request):
+        """Создает новый инвайт."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            serializer = RoleInviteSerializer(data=request.data)
+            if serializer.is_valid():
+                serializer.save(created_by=request.user)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response(
+                {'error': 'Failed to create role invite'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+
+class RoleInviteDetailView(APIView):
+    """API для детального управления инвайтом на роль."""
+    permission_classes = [permissions.IsAuthenticated]
     
-    def perform_create(self, serializer):
-        """
-        Создает инвайт и отправляет уведомление.
-        """
-        invite = serializer.save()
-        
-        # Отправляем email уведомление
-        self._send_invite_email(invite)
-        
-        return invite
+    def get(self, request, pk):
+        """Получает детали инвайта."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            invite = RoleInvite.objects.get(pk=pk)
+            serializer = RoleInviteSerializer(invite)
+            return Response(serializer.data)
+        except RoleInvite.DoesNotExist:
+            return Response(
+                {'error': 'Role invite not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': 'Failed to get role invite'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
     
-    def _send_invite_email(self, invite):
-        """
-        Отправляет email с инвайтом.
-        """
-        # TODO: Реализовать отправку email с токеном и QR-кодом
-        pass
+    def put(self, request, pk):
+        """Обновляет инвайт."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            invite = RoleInvite.objects.get(pk=pk)
+            serializer = RoleInviteSerializer(invite, data=request.data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except RoleInvite.DoesNotExist:
+            return Response(
+                {'error': 'Role invite not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': 'Failed to update role invite'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    
+    def delete(self, request, pk):
+        """Удаляет инвайт."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        try:
+            invite = RoleInvite.objects.get(pk=pk)
+            invite.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except RoleInvite.DoesNotExist:
+            return Response(
+                {'error': 'Role invite not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            return Response(
+                {'error': 'Failed to delete role invite'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 
 class RoleInviteAcceptAPIView(APIView):

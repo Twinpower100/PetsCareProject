@@ -17,26 +17,14 @@ class UserActionSerializer(serializers.ModelSerializer):
     """
     Serializer для действий пользователей.
     """
-    user_email = serializers.CharField(source='user.email', read_only=True)
-    user_full_name = serializers.SerializerMethodField()
-    action_type_display = serializers.CharField(source='get_action_type_display', read_only=True)
-    object_name = serializers.CharField(source='object_name', read_only=True)
-
     class Meta:
         model = UserAction
         fields = [
-            'id', 'user', 'user_email', 'user_full_name', 'action_type', 'action_type_display',
-            'content_type', 'object_id', 'object_name', 'details', 'ip_address', 
-            'user_agent', 'http_method', 'url', 'status_code', 'execution_time', 
-            'timestamp', 'session_key'
+            'id', 'user', 'action_type', 'content_type', 'object_id', 'details', 
+            'ip_address', 'user_agent', 'http_method', 'url', 'status_code', 
+            'execution_time', 'timestamp', 'session_key'
         ]
         read_only_fields = ['id', 'timestamp']
-
-    def get_user_full_name(self, obj):
-        """Получает полное имя пользователя."""
-        if obj.user:
-            return f"{obj.user.first_name} {obj.user.last_name}".strip() or obj.user.email
-        return "Anonymous"
 
 
 class SecurityAuditSerializer(serializers.ModelSerializer):

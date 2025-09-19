@@ -90,12 +90,12 @@ class AddressSerializer(serializers.ModelSerializer):
     class Meta:
         model = Address
         fields = [
-            'id', 'street_number', 'route', 'locality', 'administrative_area_level_1',
-            'administrative_area_level_2', 'country', 'postal_code', 'formatted_address',
-            'point', 'is_validated', 'validation_status', 'created_at', 'updated_at'
+            'id', 'country', 'region', 'city', 'district', 'street', 'house_number',
+            'building', 'apartment', 'postal_code', 'formatted_address',
+            'point', 'is_valid', 'is_geocoded', 'validation_status', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'formatted_address', 'point', 
-                           'is_validated', 'validation_status', 'created_at', 'updated_at']
+                           'is_valid', 'is_geocoded', 'validation_status', 'created_at', 'updated_at']
 
     def validate(self, attrs):
         """
@@ -195,11 +195,11 @@ class AddressValidationSerializer(serializers.ModelSerializer):
     class Meta:
         model = AddressValidation
         fields = [
-            'id', 'address', 'is_valid', 'formatted_address', 'latitude', 'longitude',
-            'confidence_score', 'validation_details', 'api_response', 'created_at'
+            'id', 'address', 'is_valid', 'confidence_score', 'validation_errors', 'suggestions',
+            'api_provider', 'api_response', 'created_at'
         ]
-        read_only_fields = ['id', 'is_valid', 'formatted_address', 'latitude', 'longitude',
-                           'confidence_score', 'validation_details', 'api_response', 'created_at']
+        read_only_fields = ['id', 'is_valid', 'confidence_score', 'validation_errors', 'suggestions',
+                           'api_provider', 'api_response', 'created_at']
 
 
 class AddressCacheSerializer(serializers.ModelSerializer):
@@ -210,10 +210,10 @@ class AddressCacheSerializer(serializers.ModelSerializer):
     class Meta:
         model = AddressCache
         fields = [
-            'id', 'query_hash', 'query_text', 'formatted_address', 'latitude', 'longitude',
-            'api_response', 'created_at', 'expires_at'
+            'id', 'cache_key', 'address_data', 'api_provider',
+            'created_at', 'expires_at'
         ]
-        read_only_fields = ['id', 'query_hash', 'api_response', 'created_at', 'expires_at']
+        read_only_fields = ['id', 'cache_key', 'address_data', 'api_provider', 'created_at', 'expires_at']
 
 
 class AddressAutocompleteSerializer(serializers.Serializer):

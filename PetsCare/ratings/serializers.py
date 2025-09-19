@@ -66,24 +66,18 @@ class ReviewSerializer(serializers.ModelSerializer):
     author_name = serializers.CharField(source='author.get_full_name', read_only=True)
     author_email = serializers.CharField(source='author.email', read_only=True)
     content_object_info = serializers.SerializerMethodField()
-    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
-    pet_name = serializers.CharField(source='pet.name', read_only=True)
-    service_name = serializers.CharField(source='service.service_type.name', read_only=True)
-    
     class Meta:
         model = Review
         fields = [
             'id', 'content_type', 'object_id', 'content_object_info',
             'author', 'author_name', 'author_email', 'rating', 'title', 'text',
             'is_approved', 'is_suspicious', 'moderation_reason', 'toxicity_scores',
-            'created_at', 'updated_at', 'user', 'user_name', 'pet', 'pet_name', 
-            'service', 'service_name'
+            'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'content_type', 'object_id', 'author', 'author_name', 
             'author_email', 'is_approved', 'is_suspicious', 'moderation_reason',
-            'toxicity_scores', 'created_at', 'updated_at', 'user', 'user_name', 
-            'pet', 'pet_name', 'service', 'service_name'
+            'toxicity_scores', 'created_at', 'updated_at'
         ]
     
     def get_content_object_info(self, obj):
@@ -145,25 +139,19 @@ class ComplaintSerializer(serializers.ModelSerializer):
     author_email = serializers.CharField(source='author.email', read_only=True)
     content_object_info = serializers.SerializerMethodField()
     responses_count = serializers.SerializerMethodField()
-    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
-    service_name = serializers.CharField(source='service.service_type.name', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     complaint_type_display = serializers.CharField(source='get_complaint_type_display', read_only=True)
-    priority_display = serializers.CharField(source='get_priority_display', read_only=True)
-    
     class Meta:
         model = Complaint
         fields = [
             'id', 'content_type', 'object_id', 'content_object_info',
             'author', 'author_name', 'author_email', 'complaint_type',
             'complaint_type_display', 'title', 'description', 'status', 'status_display',
-            'priority', 'priority_display', 'assigned_to', 'responses_count', 'created_at', 'updated_at',
-            'user', 'user_name', 'service', 'service_name'
+            'resolution', 'resolved_by', 'resolved_at', 'is_justified', 'responses_count', 'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'content_type', 'object_id', 'author', 'author_name',
-            'author_email', 'status', 'assigned_to', 'responses_count', 'created_at', 'updated_at',
-            'user', 'user_name', 'service', 'service_name'
+            'author_email', 'status', 'resolved_by', 'resolved_at', 'responses_count', 'created_at', 'updated_at'
         ]
     
     def get_content_object_info(self, obj):
@@ -231,17 +219,16 @@ class ComplaintResponseSerializer(serializers.ModelSerializer):
     """
     author_name = serializers.CharField(source='author.get_full_name', read_only=True)
     author_email = serializers.CharField(source='author.email', read_only=True)
-    user_name = serializers.CharField(source='user.get_full_name', read_only=True)
     
     class Meta:
         model = ComplaintResponse
         fields = [
             'id', 'complaint', 'author', 'author_name', 'author_email',
-            'user', 'user_name', 'response', 'is_internal', 'created_at', 'updated_at'
+            'text', 'created_at', 'updated_at'
         ]
         read_only_fields = [
             'id', 'complaint', 'author', 'author_name', 'author_email',
-            'user', 'user_name', 'created_at', 'updated_at'
+            'created_at', 'updated_at'
         ]
     
     def validate_response(self, value):

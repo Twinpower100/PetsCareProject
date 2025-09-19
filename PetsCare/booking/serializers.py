@@ -185,7 +185,8 @@ class BookingCreateSerializer(serializers.ModelSerializer):
             'service',
             'provider',
             'employee',
-            'time_slot',
+            'start_time',
+            'end_time',
             'notes'
         ]
 
@@ -193,10 +194,11 @@ class BookingCreateSerializer(serializers.ModelSerializer):
         """
         Валидация данных при создании бронирования.
         """
-        time_slot = data.get('time_slot')
-        if not time_slot.is_available:
+        start_time = data.get('start_time')
+        end_time = data.get('end_time')
+        if start_time and end_time and start_time >= end_time:
             raise serializers.ValidationError(
-                {'time_slot': _('This time slot is not available')}
+                {'start_time': _('Start time must be before end time')}
             )
             
         employee = data.get('employee')

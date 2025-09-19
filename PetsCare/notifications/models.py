@@ -37,8 +37,52 @@ class NotificationType(models.Model):
         is_required (bool): Обязательное уведомление (не настраивается пользователем)
     """
     name = models.CharField(_('Name'), max_length=100)
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in English')
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Russian')
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Montenegrian')
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in German')
+    )
     code = models.CharField(_('Code'), max_length=50, unique=True)
     description = models.TextField(_('Description'), blank=True)
+    description_en = models.TextField(
+        _('Description (English)'),
+        blank=True,
+        help_text=_('Description in English')
+    )
+    description_ru = models.TextField(
+        _('Description (Russian)'),
+        blank=True,
+        help_text=_('Description in Russian')
+    )
+    description_me = models.TextField(
+        _('Description (Montenegrian)'),
+        blank=True,
+        help_text=_('Description in Montenegrian')
+    )
+    description_de = models.TextField(
+        _('Description (German)'),
+        blank=True,
+        help_text=_('Description in German')
+    )
     is_active = models.BooleanField(_('Is Active'), default=True)
     default_enabled = models.BooleanField(_('Default Enabled'), default=True)
     is_required = models.BooleanField(_('Is Required'), default=False, 
@@ -55,7 +99,57 @@ class NotificationType(models.Model):
         Returns:
             str: Название типа уведомления
         """
-        return self.name
+        return self.get_localized_name()
+    
+    def get_localized_name(self, language_code=None):
+        """
+        Получает локализованное название типа уведомления.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        elif language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        elif language_code == 'me' and self.name_me:
+            return self.name_me
+        elif language_code == 'de' and self.name_de:
+            return self.name_de
+        else:
+            return self.name
+    
+    def get_localized_description(self, language_code=None):
+        """
+        Получает локализованное описание типа уведомления.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное описание
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.description_en:
+            return self.description_en
+        elif language_code == 'ru' and self.description_ru:
+            return self.description_ru
+        elif language_code == 'me' and self.description_me:
+            return self.description_me
+        elif language_code == 'de' and self.description_de:
+            return self.description_de
+        else:
+            return self.description
 
 
 class NotificationTemplate(models.Model):
@@ -64,11 +158,99 @@ class NotificationTemplate(models.Model):
     Содержит текст и настройки для разных каналов доставки (email, push).
     """
     name = models.CharField(_('Name'), max_length=100)
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in English')
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Russian')
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Montenegrian')
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in German')
+    )
     code = models.CharField(_('Code'), max_length=50, unique=True)
     subject = models.CharField(_('Subject'), max_length=200, blank=True)
+    subject_en = models.CharField(
+        _('Subject (English)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Subject in English')
+    )
+    subject_ru = models.CharField(
+        _('Subject (Russian)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Subject in Russian')
+    )
+    subject_me = models.CharField(
+        _('Subject (Montenegrian)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Subject in Montenegrian')
+    )
+    subject_de = models.CharField(
+        _('Subject (German)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Subject in German')
+    )
     body = models.TextField(_('Body'))
+    body_en = models.TextField(
+        _('Body (English)'),
+        blank=True,
+        help_text=_('Body in English')
+    )
+    body_ru = models.TextField(
+        _('Body (Russian)'),
+        blank=True,
+        help_text=_('Body in Russian')
+    )
+    body_me = models.TextField(
+        _('Body (Montenegrian)'),
+        blank=True,
+        help_text=_('Body in Montenegrian')
+    )
+    body_de = models.TextField(
+        _('Body (German)'),
+        blank=True,
+        help_text=_('Body in German')
+    )
     html_body = models.TextField(_('HTML Body'), blank=True, 
                                help_text=_('HTML version of the email body'))
+    html_body_en = models.TextField(
+        _('HTML Body (English)'),
+        blank=True,
+        help_text=_('HTML Body in English')
+    )
+    html_body_ru = models.TextField(
+        _('HTML Body (Russian)'),
+        blank=True,
+        help_text=_('HTML Body in Russian')
+    )
+    html_body_me = models.TextField(
+        _('HTML Body (Montenegrian)'),
+        blank=True,
+        help_text=_('HTML Body in Montenegrian')
+    )
+    html_body_de = models.TextField(
+        _('HTML Body (German)'),
+        blank=True,
+        help_text=_('HTML Body in German')
+    )
     channel = models.CharField(
         _('Channel'),
         max_length=10,
@@ -88,7 +270,107 @@ class NotificationTemplate(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.name} ({self.channel})"
+        return f"{self.get_localized_name()} ({self.channel})"
+    
+    def get_localized_name(self, language_code=None):
+        """
+        Получает локализованное название шаблона уведомления.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        elif language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        elif language_code == 'me' and self.name_me:
+            return self.name_me
+        elif language_code == 'de' and self.name_de:
+            return self.name_de
+        else:
+            return self.name
+    
+    def get_localized_subject(self, language_code=None):
+        """
+        Получает локализованную тему уведомления.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованная тема
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.subject_en:
+            return self.subject_en
+        elif language_code == 'ru' and self.subject_ru:
+            return self.subject_ru
+        elif language_code == 'me' and self.subject_me:
+            return self.subject_me
+        elif language_code == 'de' and self.subject_de:
+            return self.subject_de
+        else:
+            return self.subject
+    
+    def get_localized_body(self, language_code=None):
+        """
+        Получает локализованное тело уведомления.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное тело
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.body_en:
+            return self.body_en
+        elif language_code == 'ru' and self.body_ru:
+            return self.body_ru
+        elif language_code == 'me' and self.body_me:
+            return self.body_me
+        elif language_code == 'de' and self.body_de:
+            return self.body_de
+        else:
+            return self.body
+    
+    def get_localized_html_body(self, language_code=None):
+        """
+        Получает локализованное HTML тело уведомления.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное HTML тело
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.html_body_en:
+            return self.html_body_en
+        elif language_code == 'ru' and self.html_body_ru:
+            return self.html_body_ru
+        elif language_code == 'me' and self.html_body_me:
+            return self.html_body_me
+        elif language_code == 'de' and self.html_body_de:
+            return self.html_body_de
+        else:
+            return self.html_body
 
 
 class NotificationPreference(models.Model):

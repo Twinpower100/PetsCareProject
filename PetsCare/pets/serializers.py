@@ -33,10 +33,10 @@ class MedicalRecordSerializer(serializers.ModelSerializer):
             'id',
             'pet',
             'date',
-            'diagnosis',
-            'treatment',
-            'prescription',
-            'notes',
+            'title',
+            'description',
+            'attachments',
+            'next_visit',
             'created_at',
             'updated_at'
         ]
@@ -70,7 +70,6 @@ class PetRecordSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'pet',
-            'service_category',
             'provider',
             'service',
             'employee',
@@ -116,6 +115,7 @@ class PetAccessSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
         read_only_fields = ['id', 'granted_by', 'created_at', 'updated_at']
+        ref_name = 'PetsPetAccess'
 
     def validate(self, data):
         """Проверяет корректность данных"""
@@ -332,6 +332,7 @@ class PetTypeSerializer(serializers.ModelSerializer):
         model = PetType
         fields = ['id', 'code', 'name', 'description']
         read_only_fields = ['id']
+        ref_name = 'PetsPetType'
 
 
 class DocumentTypeSerializer(serializers.ModelSerializer):
@@ -346,7 +347,7 @@ class DocumentTypeSerializer(serializers.ModelSerializer):
     class Meta:
         model = DocumentType
         fields = [
-            'id', 'name', 'code', 'description', 'service_categories',
+            'id', 'name', 'code', 'description',
             'requires_issue_date', 'requires_expiry_date', 
             'requires_issuing_authority', 'requires_document_number',
             'is_active', 'created_at', 'updated_at'

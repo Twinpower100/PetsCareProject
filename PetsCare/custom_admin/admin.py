@@ -7,9 +7,9 @@ class CustomAdminSite(AdminSite):
     Кастомный админ-сайт для проекта PetsCare.
     Расширяет стандартный AdminSite для добавления дополнительных прав доступа.
     """
-    site_header = _("Django Administration")
+    site_header = _("PetsCare Administration")
     site_title = _("PetsCare Admin")
-    index_title = _("Welcome to PetsCare Admin")
+    index_title = _("Welcome to PetsCare Admin - Custom User & Role Management")
 
     def has_permission(self, request):
         """
@@ -49,6 +49,19 @@ class CustomAdminSite(AdminSite):
             title=_('Reports Dashboard'),
         )
         return render(request, 'admin/reports/dashboard.html', context)
+    
+    def index(self, request, extra_context=None):
+        """
+        Переопределяем главную страницу админки для добавления информации о кастомной системе.
+        """
+        extra_context = extra_context or {}
+        extra_context.update({
+            'custom_system_info': _(
+                'This admin uses custom User and Role management system. '
+                'Use "User Types" instead of "Groups" and "Users" for role management.'
+            )
+        })
+        return super().index(request, extra_context)
 
 # Создаем экземпляр кастомного админ-сайта
 custom_admin_site = CustomAdminSite(name='custom_admin')
@@ -57,10 +70,8 @@ def register_admin_models():
     """
     Регистрирует стандартные модели админки.
     """
-    from django.contrib.auth.models import User, Group
     from django.contrib.admin.models import LogEntry
-    from django.contrib.auth.admin import UserAdmin, GroupAdmin
     
-    custom_admin_site.register(User, UserAdmin)
-    custom_admin_site.register(Group, GroupAdmin)
+    # Регистрируем только LogEntry для аудита
+    # User и Group скрыты, так как используем кастомные UserType и User
     custom_admin_site.register(LogEntry) 

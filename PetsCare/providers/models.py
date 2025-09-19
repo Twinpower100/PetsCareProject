@@ -1092,6 +1092,30 @@ class SchedulePattern(models.Model):
         max_length=100,
         verbose_name=_('Name')
     )
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in English')
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Russian')
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Montenegrian')
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in German')
+    )
     provider = models.ForeignKey(
         Provider,
         on_delete=models.CASCADE,
@@ -1100,6 +1124,26 @@ class SchedulePattern(models.Model):
     description = models.TextField(
         blank=True,
         verbose_name=_('Description')
+    )
+    description_en = models.TextField(
+        _('Description (English)'),
+        blank=True,
+        help_text=_('Description in English')
+    )
+    description_ru = models.TextField(
+        _('Description (Russian)'),
+        blank=True,
+        help_text=_('Description in Russian')
+    )
+    description_me = models.TextField(
+        _('Description (Montenegrian)'),
+        blank=True,
+        help_text=_('Description in Montenegrian')
+    )
+    description_de = models.TextField(
+        _('Description (German)'),
+        blank=True,
+        help_text=_('Description in German')
     )
     created_at = models.DateTimeField(
         _('Created At'),
@@ -1125,7 +1169,57 @@ class SchedulePattern(models.Model):
         Returns:
             str: Строковое представление шаблона
         """
-        return f"{self.name} ({self.provider})"
+        return f"{self.get_localized_name()} ({self.provider})"
+    
+    def get_localized_name(self, language_code=None):
+        """
+        Получает локализованное название шаблона расписания.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        elif language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        elif language_code == 'me' and self.name_me:
+            return self.name_me
+        elif language_code == 'de' and self.name_de:
+            return self.name_de
+        else:
+            return self.name
+    
+    def get_localized_description(self, language_code=None):
+        """
+        Получает локализованное описание шаблона расписания.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное описание
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.description_en:
+            return self.description_en
+        elif language_code == 'ru' and self.description_ru:
+            return self.description_ru
+        elif language_code == 'me' and self.description_me:
+            return self.description_me
+        elif language_code == 'de' and self.description_de:
+            return self.description_de
+        else:
+            return self.description
 
 
 class PatternDay(models.Model):

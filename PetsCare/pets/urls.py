@@ -8,7 +8,7 @@ from .api_views import (
     PetAccessListCreateAPIView, PetAccessRetrieveUpdateDestroyAPIView,
     PetDeleteAPIView, PetInviteAPIView, PetAcceptInviteAPIView, PetInviteQRCodeAPIView,
     PetRecordFileUploadAPIView, PetDocumentDownloadAPIView, PetDocumentPreviewAPIView,
-    PetSearchAPIView, PetTypeSearchAPIView, BreedSearchAPIView, 
+    PetSearchAPIView, PetTypeSearchAPIView, BreedSearchAPIView,
     PetRecommendationsAPIView, PetStatisticsAPIView
 )
 

@@ -21,6 +21,6 @@ class SettingsConfig(AppConfig):
         """
         # Импортируем сигналы
         try:
-            import settings.signals
+            import system_settings.signals
         except ImportError:
             pass 

@@ -50,6 +50,30 @@ class PetType(models.Model):
         unique=True,
         help_text=_('Type of pet (e.g., cat, dog, etc.)')
     )
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=50,
+        blank=True,
+        help_text=_('Name in English')
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=50,
+        blank=True,
+        help_text=_('Name in Russian')
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrian)'),
+        max_length=50,
+        blank=True,
+        help_text=_('Name in Montenegrian')
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=50,
+        blank=True,
+        help_text=_('Name in German')
+    )
     code = models.CharField(
         _('Code'),
         max_length=50,
@@ -72,7 +96,32 @@ class PetType(models.Model):
         ordering = ['name']
 
     def __str__(self):
-        return self.name
+        return self.get_localized_name()
+    
+    def get_localized_name(self, language_code=None):
+        """
+        Получает локализованное название типа животного.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        elif language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        elif language_code == 'me' and self.name_me:
+            return self.name_me
+        elif language_code == 'de' and self.name_de:
+            return self.name_de
+        else:
+            return self.name
 
 
 class Breed(models.Model):
@@ -95,6 +144,30 @@ class Breed(models.Model):
         _('Name'),
         max_length=100,
         help_text=_('Name of the breed')
+    )
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in English')
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Russian')
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Montenegrian')
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in German')
     )
     code = models.CharField(
         _('Code'),
@@ -119,7 +192,32 @@ class Breed(models.Model):
         unique_together = ['pet_type', 'name']
 
     def __str__(self):
-        return f"{self.name} ({self.pet_type.name})"
+        return f"{self.get_localized_name()} ({self.pet_type.get_localized_name()})"
+    
+    def get_localized_name(self, language_code=None):
+        """
+        Получает локализованное название породы.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        elif language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        elif language_code == 'me' and self.name_me:
+            return self.name_me
+        elif language_code == 'de' and self.name_de:
+            return self.name_de
+        else:
+            return self.name
 
 
 class Pet(models.Model):
@@ -270,9 +368,53 @@ class MedicalRecord(models.Model):
         max_length=200,
         help_text=_('Title of the medical record')
     )
+    title_en = models.CharField(
+        _('Title (English)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Title in English')
+    )
+    title_ru = models.CharField(
+        _('Title (Russian)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Title in Russian')
+    )
+    title_me = models.CharField(
+        _('Title (Montenegrian)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Title in Montenegrian')
+    )
+    title_de = models.CharField(
+        _('Title (German)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Title in German')
+    )
     description = models.TextField(
         _('Description'),
         help_text=_('Description of the medical record')
+    )
+    description_en = models.TextField(
+        _('Description (English)'),
+        blank=True,
+        help_text=_('Description in English')
+    )
+    description_ru = models.TextField(
+        _('Description (Russian)'),
+        blank=True,
+        help_text=_('Description in Russian')
+    )
+    description_me = models.TextField(
+        _('Description (Montenegrian)'),
+        blank=True,
+        help_text=_('Description in Montenegrian')
+    )
+    description_de = models.TextField(
+        _('Description (German)'),
+        blank=True,
+        help_text=_('Description in German')
     )
     attachments = models.FileField(
         _('Attachments'),
@@ -302,7 +444,57 @@ class MedicalRecord(models.Model):
         ordering = ['-date']
 
     def __str__(self):
-        return f"{self.pet.name} - {self.title} ({self.date})"
+        return f"{self.pet.name} - {self.get_localized_title()} ({self.date})"
+    
+    def get_localized_title(self, language_code=None):
+        """
+        Получает локализованное название медицинской записи.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.title_en:
+            return self.title_en
+        elif language_code == 'ru' and self.title_ru:
+            return self.title_ru
+        elif language_code == 'me' and self.title_me:
+            return self.title_me
+        elif language_code == 'de' and self.title_de:
+            return self.title_de
+        else:
+            return self.title
+    
+    def get_localized_description(self, language_code=None):
+        """
+        Получает локализованное описание медицинской записи.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное описание
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.description_en:
+            return self.description_en
+        elif language_code == 'ru' and self.description_ru:
+            return self.description_ru
+        elif language_code == 'me' and self.description_me:
+            return self.description_me
+        elif language_code == 'de' and self.description_de:
+            return self.description_de
+        else:
+            return self.description
 
 
 class PetRecord(models.Model):
@@ -403,7 +595,23 @@ class PetRecord(models.Model):
     def __str__(self):
         return f"{self.pet.name} - {self.service.name} ({self.date})"
 
+    def clean(self):
+        """
+        Валидация записи питомца.
+        """
+        super().clean()
+        
+        # Проверяем совместимость услуги с типом животного
+        if self.service and self.pet and self.pet.pet_type:
+            if not self.service.is_available_for_pet_type(self.pet.pet_type):
+                raise ValidationError(
+                    f"Услуга '{self.service.name}' недоступна для типа животного '{self.pet.pet_type.name}'"
+                )
+    
     def save(self, *args, **kwargs):
+        # Валидируем перед сохранением
+        self.full_clean()
+        
         # Если это новая запись и услуга периодическая, устанавливаем дату следующей процедуры
         if not self.pk and self.service.is_periodic:
             self.next_date = self.date + timedelta(days=self.service.period_days)
@@ -708,6 +916,30 @@ class DocumentType(models.Model):
         max_length=100,
         help_text=_('Name of the document type (e.g., "Pet Passport", "Veterinary Certificate")')
     )
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in English')
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Russian')
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrian)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in Montenegrian')
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=100,
+        blank=True,
+        help_text=_('Name in German')
+    )
     code = models.CharField(
         _('Code'),
         max_length=50,
@@ -770,7 +1002,32 @@ class DocumentType(models.Model):
         ordering = ['name']
 
     def __str__(self):
-        return self.name
+        return self.get_localized_name()
+    
+    def get_localized_name(self, language_code=None):
+        """
+        Получает локализованное название типа документа.
+        
+        Args:
+            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
+            
+        Returns:
+            str: Локализованное название
+        """
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        elif language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        elif language_code == 'me' and self.name_me:
+            return self.name_me
+        elif language_code == 'de' and self.name_de:
+            return self.name_de
+        else:
+            return self.name
 
     def clean(self):
         """Валидация модели"""

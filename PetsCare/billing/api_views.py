@@ -92,6 +92,9 @@ class PaymentViewSet(viewsets.ModelViewSet):
         
         Для обычных пользователей возвращает только их платежи.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Payment.objects.none()
+        
         queryset = Payment.objects.all()
         
         # Для пользователей - только их платежи
@@ -162,8 +165,12 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = Invoice.objects.all()
         user = self.request.user
         
+        # Проверяем, что пользователь аутентифицирован (для Swagger)
+        if not user.is_authenticated:
+            return queryset.none()
+        
         # Для менеджеров по биллингу - счета их провайдеров
-        if user.has_role('billing_manager'):
+        if hasattr(user, 'has_role') and user.has_role('billing_manager'):
             managed_providers = BillingManagerProvider.objects.filter(
                 billing_manager=user,
                 status__in=['active', 'temporary']
@@ -201,6 +208,9 @@ class RefundViewSet(viewsets.ModelViewSet):
         
         Для обычных пользователей возвращает только их возвраты.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Refund.objects.none()
+        
         queryset = Refund.objects.all()
         
         # Для пользователей - только их возвраты
@@ -294,7 +304,12 @@ class BillingManagerProviderViewSet(viewsets.ModelViewSet):
         """
         qs = super().get_queryset()
         user = self.request.user
-        if user.has_role('billing_manager'):
+        
+        # Проверяем, что пользователь аутентифицирован (для Swagger)
+        if not user.is_authenticated:
+            return qs.none()
+            
+        if hasattr(user, 'has_role') and user.has_role('billing_manager'):
             return qs.filter(billing_manager=user)
         return qs
 
@@ -321,7 +336,12 @@ class BillingManagerEventViewSet(viewsets.ReadOnlyModelViewSet):
         """
         qs = super().get_queryset()
         user = self.request.user
-        if user.has_role('billing_manager'):
+        
+        # Проверяем, что пользователь аутентифицирован (для Swagger)
+        if not user.is_authenticated:
+            return qs.none()
+            
+        if hasattr(user, 'has_role') and user.has_role('billing_manager'):
             return qs.filter(billing_manager_provider__billing_manager=user)
         return qs
 
@@ -358,18 +378,25 @@ class ContractViewSet(viewsets.ModelViewSet):
         Для провайдеров - только их контракты.
         Для администраторов - все контракты.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Contract.objects.none()
+        
         queryset = Contract.objects.all()
         user = self.request.user
         
+        # Проверяем, что пользователь аутентифицирован (для Swagger)
+        if not user.is_authenticated:
+            return queryset.none()
+        
         # Для менеджеров по биллингу - контракты их провайдеров
-        if user.has_role('billing_manager'):
+        if hasattr(user, 'has_role') and user.has_role('billing_manager'):
             managed_providers = BillingManagerProvider.objects.filter(
                 billing_manager=user,
                 status__in=['active', 'temporary']
             ).values_list('provider', flat=True)
             queryset = queryset.filter(provider__in=managed_providers)
         # Для провайдеров - только их контракты
-        elif user.has_role('provider'):
+        elif hasattr(user, 'has_role') and user.has_role('provider'):
             queryset = queryset.filter(provider=user.provider)
         # Для обычных пользователей - только их контракты (если есть)
         elif not user.is_staff:
@@ -447,6 +474,7 @@ class ProviderBlockingStatusAPIView(generics.RetrieveAPIView):
     Права доступа:
     - Требуется аутентификация
     """
+    serializer_class = ProviderBlockingSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, provider_id):
@@ -493,6 +521,7 @@ class ProviderBlockingResolveAPIView(generics.UpdateAPIView):
     - Требуется аутентификация
     - Требуются права админа или биллинг-менеджера
     """
+    serializer_class = ProviderBlockingSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, blocking_id):
@@ -539,6 +568,9 @@ class ProviderBlockingHistoryAPIView(generics.ListAPIView):
         """
         Возвращает историю блокировок для конкретного учреждения.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return ProviderBlocking.objects.none()
+            
         provider_id = self.kwargs.get('provider_id')
         provider = get_object_or_404(Provider, id=provider_id)
         
@@ -560,7 +592,7 @@ class BlockingNotificationListAPIView(generics.ListAPIView):
     filterset_fields = ['status', 'notification_type', 'provider_blocking']
 
 
-class BlockingNotificationRetryAPIView(generics.UpdateAPIView):
+class BlockingNotificationRetryAPIView(generics.GenericAPIView):
     """
     API для повторной отправки неудачного уведомления.
     
@@ -569,6 +601,16 @@ class BlockingNotificationRetryAPIView(generics.UpdateAPIView):
     - Требуются права админа или биллинг-менеджера
     """
     permission_classes = [permissions.IsAuthenticated]
+    
+    def get_serializer_class(self):
+        """Возвращает None, так как этот View не использует сериализатор"""
+        return None
+    
+    def get_serializer(self, *args, **kwargs):
+        """Переопределяем для Swagger - возвращаем None"""
+        if getattr(self, 'swagger_fake_view', False):
+            return None
+        return super().get_serializer(*args, **kwargs)
 
     def post(self, request, notification_id):
         """

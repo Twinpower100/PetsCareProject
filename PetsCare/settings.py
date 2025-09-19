@@ -154,6 +154,19 @@ TIME_ZONE = 'Europe/Moscow'
 USE_I18N = True
 USE_L10N = True
 
+# Поддерживаемые языки
+LANGUAGES = [
+    ('en', 'English'),
+    ('ru', 'Russian'),
+    ('me', 'Montenegrian'),
+    ('de', 'German'),
+]
+
+# Пути к файлам переводов
+LOCALE_PATHS = [
+    BASE_DIR / 'locale',
+]
+
 # Настройки почты
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
