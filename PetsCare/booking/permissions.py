@@ -16,9 +16,11 @@ class IsOwnerOrProvider(permissions.BasePermission):
         if hasattr(obj, 'user') and obj.user == request.user:
             return True
             
-        # Разрешаем доступ, если пользователь является поставщиком услуг
-        if hasattr(obj, 'provider') and hasattr(request.user, 'provider'):
-            return obj.provider == request.user.provider
+        # Разрешаем доступ, если пользователь является администратором учреждения
+        if hasattr(obj, 'provider') and request.user.has_role('provider_admin'):
+            # Проверяем, управляет ли пользователь этим учреждением
+            managed_providers = request.user.get_managed_providers()
+            return obj.provider in managed_providers
             
         return False
 

@@ -23,3 +23,7 @@ class PetsConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'pets'
     verbose_name = _('Pets')
+    
+    def ready(self):
+        """Подключает сигналы приложения."""
+        import pets.signals

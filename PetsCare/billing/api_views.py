@@ -395,9 +395,11 @@ class ContractViewSet(viewsets.ModelViewSet):
                 status__in=['active', 'temporary']
             ).values_list('provider', flat=True)
             queryset = queryset.filter(provider__in=managed_providers)
-        # Для провайдеров - только их контракты
-        elif hasattr(user, 'has_role') and user.has_role('provider'):
-            queryset = queryset.filter(provider=user.provider)
+        # Для администраторов учреждений - только их контракты
+        elif hasattr(user, 'has_role') and user.has_role('provider_admin'):
+            # Получаем учреждения, которыми управляет пользователь
+            managed_providers = user.get_managed_providers()
+            queryset = queryset.filter(provider__in=managed_providers)
         # Для обычных пользователей - только их контракты (если есть)
         elif not user.is_staff:
             # Обычные пользователи не имеют прямого доступа к контрактам

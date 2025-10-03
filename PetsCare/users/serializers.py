@@ -2,7 +2,7 @@ from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User, UserType, ProviderForm, EmployeeSpecialization, RoleInvite
 from django.utils.translation import gettext_lazy as _
-from providers.models import Provider, Employee
+from providers.models import Provider  # noqa: F401
 from django.utils import timezone
 
 
@@ -34,7 +34,7 @@ class UserSerializer(serializers.ModelSerializer):
         """
         Возвращает расстояние до пользователя, если указаны координаты поиска.
         """
-        from geolocation.utils import calculate_distance
+        from geolocation.utils import calculate_distance  # noqa: F401
         
         # Получаем координаты поиска из контекста
         context = self.context
@@ -69,7 +69,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'email', 'username', 'first_name', 'last_name', 'user_types', 'is_active', 'distance']
+        fields = ['id', 'email', 'username', 'first_name', 'last_name', 'phone_number', 'user_types', 'is_active', 'distance']
         read_only_fields = ['email', 'user_types', 'distance']
 
 
@@ -83,7 +83,7 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ['email', 'password', 'first_name', 'last_name', 'token']
+        fields = ['email', 'password', 'first_name', 'last_name', 'phone_number', 'token']
     
     def get_token(self, user):
         """
@@ -98,12 +98,14 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         """
         Создает нового пользователя с указанными данными.
+        Username генерируется автоматически.
         """
         user = User.objects.create_user(
             email=validated_data['email'],
             password=validated_data['password'],
             first_name=validated_data.get('first_name', ''),
             last_name=validated_data.get('last_name', ''),
+            phone_number=validated_data.get('phone_number', ''),
         )
         return user
 
@@ -111,21 +113,76 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 class GoogleAuthSerializer(serializers.Serializer):
     """
     Сериализатор для аутентификации через Google.
-    Проверяет токен Google и возвращает пользователя.
+    Обрабатывает authorization code от Google OAuth 2.0.
     """
-    token = serializers.CharField()
+    token = serializers.CharField()  # Это authorization code от Google OAuth 2.0
     
     def validate(self, attrs):
         """
-        Валидирует Google токен и возвращает данные пользователя.
+        Обменивает authorization code на access token и получает данные пользователя.
         """
-        token = attrs.get('token')
+        code = attrs.get('token')  # Это authorization code
         try:
-            # Здесь будет логика валидации Google токена
-            # и создания/получения пользователя
-            pass
+            import requests
+            from django.conf import settings
+            
+            # Обмениваем authorization code на access token
+            token_url = 'https://oauth2.googleapis.com/token'
+            token_data = {
+                'client_id': settings.GOOGLE_CLIENT_ID,
+                'client_secret': settings.GOOGLE_CLIENT_SECRET,
+                'code': code,
+                'grant_type': 'authorization_code',
+                'redirect_uri': 'postmessage'  # Для OAuth 2.0 с authorization code
+            }
+            
+            token_response = requests.post(token_url, data=token_data, timeout=10)
+            token_response.raise_for_status()
+            token_info = token_response.json()
+            
+            access_token = token_info.get('access_token')
+            if not access_token:
+                raise ValueError('No access token received')
+            
+            # Получаем данные пользователя
+            user_info_url = 'https://www.googleapis.com/oauth2/v2/userinfo'
+            headers = {'Authorization': f'Bearer {access_token}'}
+            user_response = requests.get(user_info_url, headers=headers, timeout=10)
+            user_response.raise_for_status()
+            user_info = user_response.json()
+            
+            # Пытаемся получить номер телефона через People API
+            phone = None
+            try:
+                people_url = 'https://people.googleapis.com/v1/people/me?personFields=phoneNumbers'
+                people_response = requests.get(people_url, headers=headers, timeout=10)
+                if people_response.status_code == 200:
+                    people_data = people_response.json()
+                    phone_numbers = people_data.get('phoneNumbers', [])
+                    if phone_numbers:
+                        phone = phone_numbers[0].get('value')
+            except Exception as e:
+                pass  # Игнорируем ошибки при получении номера телефона
+            
+            # Сохраняем данные пользователя для использования в API view
+            attrs['google_user_data'] = {
+                'email': user_info.get('email'),
+                'name': user_info.get('name'),
+                'picture': user_info.get('picture'),
+                'google_id': user_info.get('id'),
+                'phone': phone  # Может быть None
+            }
+            
+        except requests.RequestException as e:
+            print(f"GoogleAuthSerializer: Google API error: {str(e)}")
+            raise serializers.ValidationError(f'Google API error: {str(e)}')
+        except ValueError as e:
+            print(f"GoogleAuthSerializer: Invalid Google response: {str(e)}")
+            raise serializers.ValidationError(f'Invalid Google response: {str(e)}')
         except Exception as e:
-            raise serializers.ValidationError(_(str(e)))
+            print(f"GoogleAuthSerializer: Token exchange error: {str(e)}")
+            raise serializers.ValidationError(f'Token exchange error: {str(e)}')
+        
         return attrs 
 
 

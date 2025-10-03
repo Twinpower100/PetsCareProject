@@ -21,6 +21,7 @@ def api_root(request):
                 'register': '/api/api/register/',
                 'login': '/api/api/login/',
                 'google_auth': '/api/api/google-auth/',
+                'profile': '/api/api/profile/',
             },
             'documentation': {
                 'docs': '/docs/',

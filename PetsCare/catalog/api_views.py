@@ -161,3 +161,22 @@ class ServiceSearchAPIView(generics.ListAPIView):
                 Q(description__icontains=query)
             )
         return queryset 
+
+
+class PublicServiceCategoriesAPIView(generics.ListAPIView):
+    """
+    Публичный API для получения корневых категорий услуг (уровень 0).
+    Доступен без аутентификации для отображения в подвале и навигации.
+    """
+    serializer_class = ServiceSerializer
+    permission_classes = [permissions.AllowAny]  # Публичный доступ
+
+    def get_queryset(self):
+        """
+        Возвращает только корневые категории услуг (parent=None, level=0).
+        """
+        return Service.objects.filter(
+            parent=None,
+            level=0,
+            is_active=True
+        ).order_by('hierarchy_order', 'name')

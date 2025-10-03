@@ -49,6 +49,12 @@ class LoggingService:
                 self._settings = type('Settings', (), {
                     'logging_enabled': getattr(settings, 'AUDIT_LOGGING_ENABLED', True),
                     'security_audit_enabled': getattr(settings, 'AUDIT_SECURITY_ENABLED', True),
+                    'log_retention_days': getattr(settings, 'AUDIT_LOG_RETENTION_DAYS', 365),
+                    'security_audit_retention_days': getattr(settings, 'AUDIT_SECURITY_RETENTION_DAYS', 2555),
+                    'log_http_requests': getattr(settings, 'AUDIT_LOG_HTTP_REQUESTS', True),
+                    'log_database_changes': getattr(settings, 'AUDIT_LOG_DATABASE_CHANGES', True),
+                    'log_business_operations': getattr(settings, 'AUDIT_LOG_BUSINESS_OPERATIONS', True),
+                    'log_system_events': getattr(settings, 'AUDIT_LOG_SYSTEM_EVENTS', True),
                 })()
         return self._settings
     

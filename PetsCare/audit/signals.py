@@ -30,19 +30,20 @@ def get_audit_service():
         })()
 
 
-@receiver(post_save, sender=UserAction)
-def log_user_action_created(sender, instance, created, **kwargs):
-    """Логирует создание записи действия пользователя"""
-    if created:
-        # Логируем создание лога (мета-логирование)
-        get_logging_service().log_system_event(
-            'user_action_created',
-            {
-                'action_id': instance.id,
-                'user_id': instance.user.id if instance.user else None,
-                'action_type': instance.action_type,
-            }
-        )
+# Временно отключено для устранения бесконечной рекурсии
+# @receiver(post_save, sender=UserAction)
+# def log_user_action_created(sender, instance, created, **kwargs):
+#     """Логирует создание записи действия пользователя"""
+#     if created:
+#         # Логируем создание лога (мета-логирование)
+#         get_logging_service().log_system_event(
+#             'user_action_created',
+#             {
+#                 'action_id': instance.id,
+#                 'user_id': instance.user.id if instance.user else None,
+#                 'action_type': instance.action_type,
+#             }
+#         )
 
 
 @receiver(post_save, sender=SecurityAudit)
@@ -66,17 +67,20 @@ def log_security_audit_created(sender, instance, created, **kwargs):
 def log_user_changes(sender, instance, created, **kwargs):
     """Логирует изменения пользователей"""
     if created:
-        get_logging_service().log_action(
-            user=instance,
-            action_type='create',
-            content_object=instance,
-            details={'user_type': getattr(instance, 'user_type', 'unknown')}
+        # При создании пользователя не передаем его как user, чтобы избежать рекурсии
+        get_logging_service().log_system_event(
+            event='user_created',
+            details={
+                'user_id': instance.id,
+                'user_email': instance.email,
+                'user_type': getattr(instance, 'user_type', 'unknown')
+            }
         )
     else:
         get_logging_service().log_action(
             user=instance,
             action_type='update',
-            content_object=instance,
+            content_object=None,  # Не передаем объект User, чтобы избежать рекурсии
             details={'user_type': getattr(instance, 'user_type', 'unknown')}
         )
 
@@ -88,14 +92,14 @@ def log_pet_changes(sender, instance, created, **kwargs):
         get_logging_service().log_action(
             user=instance.owner,
             action_type='create',
-            content_object=instance,
+            content_object=None,  # Не передаем объект Pet, чтобы избежать рекурсии
             details={'pet_name': instance.name, 'pet_type': instance.pet_type}
         )
     else:
         get_logging_service().log_action(
             user=instance.owner,
             action_type='update',
-            content_object=instance,
+            content_object=None,  # Не передаем объект Pet, чтобы избежать рекурсии
             details={'pet_name': instance.name, 'pet_type': instance.pet_type}
         )
 
@@ -106,7 +110,7 @@ def log_pet_deletion(sender, instance, **kwargs):
     get_logging_service().log_action(
         user=instance.owner,
         action_type='delete',
-        content_object=instance,
+        content_object=None,  # Не передаем объект Pet, чтобы избежать рекурсии
         details={'pet_name': instance.name, 'pet_type': instance.pet_type}
     )
 
@@ -118,7 +122,7 @@ def log_booking_changes(sender, instance, created, **kwargs):
         get_logging_service().log_action(
             user=instance.pet_owner,
             action_type='booking',
-            content_object=instance,
+            content_object=None,  # Не передаем объект, чтобы избежать рекурсии
             details={
                 'booking_id': instance.id,
                 'pet_name': instance.pet.name,
@@ -135,7 +139,7 @@ def log_booking_changes(sender, instance, created, **kwargs):
                 get_logging_service().log_action(
                     user=instance.pet_owner,
                     action_type='update',
-                    content_object=instance,
+                    content_object=None,  # Не передаем объект, чтобы избежать рекурсии
                     details={
                         'booking_id': instance.id,
                         'old_status': old_status,
@@ -153,7 +157,7 @@ def log_contract_changes(sender, instance, created, **kwargs):
             operation='contract_created',
             amount=float(instance.commission_rate),
             currency='%',
-            content_object=instance,
+            content_object=None,  # Не передаем объект, чтобы избежать рекурсии
             details={
                 'provider_name': instance.provider.name,
                 'commission_rate': instance.commission_rate,
@@ -165,7 +169,7 @@ def log_contract_changes(sender, instance, created, **kwargs):
             operation='contract_updated',
             amount=float(instance.commission_rate),
             currency='%',
-            content_object=instance,
+            content_object=None,  # Не передаем объект, чтобы избежать рекурсии
             details={
                 'provider_name': instance.provider.name,
                 'commission_rate': instance.commission_rate,
@@ -182,7 +186,7 @@ def log_payment_operations(sender, instance, created, **kwargs):
             operation='payment_created',
             amount=float(instance.amount),
             currency=instance.currency,
-            content_object=instance,
+            content_object=None,  # Не передаем объект, чтобы избежать рекурсии
             details={
                 'payment_method': instance.payment_method,
                 'status': instance.status,
@@ -199,7 +203,7 @@ def log_payment_operations(sender, instance, created, **kwargs):
                     operation='payment_status_changed',
                     amount=float(instance.amount),
                     currency=instance.currency,
-                    content_object=instance,
+                    content_object=None,  # Не передаем объект, чтобы избежать рекурсии
                     details={
                         'old_status': old_status,
                         'new_status': instance.status,

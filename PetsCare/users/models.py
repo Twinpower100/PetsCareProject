@@ -35,6 +35,39 @@ class UserManager(BaseUserManager):
     """
     use_in_migrations = True
 
+    def _generate_username(self, email):
+        """
+        Генерирует уникальный username на основе email.
+        
+        Args:
+            email (str): Email пользователя
+            
+        Returns:
+            str: Уникальный username
+        """
+        import time
+        import re
+        
+        # Извлекаем имя пользователя из email
+        username_base = email.split('@')[0]
+        # Убираем специальные символы, оставляем только буквы, цифры и точки
+        username_base = re.sub(r'[^a-zA-Z0-9.]', '', username_base)
+        # Ограничиваем длину
+        username_base = username_base[:20]
+        
+        # Добавляем timestamp для уникальности
+        timestamp = str(int(time.time()))
+        username = f"{username_base}_{timestamp}"
+        
+        # Проверяем уникальность и добавляем суффикс если нужно
+        counter = 1
+        original_username = username
+        while self.model.objects.filter(username=username).exists():
+            username = f"{original_username}_{counter}"
+            counter += 1
+            
+        return username
+
     def create_user(self, email, password=None, **extra_fields):
         """
         Создает и сохраняет обычного пользователя.
@@ -51,6 +84,11 @@ class UserManager(BaseUserManager):
             raise ValueError(_('The Email field must be set'))
         
         email = self.normalize_email(email)
+        
+        # Автоматически генерируем username если не указан
+        if 'username' not in extra_fields or not extra_fields['username']:
+            extra_fields['username'] = self._generate_username(email)
+        
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
@@ -279,10 +317,10 @@ class User(AbstractUser):
     username = models.CharField(
         _('Username'),
         max_length=150,
-        unique=True,         # теперь username уникален
-        blank=False,         # обязательно для заполнения
+        unique=True,         # username уникален, но генерируется автоматически
+        blank=True,         # не обязательно для заполнения (генерируется автоматически)
         null=False,          # не может быть NULL в базе
-        help_text=_('Required. Unique username for profile and social features.'),
+        help_text=_('Auto-generated unique username for system compatibility.'),
         error_messages={
             'unique': _('A user with that username already exists.'),
             'max_length': _('Username is too long.')
@@ -297,14 +335,16 @@ class User(AbstractUser):
     first_name = models.CharField(
         _('First Name'),
         max_length=30,
-        blank=True,
-        help_text=_('Optional.'),
+        blank=False,
+        null=False,
+        help_text=_('Required. User\'s first name.'),
     )
     last_name = models.CharField(
         _('Last Name'),
         max_length=150,
-        blank=True,
-        help_text=_('Optional.'),
+        blank=False,
+        null=False,
+        help_text=_('Required. User\'s last name.'),
     )
     date_of_birth = models.DateField(
         _('Date Of Birth'),
@@ -321,9 +361,10 @@ class User(AbstractUser):
     )
     phone_number = PhoneNumberField(
         _('Phone Number'),
-        blank=True,
+        blank=False,
+        null=False,
         unique=True,
-        help_text=_('Optional. Unique phone number.')
+        help_text=_('Required. Unique phone number for contact and verification.')
     )
     
     # Структурированный адрес пользователя (убрано для избежания циклических зависимостей)
@@ -356,7 +397,7 @@ class User(AbstractUser):
 
     # Настройки аутентификации
     USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['username']
+    REQUIRED_FIELDS = []  # username генерируется автоматически
 
     objects = UserManager()
 
@@ -373,6 +414,22 @@ class User(AbstractUser):
             str: Email пользователя
         """
         return self.email
+    
+    def to_dict(self):
+        """
+        Возвращает словарь с основными полями пользователя для JSON сериализации.
+        
+        Returns:
+            dict: Словарь с данными пользователя
+        """
+        return {
+            'id': self.id,
+            'email': self.email,
+            'username': self.username,
+            'first_name': self.first_name,
+            'last_name': self.last_name,
+            'is_active': self.is_active,
+        }
 
     def get_full_name(self):
         """

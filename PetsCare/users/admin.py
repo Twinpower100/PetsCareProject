@@ -21,13 +21,13 @@ class CustomUserAdmin(UserAdmin):
     """
     Кастомная админка для модели User.
     """
-    list_display = ('username', 'email', 'first_name', 'last_name', 'is_active')
+    list_display = ('username', 'email', 'first_name', 'last_name', 'phone_number', 'is_active')
     list_filter = ('user_types', 'is_active')
-    search_fields = ('email', 'first_name', 'last_name', 'username', 'user_types__name')
+    search_fields = ('email', 'first_name', 'last_name', 'username', 'phone_number', 'user_types__name')
     ordering = ('email',)
     
     fieldsets = (
-        (None, {'fields': ('email', 'password')}),
+        (None, {'fields': ('username', 'email', 'password')}),
         (_('Personal info'), {'fields': ('first_name', 'last_name', 'phone_number')}),
         (_('Permissions'), {'fields': ('user_types', 'is_active', 'is_staff', 'is_superuser')}),
     )
@@ -35,9 +35,66 @@ class CustomUserAdmin(UserAdmin):
     add_fieldsets = (
         (None, {
             'classes': ('wide',),
-            'fields': ('email', 'password1', 'password2', 'user_types'),
+            'fields': ('username', 'email', 'first_name', 'last_name', 'phone_number', 'password1', 'password2', 'user_types'),
         }),
     )
+    
+    actions = ['safe_delete_user', 'clear_user_roles']
+    
+    def get_actions(self, request):
+        """
+        Убираем стандартное действие удаления, оставляем только наше кастомное.
+        """
+        actions = super().get_actions(request)
+        if 'delete_selected' in actions:
+            del actions['delete_selected']
+        return actions
+    
+    def safe_delete_user(self, request, queryset):
+        """
+        Безопасное удаление пользователей с предварительной очисткой связей.
+        """
+        deleted_count = 0
+        for user in queryset:
+            try:
+                # Очищаем все роли пользователя
+                user.user_types.clear()
+                # Удаляем пользователя
+                user.delete()
+                deleted_count += 1
+            except Exception as e:
+                self.message_user(request, _('Error deleting user %(username)s: %(error)s') % {'username': user.username, 'error': str(e)}, level='ERROR')
+        
+        if deleted_count > 0:
+            self.message_user(request, _('Successfully deleted %(count)d users.') % {'count': deleted_count}, level='SUCCESS')
+    
+    safe_delete_user.short_description = _("Safely delete selected users")
+    
+    def clear_user_roles(self, request, queryset):
+        """
+        Очистить все роли у выбранных пользователей.
+        """
+        cleared_count = 0
+        for user in queryset:
+            user.user_types.clear()
+            cleared_count += 1
+        
+        self.message_user(request, _('Roles cleared for %(count)d users.') % {'count': cleared_count}, level='SUCCESS')
+    
+    clear_user_roles.short_description = _("Clear roles for selected users")
+    
+    def delete_model(self, request, obj):
+        """
+        Кастомное удаление отдельного пользователя с очисткой связей.
+        """
+        try:
+            # Очищаем все роли пользователя
+            obj.user_types.clear()
+            # Удаляем пользователя
+            obj.delete()
+            self.message_user(request, _('User %(username)s successfully deleted.') % {'username': obj.username}, level='SUCCESS')
+        except Exception as e:
+            self.message_user(request, _('Error deleting user %(username)s: %(error)s') % {'username': obj.username, 'error': str(e)}, level='ERROR')
 
     def has_module_permission(self, request):
         """

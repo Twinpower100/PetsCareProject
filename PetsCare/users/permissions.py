@@ -154,6 +154,16 @@ ROLE_PERMISSION_SETS = {
             'notifications.view_notification', 'ratings.view_rating',
         ]
     },
+    
+    'basic_user': {
+        'name': _('Basic User'),
+        'description': _('Minimal rights for working with the system (no admin access)'),
+        'permissions': [
+            'users.view_user', 'pets.view_pet', 'providers.view_provider',
+            'booking.view_booking', 'notifications.view_notification',
+            'geolocation.view_location', 'ratings.view_rating',
+        ]
+    },
 }
 
 

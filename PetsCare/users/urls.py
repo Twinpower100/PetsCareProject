@@ -35,6 +35,8 @@ urlpatterns = [
     path('api/login/', api_views.UserLoginAPIView.as_view(), name='api_login'),
     path('api/profile/', api_views.UserProfileAPIView.as_view(), name='api_profile'),
     path('api/google-auth/', api_views.GoogleAuthAPIView.as_view(), name='api_google_auth'),
+    path('api/check-email/', api_views.CheckEmailAPIView.as_view(), name='api_check_email'),
+    path('api/check-phone/', api_views.CheckPhoneAPIView.as_view(), name='api_check_phone'),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('api/token/blacklist/', TokenBlacklistView.as_view(), name='token_blacklist'),
     

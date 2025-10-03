@@ -16,7 +16,8 @@ from .api_views import (
     ServiceCategoryRetrieveUpdateDestroyAPIView,
     ServiceListCreateAPIView,
     ServiceRetrieveUpdateDestroyAPIView,
-    ServiceSearchAPIView
+    ServiceSearchAPIView,
+    PublicServiceCategoriesAPIView  # Временно закомментировано
 )
 
 # Создаем роутер для API
@@ -43,4 +44,9 @@ urlpatterns = [
     path('services/search/', 
          ServiceSearchAPIView.as_view(), 
          name='service-search'),
+    
+    # Публичный API для корневых категорий услуг (без аутентификации)
+    path('public/service-categories/', 
+         PublicServiceCategoriesAPIView.as_view(), 
+         name='public-service-categories'),
 ] 

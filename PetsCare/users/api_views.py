@@ -3,6 +3,9 @@ from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError as DjangoValidationError
+import re
 from .serializers import (
     UserSerializer, 
     UserRegistrationSerializer,
@@ -67,8 +70,7 @@ class UserProfileAPIView(generics.RetrieveUpdateAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
-        if not self.request.user.has_role('pet_owner'):
-            raise PermissionDenied(_('Only pet owners can access this view'))
+        # Возвращаем текущего пользователя без дополнительных проверок роли
         return self.request.user
 
 
@@ -84,35 +86,45 @@ class GoogleAuthAPIView(generics.CreateAPIView):
         """
         Обрабатывает аутентификацию через Google и выдаёт токены.
         """
+        logger.info(f"GoogleAuthAPIView: Received request data: {request.data}")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        logger.info(f"GoogleAuthAPIView: Serializer validated successfully")
         
         try:
-            # Валидация Google токена
-            idinfo = id_token.verify_oauth2_token(
-                serializer.validated_data['token'],
-                requests.Request(),
-                settings.GOOGLE_CLIENT_ID
-            )
+            # Получаем данные пользователя из сериализатора
+            google_data = serializer.validated_data['google_user_data']
+            email = google_data['email']
             
             # Получение или создание пользователя
-            email = idinfo['email']
             try:
                 user = User.objects.get(email=email)
             except User.DoesNotExist:
+                # Username генерируется автоматически в UserManager
+                # Получаем телефон от Google, если есть
+                google_phone = google_data.get('phone')
+                phone_number = google_phone if google_phone else ''
+                
                 user = User.objects.create_user(
                     email=email,
-                    first_name=idinfo.get('given_name', ''),
-                    last_name=idinfo.get('family_name', ''),
+                    first_name=google_data.get('name', '').split(' ')[0] if google_data.get('name') else '',
+                    last_name=' '.join(google_data.get('name', '').split(' ')[1:]) if google_data.get('name') and len(google_data.get('name', '').split(' ')) > 1 else '',
+                    phone_number=phone_number,  # Пустая строка, если Google не предоставил телефон
                     password=None  # Пароль не нужен для социальной аутентификации
                 )
             
             # Генерация JWT токенов
             refresh = RefreshToken.for_user(user)
+            user_data = UserSerializer(user).data
+            
+            # Проверяем, нужен ли телефон для завершения регистрации
+            needs_phone = not user.phone_number
+            
             return Response({
                 'refresh': str(refresh),
                 'access': str(refresh.access_token),
-                'user': UserSerializer(user).data
+                'user': user_data,
+                'needs_phone': needs_phone
             })
             
         except Exception as e:
@@ -1156,4 +1168,71 @@ class BulkUserActivationAPIView(APIView):
             return Response(
                 {'error': _('Failed to perform bulk user activation')},
                 status=status.HTTP_400_BAD_REQUEST
-            ) 
+            )
+
+
+class CheckEmailAPIView(APIView):
+    """
+    API для проверки уникальности email.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        """
+        Проверяет уникальность email.
+        """
+        email = request.query_params.get('email')
+        
+        if not email:
+            return Response(
+                {'error': _('Email parameter is required')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Валидация формата email
+        try:
+            validate_email(email)
+            valid = True
+        except DjangoValidationError:
+            valid = False
+        
+        # Проверка уникальности
+        exists = User.objects.filter(email=email).exists()
+        
+        return Response({
+            'email': email,
+            'exists': exists,
+            'valid': valid
+        })
+
+
+class CheckPhoneAPIView(APIView):
+    """
+    API для проверки уникальности номера телефона.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        """
+        Проверяет уникальность номера телефона.
+        """
+        phone = request.query_params.get('phone')
+        
+        if not phone:
+            return Response(
+                {'error': _('Phone parameter is required')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Валидация формата телефона
+        phone_regex = r'^\+?[1-9]\d{1,14}$'
+        valid = bool(re.match(phone_regex, phone))
+        
+        # Проверка уникальности
+        exists = User.objects.filter(phone_number=phone).exists()
+        
+        return Response({
+            'phone': phone,
+            'exists': exists,
+            'valid': valid
+        }) 

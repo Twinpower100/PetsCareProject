@@ -17,17 +17,27 @@ class CustomAdminSite(AdminSite):
         Разрешает доступ для:
         - Активных пользователей
         - Сотрудников (is_staff)
+        - Суперпользователей (is_superuser)
         - Менеджеров биллинга
         - Администраторов провайдеров
         - Системных администраторов
         """
-        return (
-            request.user.is_active and
-            (request.user.is_staff or
-             request.user.is_billing_manager() or
-             request.user.is_provider_admin() or
-             request.user.is_system_admin())
-        )
+        if not request.user.is_active:
+            return False
+            
+        # Стандартные права Django
+        if request.user.is_staff or request.user.is_superuser:
+            return True
+            
+        # Кастомные права (если методы существуют)
+        try:
+            return (
+                getattr(request.user, 'is_billing_manager', lambda: False)() or
+                getattr(request.user, 'is_provider_admin', lambda: False)() or
+                getattr(request.user, 'is_system_admin', lambda: False)()
+            )
+        except:
+            return False
 
     def get_urls(self):
         """
