@@ -489,4 +489,104 @@ class RoleTerminationSerializer(serializers.Serializer):
                     _("User is not a billing manager for this provider")
                 )
         
-        return data 
+        return data
+
+
+class ForgotPasswordSerializer(serializers.Serializer):
+    """
+    Сериализатор для запроса восстановления пароля.
+    """
+    email = serializers.EmailField(
+        max_length=254,
+        help_text=_('Email address to send password reset link')
+    )
+    
+    def validate_email(self, value):
+        """
+        Валидирует email и проверяет существование пользователя.
+        """
+        try:
+            user = User.objects.get(email=value)
+            if not user.is_active:
+                raise serializers.ValidationError(
+                    _('Account is inactive. Please contact support.')
+                )
+        except User.DoesNotExist:
+            # Не раскрываем существование email для безопасности
+            pass
+        
+        return value
+
+
+class ResetPasswordSerializer(serializers.Serializer):
+    """
+    Сериализатор для сброса пароля.
+    """
+    token = serializers.CharField(
+        max_length=64,
+        help_text=_('Password reset token')
+    )
+    new_password = serializers.CharField(
+        min_length=8,
+        max_length=128,
+        help_text=_('New password (minimum 8 characters)')
+    )
+    confirm_password = serializers.CharField(
+        max_length=128,
+        help_text=_('Confirm new password')
+    )
+    
+    def validate(self, attrs):
+        """
+        Валидирует пароли и токен.
+        """
+        new_password = attrs.get('new_password')
+        confirm_password = attrs.get('confirm_password')
+        token = attrs.get('token')
+        
+        # Проверяем совпадение паролей
+        if new_password != confirm_password:
+            raise serializers.ValidationError(
+                _('Passwords do not match')
+            )
+        
+        # Проверяем токен
+        from .models import PasswordResetToken
+        reset_token = PasswordResetToken.get_valid_token(token)
+        if not reset_token:
+            raise serializers.ValidationError(
+                _('Invalid or expired reset token')
+            )
+        
+        # Сохраняем пользователя для использования в view
+        attrs['user'] = reset_token.user
+        attrs['reset_token'] = reset_token
+        
+        return attrs
+    
+    def validate_new_password(self, value):
+        """
+        Валидирует новый пароль.
+        """
+        if len(value) < 8:
+            raise serializers.ValidationError(
+                _('Password must be at least 8 characters long')
+            )
+        
+        # Проверяем сложность пароля
+        if not any(c.isupper() for c in value):
+            raise serializers.ValidationError(
+                _('Password must contain at least one uppercase letter')
+            )
+        
+        if not any(c.islower() for c in value):
+            raise serializers.ValidationError(
+                _('Password must contain at least one lowercase letter')
+            )
+        
+        if not any(c.isdigit() for c in value):
+            raise serializers.ValidationError(
+                _('Password must contain at least one digit')
+            )
+        
+        return value 

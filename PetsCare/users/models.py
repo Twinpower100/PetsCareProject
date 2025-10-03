@@ -1096,4 +1096,161 @@ def prevent_user_delete_with_active_sitter(sender, instance, **kwargs):
     if hasattr(instance, 'sitter') and instance.sitter.is_active:
         raise ValidationError(
             _('Cannot delete user with active sitter profile. Deactivate the sitter profile first.')
-        ) 
+        )
+
+
+class PasswordResetToken(models.Model):
+    """
+    Модель для токенов восстановления пароля.
+    
+    Обеспечивает безопасное восстановление пароля с:
+    - Временным токеном с истечением
+    - Одноразовым использованием
+    - Защитой от атак
+    """
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='password_reset_tokens',
+        verbose_name=_('User')
+    )
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        verbose_name=_('Reset Token'),
+        help_text=_('Unique token for password reset')
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_('Created At')
+    )
+    expires_at = models.DateTimeField(
+        verbose_name=_('Expires At'),
+        help_text=_('Token expiration time')
+    )
+    used = models.BooleanField(
+        default=False,
+        verbose_name=_('Used'),
+        help_text=_('Whether the token has been used')
+    )
+    used_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Used At'),
+        help_text=_('When the token was used')
+    )
+    ip_address = models.GenericIPAddressField(
+        null=True,
+        blank=True,
+        verbose_name=_('IP Address'),
+        help_text=_('IP address of the request')
+    )
+    user_agent = models.TextField(
+        null=True,
+        blank=True,
+        verbose_name=_('User Agent'),
+        help_text=_('User agent of the request')
+    )
+    
+    class Meta:
+        verbose_name = _('Password Reset Token')
+        verbose_name_plural = _('Password Reset Tokens')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token']),
+            models.Index(fields=['user', 'created_at']),
+            models.Index(fields=['expires_at']),
+        ]
+    
+    def __str__(self):
+        return f"Password reset token for {self.user.email} ({'used' if self.used else 'active'})"
+    
+    def is_valid(self):
+        """
+        Проверяет, действителен ли токен.
+        
+        Returns:
+            bool: True если токен действителен
+        """
+        return (
+            not self.used and
+            timezone.now() <= self.expires_at
+        )
+    
+    def mark_as_used(self):
+        """
+        Отмечает токен как использованный.
+        """
+        self.used = True
+        self.used_at = timezone.now()
+        self.save(update_fields=['used', 'used_at'])
+    
+    def save(self, *args, **kwargs):
+        """
+        Автоматически устанавливает время истечения при создании.
+        """
+        if not self.pk:  # Новый объект
+            from django.conf import settings
+            timeout = getattr(settings, 'PASSWORD_RESET_TIMEOUT', 1800)  # 30 минут по умолчанию
+            self.expires_at = timezone.now() + timedelta(seconds=timeout)
+        super().save(*args, **kwargs)
+    
+    @classmethod
+    def create_for_user(cls, user, ip_address=None, user_agent=None):
+        """
+        Создает новый токен восстановления для пользователя.
+        
+        Args:
+            user: Пользователь
+            ip_address: IP адрес запроса
+            user_agent: User agent запроса
+            
+        Returns:
+            PasswordResetToken: Созданный токен
+        """
+        import secrets
+        
+        # Генерируем уникальный токен
+        token = secrets.token_urlsafe(32)
+        
+        # Проверяем уникальность
+        while cls.objects.filter(token=token).exists():
+            token = secrets.token_urlsafe(32)
+        
+        return cls.objects.create(
+            user=user,
+            token=token,
+            ip_address=ip_address,
+            user_agent=user_agent
+        )
+    
+    @classmethod
+    def get_valid_token(cls, token):
+        """
+        Получает действительный токен по строке.
+        
+        Args:
+            token (str): Токен для поиска
+            
+        Returns:
+            PasswordResetToken or None: Действительный токен или None
+        """
+        try:
+            reset_token = cls.objects.get(token=token)
+            if reset_token.is_valid():
+                return reset_token
+        except cls.DoesNotExist:
+            pass
+        return None
+    
+    @classmethod
+    def cleanup_expired_tokens(cls):
+        """
+        Удаляет истекшие токены.
+        """
+        expired_tokens = cls.objects.filter(
+            expires_at__lt=timezone.now()
+        )
+        count = expired_tokens.count()
+        expired_tokens.delete()
+        return count 

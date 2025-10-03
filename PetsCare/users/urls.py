@@ -73,4 +73,8 @@ urlpatterns = [
     path('role-invites/pending/', api_views.RoleInvitePendingAPIView.as_view(), name='role-invites-pending'),
     path('role-invites/cleanup/', api_views.RoleInviteCleanupAPIView.as_view(), name='role-invites-cleanup'),
     path('role-termination/', api_views.RoleTerminationAPIView.as_view(), name='role-termination'),
+    
+    # Password reset endpoints
+    path('forgot-password/', api_views.ForgotPasswordAPIView.as_view(), name='forgot-password'),
+    path('reset-password/', api_views.ResetPasswordAPIView.as_view(), name='reset-password'),
 ] 

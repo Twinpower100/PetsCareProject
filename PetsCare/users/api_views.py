@@ -13,19 +13,22 @@ from .serializers import (
     UserRoleAssignmentSerializer,
     ProviderFormSerializer,
     ProviderFormApprovalSerializer,
-    ProviderAdminRegistrationSerializer
+    ProviderAdminRegistrationSerializer,
+    ForgotPasswordSerializer,
+    ResetPasswordSerializer
 )
 from google.oauth2 import id_token
 from google.auth.transport import requests
 from django.conf import settings
-from .models import UserType, ProviderForm, EmployeeSpecialization
+from .models import UserType, ProviderForm, EmployeeSpecialization, PasswordResetToken
+from providers.models import ManagerTransferInvite, EmployeeProvider
 from rest_framework.views import APIView
-from pets.models import Pet
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext_lazy as _
-from providers.models import Provider, Employee, EmployeeProvider, ManagerTransferInvite
+from providers.models import Provider, Employee
 from rest_framework.exceptions import PermissionDenied
 from sitters.models import PetSitting
+from pets.models import Pet
 from rest_framework.viewsets import ModelViewSet
 from django.utils import timezone
 from .models import RoleInvite
@@ -1235,4 +1238,173 @@ class CheckPhoneAPIView(APIView):
             'phone': phone,
             'exists': exists,
             'valid': valid
-        }) 
+        })
+
+
+class ForgotPasswordAPIView(generics.CreateAPIView):
+    """
+    API для запроса восстановления пароля.
+    
+    Отправляет email с токеном восстановления пароля.
+    Защищен от enumeration атак.
+    """
+    serializer_class = ForgotPasswordSerializer
+    permission_classes = [permissions.AllowAny]
+    
+    def create(self, request, *args, **kwargs):
+        """
+        Обрабатывает запрос восстановления пароля.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        email = serializer.validated_data['email']
+        
+        try:
+            # Получаем пользователя
+            user = User.objects.get(email=email)
+            
+            # Проверяем rate limiting
+            if self._is_rate_limited(user):
+                return Response({
+                    'message': _('Too many password reset attempts. Please try again later.'),
+                    'success': False
+                }, status=429)
+            
+            # Создаем токен восстановления
+            from .models import PasswordResetToken
+            reset_token = PasswordResetToken.create_for_user(
+                user=user,
+                ip_address=self._get_client_ip(request),
+                user_agent=request.META.get('HTTP_USER_AGENT', '')
+            )
+            
+            # Отправляем email
+            self._send_password_reset_email(user, reset_token)
+            
+            # Логируем попытку
+            logger.info(f"Password reset requested for user {user.email} from IP {self._get_client_ip(request)}")
+            
+        except User.DoesNotExist:
+            # Не раскрываем существование email для безопасности
+            pass
+        
+        # Всегда возвращаем успешный ответ для безопасности
+        return Response({
+            'message': _('If an account with this email exists, a password reset link has been sent.'),
+            'success': True
+        })
+    
+    def _is_rate_limited(self, user):
+        """
+        Проверяет rate limiting для пользователя.
+        """
+        from django.conf import settings
+        from django.utils import timezone
+        from datetime import timedelta
+        
+        max_attempts = getattr(settings, 'PASSWORD_RESET_MAX_ATTEMPTS', 3)
+        cooldown = getattr(settings, 'PASSWORD_RESET_COOLDOWN', 3600)
+        
+        # Проверяем количество попыток за последний час
+        since = timezone.now() - timedelta(seconds=cooldown)
+        attempts = PasswordResetToken.objects.filter(
+            user=user,
+            created_at__gte=since
+        ).count()
+        
+        return attempts >= max_attempts
+    
+    def _get_client_ip(self, request):
+        """
+        Получает IP адрес клиента.
+        """
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip
+    
+    def _send_password_reset_email(self, user, reset_token):
+        """
+        Отправляет email с токеном восстановления пароля.
+        """
+        from django.core.mail import send_mail
+        from django.conf import settings
+        from django.urls import reverse
+        
+        # Создаем ссылку для сброса пароля
+        reset_url = f"{settings.FRONTEND_URL}/reset-password/{reset_token.token}"
+        
+        subject = _('Password Reset Request - PetsCare')
+        message = f"""
+        Hello {user.first_name or user.email},
+        
+        You have requested to reset your password for your PetsCare account.
+        
+        To reset your password, please click the link below:
+        {reset_url}
+        
+        This link will expire in 30 minutes for security reasons.
+        
+        If you did not request this password reset, please ignore this email.
+        
+        Best regards,
+        PetsCare Team
+        """
+        
+        send_mail(
+            subject=subject,
+            message=message,
+            from_email=settings.DEFAULT_FROM_EMAIL,
+            recipient_list=[user.email],
+            fail_silently=False,
+        )
+
+
+class ResetPasswordAPIView(generics.CreateAPIView):
+    """
+    API для сброса пароля по токену.
+    
+    Позволяет установить новый пароль используя токен восстановления.
+    """
+    serializer_class = ResetPasswordSerializer
+    permission_classes = [permissions.AllowAny]
+    
+    def create(self, request, *args, **kwargs):
+        """
+        Обрабатывает сброс пароля.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        user = serializer.validated_data['user']
+        reset_token = serializer.validated_data['reset_token']
+        new_password = serializer.validated_data['new_password']
+        
+        # Устанавливаем новый пароль
+        user.set_password(new_password)
+        user.save()
+        
+        # Отмечаем токен как использованный
+        reset_token.mark_as_used()
+        
+        # Логируем успешный сброс
+        logger.info(f"Password reset successful for user {user.email} from IP {self._get_client_ip(request)}")
+        
+        return Response({
+            'message': _('Password has been reset successfully. You can now log in with your new password.'),
+            'success': True
+        })
+    
+    def _get_client_ip(self, request):
+        """
+        Получает IP адрес клиента.
+        """
+        x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if x_forwarded_for:
+            ip = x_forwarded_for.split(',')[0]
+        else:
+            ip = request.META.get('REMOTE_ADDR')
+        return ip 
