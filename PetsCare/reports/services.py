@@ -11,13 +11,14 @@
 """
 
 from django.db.models import Sum, Count, Q, Avg
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import List, Dict, Any, Optional
 from booking.models import Booking, BookingStatus, BookingCancellation
-from billing.models import Contract, Payment, Invoice, BillingManagerProvider
+from billing.models import Payment, Invoice, BillingManagerProvider
 from providers.models import Provider, Employee
 from users.models import User
 
@@ -29,9 +30,13 @@ class ReportService:
         self.user = user
     
     def get_provider_filter(self, providers: Optional[List[Provider]] = None) -> Q:
-        """Возвращает фильтр по провайдерам в зависимости от роли пользователя."""
+        """
+        Возвращает фильтр по провайдерам для моделей, связанных с Booking.
+        Используется для фильтрации Booking, Payment (через Booking) и т.д.
+        """
         if providers:
-            return Q(provider__in=providers)
+            # Фильтруем по провайдерам через provider_location или provider (legacy)
+            return Q(provider_location__provider__in=providers) | Q(provider__in=providers)
         
         if self.user.has_role('system_admin'):
             return Q()  # Все провайдеры
@@ -42,7 +47,8 @@ class ReportService:
                 employee_providers__employee__user=self.user,
                 employee_providers__is_manager=True
             )
-            return Q(provider__in=managed_providers)
+            # Фильтруем через provider_location или provider (legacy)
+            return Q(provider_location__provider__in=managed_providers) | Q(provider__in=managed_providers)
         
         if self.user.has_role('billing_manager'):
             # Получаем провайдеров, которыми управляет биллинг-менеджер
@@ -50,9 +56,39 @@ class ReportService:
                 billing_managers__billing_manager=self.user,
                 billing_managers__status='active'
             )
-            return Q(provider__in=managed_providers)
+            # Фильтруем через provider_location или provider (legacy)
+            return Q(provider_location__provider__in=managed_providers) | Q(provider__in=managed_providers)
         
-        return Q(provider__isnull=True)  # Пустой фильтр
+        return Q(provider__isnull=True, provider_location__isnull=True)  # Пустой фильтр
+    
+    def get_provider_queryset(self, providers: Optional[List[Provider]] = None):
+        """
+        Возвращает QuerySet провайдеров в зависимости от роли пользователя.
+        Используется для фильтрации Provider, Invoice и т.д.
+        """
+        queryset = Provider.objects.all()
+        
+        if providers:
+            return queryset.filter(id__in=[p.id for p in providers])
+        
+        if self.user.has_role('system_admin'):
+            return queryset  # Все провайдеры
+        
+        if self.user.has_role('provider_admin'):
+            # Получаем провайдеров, которыми управляет пользователь
+            return queryset.filter(
+                employee_providers__employee__user=self.user,
+                employee_providers__is_manager=True
+            )
+        
+        if self.user.has_role('billing_manager'):
+            # Получаем провайдеров, которыми управляет биллинг-менеджер
+            return queryset.filter(
+                billing_managers__billing_manager=self.user,
+                billing_managers__status='active'
+            )
+        
+        return queryset.none()  # Пустой queryset
 
 
 class IncomeReportService(ReportService):
@@ -82,14 +118,16 @@ class IncomeReportService(ReportService):
             provider_filter,
             status__name='completed',
             start_time__range=(start_date, end_date)
-        ).select_related('provider', 'service', 'employee')
+        ).select_related('provider', 'provider_location', 'provider_location__provider', 'service', 'employee')
         
         # Общая статистика
         total_income = bookings.aggregate(total=Sum('price'))['total'] or Decimal('0')
         total_bookings = bookings.count()
         
-        # Статистика по провайдерам
-        provider_stats = bookings.values('provider__name').annotate(
+        # Статистика по провайдерам (используем provider_location__provider__name или provider__name для legacy)
+        provider_stats = bookings.annotate(
+            provider_name=Coalesce('provider_location__provider__name', 'provider__name')
+        ).values('provider_name').annotate(
             income=Sum('price'),
             bookings_count=Count('id')
         ).order_by('-income')
@@ -129,40 +167,32 @@ class IncomeReportService(ReportService):
         }
     
     def _calculate_commissions(self, bookings) -> Dict[str, Any]:
-        """Рассчитывает комиссии по бронированиям."""
+        """
+        Рассчитывает комиссии по бронированиям.
+        Использует новый метод Provider.calculate_commission() вместо Contract.
+        """
         total_commission = Decimal('0')
         commission_details = []
         
         for booking in bookings:
-            # Получаем активный договор для провайдера
-            contract = Contract.objects.filter(
-                provider=booking.provider,
-                status='active',
-                start_date__lte=booking.start_time.date(),
-                end_date__gte=booking.start_time.date()
-            ).first()
+            # Получаем провайдера из provider_location или provider (legacy)
+            provider = booking.provider_location.provider if booking.provider_location else booking.provider
             
-            if contract:
-                # Получаем комиссию для услуги
-                commission = contract.commissions.filter(
-                    service=booking.service,
-                    is_active=True,
-                    start_date__lte=booking.start_time.date(),
-                    end_date__gte=booking.start_time.date()
-                ).first()
+            if provider and provider.has_active_offer_acceptance():
+                # Используем новый метод расчета комиссии
+                commission_amount = provider.calculate_commission(
+                    booking_amount=booking.price,
+                    booking_currency=booking.currency if hasattr(booking, 'currency') else None,
+                    provider_currency=provider.invoice_currency
+                )
                 
-                if commission:
-                    commission_amount = booking.price * (commission.rate / 100)
-                    if commission.fixed_amount:
-                        commission_amount = commission.fixed_amount
-                    
+                if commission_amount:
                     total_commission += commission_amount
                     commission_details.append({
                         'booking_id': booking.id,
-                        'provider': booking.provider.name,
-                        'service': booking.service.name,
+                        'provider': provider.name,
+                        'service': booking.service.name if booking.service else None,
                         'booking_amount': booking.price,
-                        'commission_rate': commission.rate,
                         'commission_amount': commission_amount
                     })
         
@@ -199,14 +229,16 @@ class EmployeeWorkloadReportService(ReportService):
             provider_filter,
             status__name='completed',
             start_time__range=(start_date, end_date)
-        ).select_related('employee', 'provider', 'service')
+        ).select_related('employee', 'provider', 'provider_location', 'provider_location__provider', 'service')
         
         # Статистика по сотрудникам
-        employee_stats = bookings.values(
+        employee_stats = bookings.annotate(
+            provider_name=Coalesce('provider_location__provider__name', 'provider__name')
+        ).values(
             'employee__user__first_name',
             'employee__user__last_name',
             'employee__user__email',
-            'provider__name'
+            'provider_name'
         ).annotate(
             total_hours=Sum(
                 (timezone.template_localtime('end_time') - timezone.template_localtime('start_time')).total_seconds() / 3600
@@ -267,39 +299,33 @@ class DebtReportService(ReportService):
         Returns:
             Словарь с данными отчета
         """
-        provider_filter = self.get_provider_filter(providers)
-        
-        # Получаем провайдеров с задолженностью
-        providers_with_debt = Provider.objects.filter(provider_filter)
+        # Получаем провайдеров с задолженностью (работаем напрямую с Provider)
+        providers_with_debt = self.get_provider_queryset(providers)
         
         debt_data = []
         total_debt = Decimal('0')
         
         for provider in providers_with_debt:
-            # Получаем активный договор
-            contract = Contract.objects.filter(
-                provider=provider,
-                status='active'
-            ).first()
-            
-            if contract:
-                # Рассчитываем задолженность
-                debt_info = contract.calculate_debt(start_date.date(), end_date.date())
+            # Проверяем, есть ли активная оферта
+            if provider.has_active_offer_acceptance():
+                # Рассчитываем задолженность через новый метод Provider
+                debt_info = provider.calculate_debt(start_date.date(), end_date.date())
                 
                 if debt_info['total_debt'] > 0:
                     # Получаем историю платежей
-                    payment_history = contract.payment_history.filter(
+                    payment_history = provider.payment_history.filter(
                         due_date__range=(start_date.date(), end_date.date())
                     ).order_by('-due_date')
                     
                     # Рассчитываем количество дней просрочки
-                    overdue_days = 0
-                    if debt_info['total_debt'] > 0:
-                        latest_payment = payment_history.filter(status='paid').first()
-                        if latest_payment:
-                            overdue_days = (timezone.now().date() - latest_payment.payment_date).days
-                        else:
-                            overdue_days = (timezone.now().date() - start_date.date()).days
+                    overdue_days = provider.get_max_overdue_days()
+                    
+                    # Получаем информацию об оферте
+                    active_acceptance = provider.document_acceptances.filter(
+                        document__document_type__code='global_offer',
+                        is_active=True
+                    ).first()
+                    offer_version = active_acceptance.document.version if active_acceptance and active_acceptance.document else None
                     
                     debt_data.append({
                         'provider_name': provider.name,
@@ -309,8 +335,8 @@ class DebtReportService(ReportService):
                         'payment_history': list(payment_history.values(
                             'amount', 'due_date', 'payment_date', 'status'
                         )),
-                        'contract_number': contract.number,
-                        'contract_status': contract.status
+                        'offer_version': offer_version,
+                        'provider_status': provider.activation_status
                     })
                     
                     total_debt += debt_info['total_debt']
@@ -358,10 +384,12 @@ class ActivityReportService(ReportService):
         bookings = Booking.objects.filter(
             provider_filter,
             start_time__range=(start_date, end_date)
-        ).select_related('provider', 'service')
+        ).select_related('provider', 'provider_location', 'provider_location__provider', 'service')
         
         # Статистика по учреждениям
-        provider_activity = bookings.values('provider__name').annotate(
+        provider_activity = bookings.annotate(
+            provider_name=Coalesce('provider_location__provider__name', 'provider__name')
+        ).values('provider_name').annotate(
             total_bookings=Count('id'),
             completed_bookings=Count('id', filter=Q(status__name='completed')),
             cancelled_bookings=Count('id', filter=Q(status__name__startswith='cancelled')),
@@ -423,17 +451,23 @@ class PaymentReportService(ReportService):
         Returns:
             Словарь с данными отчета
         """
-        provider_filter = self.get_provider_filter(providers)
+        # Получаем провайдеров для фильтрации
+        provider_queryset = self.get_provider_queryset(providers)
+        provider_ids = provider_queryset.values_list('id', flat=True)
         
         # Получаем платежи за период
-        payments = Payment.objects.filter(
-            booking__provider__in=Provider.objects.filter(provider_filter),
-            created_at__range=(start_date, end_date)
-        ).select_related('booking__provider', 'booking__service')
+        # Фильтруем через provider_location или provider (legacy)
+        from providers.models import ProviderLocation
+        location_ids = ProviderLocation.objects.filter(provider_id__in=provider_ids).values_list('id', flat=True)
         
-        # Получаем счета за период
+        payments = Payment.objects.filter(
+            Q(booking__provider_location__in=location_ids) | Q(booking__provider_id__in=provider_ids),
+            created_at__range=(start_date, end_date)
+        ).select_related('booking__provider', 'booking__provider_location', 'booking__provider_location__provider', 'booking__service')
+        
+        # Получаем счета за период (Invoice связан напрямую с Provider)
         invoices = Invoice.objects.filter(
-            provider_filter,
+            provider_id__in=provider_ids,
             issued_at__range=(start_date, end_date)
         ).select_related('provider', 'currency')
         
@@ -444,8 +478,10 @@ class PaymentReportService(ReportService):
             successful_payments=Count('id', filter=Q(status='completed'))
         ).order_by('-total_amount')
         
-        # Статистика по провайдерам
-        provider_payment_stats = payments.values('booking__provider__name').annotate(
+        # Статистика по провайдерам (через provider_location или provider legacy)
+        provider_payment_stats = payments.annotate(
+            provider_name=Coalesce('booking__provider_location__provider__name', 'booking__provider__name')
+        ).values('provider_name').annotate(
             total_received=Sum('amount', filter=Q(status='completed')),
             total_expected=Sum('amount'),
             payment_count=Count('id'),
@@ -507,23 +543,34 @@ class PaymentReportService(ReportService):
         
         expected_payments = []
         
-        # Получаем ожидаемые платежи по договорам
-        contracts = Contract.objects.filter(
-            provider_filter,
-            status='active'
-        )
+        # Получаем ожидаемые платежи по Invoice (новая система оферт)
+        from billing.models import Invoice
         
-        for contract in contracts:
-            payment_schedule = contract.get_payment_schedule(start_date.date(), end_date.date())
-            for payment in payment_schedule:
-                if payment['status'] == 'pending':
-                    expected_payments.append({
-                        'contract_number': contract.number,
-                        'provider_name': contract.provider.name,
-                        'amount': payment['amount'],
-                        'due_date': payment['due_date'],
-                        'description': payment.get('description', '')
-                    })
+        providers = self.get_provider_queryset(providers)
+        
+        # Получаем все неоплаченные Invoice за период
+        invoices = Invoice.objects.filter(
+            provider__in=providers,
+            status__in=['sent', 'overdue'],
+            issued_at__range=(start_date, end_date)
+        ).select_related('provider')
+        
+        for invoice in invoices:
+            # Получаем активную оферту для провайдера
+            active_acceptance = invoice.provider.document_acceptances.filter(
+                document__document_type__code='global_offer',
+                is_active=True
+            ).first()
+            offer_version = active_acceptance.document.version if active_acceptance and active_acceptance.document else None
+            
+            expected_payments.append({
+                'invoice_number': invoice.number,
+                'offer_version': offer_version,
+                'provider_name': invoice.provider.name,
+                'amount': invoice.amount,
+                'due_date': invoice.issued_at.date(),
+                'description': f"Invoice {invoice.number}"
+            })
         
         return sorted(expected_payments, key=lambda x: x['due_date'])
 
@@ -551,16 +598,23 @@ class CancellationReportService(ReportService):
         provider_filter = self.get_provider_filter(providers)
         
         # Получаем отмены за период
+        # Фильтруем через provider_location или provider (legacy)
+        from providers.models import ProviderLocation
+        provider_ids = Provider.objects.filter(provider_filter).values_list('id', flat=True)
+        location_ids = ProviderLocation.objects.filter(provider__in=provider_ids).values_list('id', flat=True)
+        
         cancellations = BookingCancellation.objects.filter(
-            booking__provider__in=Provider.objects.filter(provider_filter),
+            Q(booking__provider_location__in=location_ids) | Q(booking__provider__in=provider_ids),
             created_at__range=(start_date, end_date)
-        ).select_related('booking__provider', 'booking__service', 'cancelled_by')
+        ).select_related('booking__provider', 'booking__provider_location', 'booking__provider_location__provider', 'booking__service', 'cancelled_by')
         
         # Статистика по провайдерам
-        provider_cancellation_stats = cancellations.values('booking__provider__name').annotate(
+        provider_cancellation_stats = cancellations.annotate(
+            provider_name=Coalesce('booking__provider_location__provider__name', 'booking__provider__name')
+        ).values('provider_name').annotate(
             total_cancellations=Count('id'),
-            client_cancellations=Count('id', filter=Q(cancelled_by__roles__name='pet_owner')),
-            provider_cancellations=Count('id', filter=Q(cancelled_by__roles__name='employee')),
+            client_cancellations=Count('id', filter=Q(cancelled_by__user_types__name='pet_owner')),
+            provider_cancellations=Count('id', filter=Q(cancelled_by__user_types__name='employee')),
             abuse_cancellations=Count('id', filter=Q(is_abuse=True))
         ).order_by('-total_cancellations')
         
@@ -574,8 +628,8 @@ class CancellationReportService(ReportService):
             select={'month': "EXTRACT(month FROM created_at)"}
         ).values('month').annotate(
             total_cancellations=Count('id'),
-            client_cancellations=Count('id', filter=Q(cancelled_by__roles__name='pet_owner')),
-            provider_cancellations=Count('id', filter=Q(cancelled_by__roles__name='employee'))
+            client_cancellations=Count('id', filter=Q(cancelled_by__user_types__name='pet_owner')),
+            provider_cancellations=Count('id', filter=Q(cancelled_by__user_types__name='employee'))
         ).order_by('month')
         
         # Детализация отмен
@@ -583,7 +637,9 @@ class CancellationReportService(ReportService):
         for cancellation in cancellations:
             cancellation_details.append({
                 'booking_id': cancellation.booking.id,
-                'provider_name': cancellation.booking.provider.name,
+                'provider_name': (cancellation.booking.provider_location.provider.name 
+                                 if cancellation.booking.provider_location 
+                                 else cancellation.booking.provider.name),
                 'service_name': cancellation.booking.service.name,
                 'cancelled_by': f"{cancellation.cancelled_by.first_name} {cancellation.cancelled_by.last_name}",
                 'reason': cancellation.reason,

@@ -493,7 +493,7 @@ class SecurityPolicy(models.Model):
         
         # Проверить роли
         if self.applicable_roles:
-            user_roles = [role.name for role in user.roles.all()]
+            user_roles = [role.name for role in user.user_types.all()]
             if not any(role in user_roles for role in self.applicable_roles):
                 return False
         

@@ -20,9 +20,6 @@ URL routes for the users module.
 
 from django.urls import path
 from . import api_views
-from .api_views import (
-    UserSelfDeleteAPIView
-)
 from rest_framework_simplejwt.views import TokenRefreshView, TokenBlacklistView
 
 # Имя приложения для использования в URL
@@ -31,14 +28,18 @@ app_name = 'users'
 # API маршруты (возвращаем по одному)
 urlpatterns = [
     # Основные endpoints согласно ФД
-    path('api/register/', api_views.UserRegistrationAPIView.as_view(), name='api_register'),
-    path('api/login/', api_views.UserLoginAPIView.as_view(), name='api_login'),
-    path('api/profile/', api_views.UserProfileAPIView.as_view(), name='api_profile'),
-    path('api/google-auth/', api_views.GoogleAuthAPIView.as_view(), name='api_google_auth'),
-    path('api/check-email/', api_views.CheckEmailAPIView.as_view(), name='api_check_email'),
-    path('api/check-phone/', api_views.CheckPhoneAPIView.as_view(), name='api_check_phone'),
-    path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
-    path('api/token/blacklist/', TokenBlacklistView.as_view(), name='token_blacklist'),
+    path('register/', api_views.UserRegistrationAPIView.as_view(), name='api_register'),
+    path('login/', api_views.UserLoginAPIView.as_view(), name='api_login'),
+    path('profile/', api_views.UserProfileAPIView.as_view(), name='api_profile'),
+    path('google-auth/', api_views.GoogleAuthAPIView.as_view(), name='api_google_auth'),
+    path('check-email/', api_views.CheckEmailAPIView.as_view(), name='api_check_email'),
+    path('check-phone/', api_views.CheckPhoneAPIView.as_view(), name='api_check_phone'),
+    path('check-provider-name/', api_views.CheckProviderNameAPIView.as_view(), name='api_check_provider_name'),
+    path('check-provider-email/', api_views.CheckProviderEmailAPIView.as_view(), name='api_check_provider_email'),
+    path('check-provider-phone/', api_views.CheckProviderPhoneAPIView.as_view(), name='api_check_provider_phone'),
+    path('token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('token/blacklist/', TokenBlacklistView.as_view(), name='token_blacklist'),
+    path('logout/', TokenBlacklistView.as_view(), name='logout'),
     
     # Управление ролями согласно ФД
     path('assign-role/', api_views.UserRoleAssignmentAPIView.as_view(), name='assign-role'),
@@ -52,16 +53,15 @@ urlpatterns = [
     path('employees/deactivate/<int:employee_id>/', 
          api_views.EmployeeDeactivationAPIView.as_view(), 
          name='deactivate-employee'),
-    path('me/delete/', api_views.UserSelfDeleteAPIView.as_view(), name='user-self-delete'),
     
     # Поиск по геолокации согласно ФД
     path('search/distance/', api_views.UserSearchByDistanceAPIView.as_view(), name='user-search-distance'),
     path('search/sitters/distance/', api_views.SitterSearchByDistanceAPIView.as_view(), name='sitter-search-distance'),
     
     # Массовые операции согласно ФД
-    path('api/users/bulk-role-assignment/', api_views.BulkRoleAssignmentAPIView.as_view(), name='bulk-role-assignment'),
-    path('api/users/bulk-deactivation/', api_views.BulkUserDeactivationAPIView.as_view(), name='bulk-user-deactivation'),
-    path('api/users/bulk-activation/', api_views.BulkUserActivationAPIView.as_view(), name='bulk-user-activation'),
+    path('users/bulk-role-assignment/', api_views.BulkRoleAssignmentAPIView.as_view(), name='bulk-role-assignment'),
+    path('users/bulk-deactivation/', api_views.BulkUserDeactivationAPIView.as_view(), name='bulk-user-deactivation'),
+    path('users/bulk-activation/', api_views.BulkUserActivationAPIView.as_view(), name='bulk-user-activation'),
     
     # Role Invite URLs согласно ФД
     path('role-invites/', api_views.RoleInviteViewSet.as_view(), name='role-invites'),
@@ -77,4 +77,13 @@ urlpatterns = [
     # Password reset endpoints
     path('forgot-password/', api_views.ForgotPasswordAPIView.as_view(), name='forgot-password'),
     path('reset-password/', api_views.ResetPasswordAPIView.as_view(), name='reset-password'),
+    
+    # Account deactivation endpoint
+    path('deactivate-account/', api_views.AccountDeactivationView.as_view(), name='deactivate-account'),
+    
+    # New API endpoints for deactivation algorithm
+    path('user-roles/', api_views.UserRolesView.as_view(), name='user-roles'),
+    path('user-sittings/', api_views.UserSittingsView.as_view(), name='user-sittings'),
+    path('user-pets/', api_views.UserPetsView.as_view(), name='user-pets'),
+    path('remove-role/', api_views.RemoveUserRoleView.as_view(), name='remove-role'),
 ] 

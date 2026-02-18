@@ -11,13 +11,15 @@ from django.urls import reverse
 from rest_framework.test import APITestCase
 from rest_framework import status
 from decimal import Decimal
+from unittest import skip
 from geolocation.models import Address
 from providers.models import Provider
-from catalog.models import Service, ServiceCategory
+from catalog.models import Service
 
 User = get_user_model()
 
 
+@skip("Deprecated distance search endpoint removed")
 class ProviderSearchByDistanceAPITest(APITestCase):
     """
     Тесты для API поиска провайдеров по расстоянию.
@@ -205,6 +207,7 @@ class ProviderSearchByDistanceAPITest(APITestCase):
         self.assertEqual(len(response.data), 0)
 
 
+@skip("Deprecated sitter distance search endpoint removed")
 class SitterAdvancedSearchByDistanceAPITest(APITestCase):
     """
     Тесты для расширенного API поиска ситтеров по расстоянию.

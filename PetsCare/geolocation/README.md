@@ -8,15 +8,18 @@ Module for working with addresses and geolocation in the PetsCare system. Provid
 
 #### Address
 Structured address model with components:
-- `street_number` - house number
-- `route` - street
-- `locality` - city
-- `administrative_area_level_1` - region/state
-- `administrative_area_level_2` - district
+- `house_number` - house number
+- `street` - street
+- `city` - city
+- `region` - region/state
+- `district` - district
 - `country` - country
 - `postal_code` - postal code
 - `formatted_address` - formatted address
 - `latitude`, `longitude` - coordinates
+- `point` - PostGIS point
+- `is_valid` - validation result
+- `is_geocoded` - geocoding flag
 - `is_validated` - validation flag
 - `validation_status` - validation status
 
@@ -24,20 +27,19 @@ Structured address model with components:
 Address validation results:
 - `address` - link to address
 - `is_valid` - validation result
-- `formatted_address` - formatted address
-- `latitude`, `longitude` - coordinates
 - `confidence_score` - confidence level
-- `validation_details` - validation details
+- `validation_errors` - validation errors list
+- `suggestions` - suggested corrections
+- `api_provider` - API provider
 - `api_response` - API response
 
 #### AddressCache
 Caching of geocoding results:
-- `query_hash` - query hash
-- `query_text` - query text
-- `formatted_address` - formatted address
-- `latitude`, `longitude` - coordinates
-- `api_response` - API response
+- `cache_key` - cache key hash
+- `address_data` - cached address data
+- `api_provider` - API provider
 - `expires_at` - expiration time
+- `hit_count` - cache hits count
 
 ### 2. Services
 
@@ -58,25 +60,25 @@ Service for working with Google Maps API:
 
 #### AddressViewSet
 CRUD operations with addresses:
-- `GET /api/addresses/` - list of addresses
-- `POST /api/addresses/` - creating address
-- `GET /api/addresses/{id}/` - getting address
-- `PUT /api/addresses/{id}/` - updating address
-- `DELETE /api/addresses/{id}/` - deleting address
-- `POST /api/addresses/{id}/validate/` - address validation
-- `GET /api/addresses/statistics/` - statistics
+- `GET /api/v1/geolocation/addresses/` - list of addresses
+- `POST /api/v1/geolocation/addresses/` - creating address
+- `GET /api/v1/geolocation/addresses/{id}/` - getting address
+- `PUT /api/v1/geolocation/addresses/{id}/` - updating address
+- `DELETE /api/v1/geolocation/addresses/{id}/` - deleting address
+- `POST /api/v1/geolocation/addresses/{id}/validate/` - address validation
+- `GET /api/v1/geolocation/addresses/statistics/` - statistics
 
 #### AddressAutocompleteView
 Address autocomplete:
-- `POST /api/autocomplete/` - autocomplete
+- `POST /api/v1/geolocation/autocomplete/` - autocomplete
 
 #### AddressGeocodeView
 Geocoding addresses:
-- `POST /api/geocode/` - geocoding
+- `POST /api/v1/geolocation/geocode/` - geocoding
 
 #### AddressReverseGeocodeView
 Reverse geocoding:
-- `POST /api/reverse-geocode/` - reverse geocoding
+- `POST /api/v1/geolocation/reverse-geocode/` - reverse geocoding
 
 ### 4. Forms
 
@@ -177,19 +179,20 @@ from geolocation.services import AddressValidationService
 
 # Creating address
 address = Address.objects.create(
-    street_number='123',
-    route='Test Street',
-    locality='Test City',
+    house_number='123',
+    street='Test Street',
+    city='Test City',
     country='Test Country'
 )
 
 # Address validation
 service = AddressValidationService()
-result = service.validate_address(address)
+is_valid = service.validate_address(address)
 
-if result.is_valid:
-    print(f"Address is valid: {result.formatted_address}")
-    print(f"Coordinates: {result.latitude}, {result.longitude}")
+if is_valid:
+    address.refresh_from_db()
+    print(f"Address is valid: {address.formatted_address}")
+    print(f"Coordinates: {address.latitude}, {address.longitude}")
 ```
 
 ### 2. Geocoding

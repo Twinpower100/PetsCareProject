@@ -2,7 +2,7 @@ from django.core.management.base import BaseCommand
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from notifications.tasks import send_debt_reminder_task
-from billing.models import Debt
+from django.apps import apps
 import logging
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,12 @@ class Command(BaseCommand):
         cutoff_date = timezone.now() - timezone.timedelta(days=days_overdue)
         
         # Получаем задолженности, которые соответствуют критериям
+        try:
+            Debt = apps.get_model('billing', 'Debt')
+        except LookupError:
+            self.stdout.write(self.style.ERROR('Debt model not found. Command aborted.'))
+            return
+        
         debts = Debt.objects.filter(
             amount__gte=min_amount,
             created_at__lte=cutoff_date,

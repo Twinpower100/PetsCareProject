@@ -116,7 +116,9 @@ class Address(models.Model):
     formatted_address = models.TextField(_('Formatted Address'), blank=True)
     
     # Координаты
-    point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
+    point = gis_models.PointField(srid=4326, verbose_name=_('Point'), null=True, blank=True)
+    latitude = models.DecimalField(_('Latitude'), max_digits=10, decimal_places=7, null=True, blank=True, help_text=_('Latitude coordinate'))
+    longitude = models.DecimalField(_('Longitude'), max_digits=10, decimal_places=7, null=True, blank=True, help_text=_('Longitude coordinate'))
     
     # Статус валидации
     VALIDATION_STATUS_CHOICES = [
@@ -134,6 +136,7 @@ class Address(models.Model):
     
     # Флаги состояния
     is_valid = models.BooleanField(_('Is Valid'), default=False)
+    is_validated = models.BooleanField(_('Is Validated'), default=False, help_text=_('Legacy field for backward compatibility'))
     is_geocoded = models.BooleanField(_('Is Geocoded'), default=False)
     
     # Точность геокодирования
@@ -168,18 +171,13 @@ class Address(models.Model):
             return self.point.coords
         return None
 
-    @property
-    def is_valid(self):
-        """Проверяет, валиден ли адрес"""
-        return self.validation_status == 'valid'
-
-    @property
-    def is_geocoded(self):
-        """Проверяет, определены ли координаты"""
-        return self.point is not None
-
     def get_full_address(self):
         """Возвращает полный адрес в строковом формате"""
+        # Если есть formatted_address, используем его
+        if self.formatted_address:
+            return self.formatted_address
+            
+        # Иначе собираем из отдельных полей
         parts = []
         if self.street and self.house_number:
             parts.append(f"{self.street}, {self.house_number}")

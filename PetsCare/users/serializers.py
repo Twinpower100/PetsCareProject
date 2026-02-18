@@ -50,21 +50,7 @@ class UserSerializer(serializers.ModelSerializer):
         except (ValueError, TypeError):
             return None
         
-        # Пытаемся получить координаты пользователя
-        # Сначала проверяем основной адрес используя PostGIS
-        if hasattr(obj, 'address') and obj.address and obj.address.point:
-            from django.contrib.gis.geos import Point
-            search_point = Point(search_lon, search_lat)
-            distance = obj.address.point.distance(search_point) * 111.32  # Convert to km
-            return round(distance, 2) if distance is not None else None
-        
-        # Если нет основного адреса, проверяем адрес провайдера
-        if hasattr(obj, 'provider_address') and obj.provider_address and obj.provider_address.point:
-            from django.contrib.gis.geos import Point
-            search_point = Point(search_lon, search_lat)
-            distance = obj.provider_address.point.distance(search_point) * 111.32  # Convert to km
-            return round(distance, 2) if distance is not None else None
-        
+        # У пользователя нет привязанного PointField для расчетов расстояния
         return None
 
     class Meta:
@@ -120,17 +106,31 @@ class GoogleAuthSerializer(serializers.Serializer):
     def validate(self, attrs):
         """
         Обменивает authorization code на access token и получает данные пользователя.
+        Использует SocialApp из БД для получения credentials (единый подход).
         """
         code = attrs.get('token')  # Это authorization code
         try:
             import requests
-            from django.conf import settings
+            from allauth.socialaccount.models import SocialApp
+            
+            # Получаем SocialApp для фронтенда из БД (единый подход с django-allauth)
+            try:
+                social_app = SocialApp.objects.get(
+                    provider='google',
+                    name='PetsCare Frontend'
+                )
+                client_id = social_app.client_id
+                client_secret = social_app.secret
+            except SocialApp.DoesNotExist:
+                raise serializers.ValidationError(
+                    _('SocialApp "PetsCare Frontend" not found in database. Please configure it in Django admin.')
+                )
             
             # Обмениваем authorization code на access token
             token_url = 'https://oauth2.googleapis.com/token'
             token_data = {
-                'client_id': settings.GOOGLE_CLIENT_ID,
-                'client_secret': settings.GOOGLE_CLIENT_SECRET,
+                'client_id': client_id,
+                'client_secret': client_secret,
                 'code': code,
                 'grant_type': 'authorization_code',
                 'redirect_uri': 'postmessage'  # Для OAuth 2.0 с authorization code
@@ -175,13 +175,19 @@ class GoogleAuthSerializer(serializers.Serializer):
             
         except requests.RequestException as e:
             print(f"GoogleAuthSerializer: Google API error: {str(e)}")
-            raise serializers.ValidationError(f'Google API error: {str(e)}')
+            raise serializers.ValidationError(
+                _('Google API error: {error}').format(error=str(e))
+            )
         except ValueError as e:
             print(f"GoogleAuthSerializer: Invalid Google response: {str(e)}")
-            raise serializers.ValidationError(f'Invalid Google response: {str(e)}')
+            raise serializers.ValidationError(
+                _('Invalid Google response: {error}').format(error=str(e))
+            )
         except Exception as e:
             print(f"GoogleAuthSerializer: Token exchange error: {str(e)}")
-            raise serializers.ValidationError(f'Token exchange error: {str(e)}')
+            raise serializers.ValidationError(
+                _('Token exchange error: {error}').format(error=str(e))
+            )
         
         return attrs 
 
@@ -190,12 +196,184 @@ class ProviderFormSerializer(serializers.ModelSerializer):
     """
     Сериализатор для формы учреждения (провайдера).
     """
+    selected_categories = serializers.SerializerMethodField()
+    offer_accepted_ip = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    
+    def get_selected_categories(self, obj):
+        """Возвращает ID выбранных категорий"""
+        if hasattr(obj, 'selected_categories'):
+            return list(obj.selected_categories.values_list('id', flat=True))
+        return []
+    
+    def to_internal_value(self, data):
+        """Обрабатывает входящие данные для selected_categories"""
+        # Сохраняем selected_categories из входящих данных
+        if 'selected_categories' in data:
+            if hasattr(data, 'getlist'):
+                self._selected_categories_data = data.getlist('selected_categories')
+            else:
+                selected = data.get('selected_categories')
+                if isinstance(selected, str):
+                    self._selected_categories_data = [item.strip() for item in selected.split(',') if item.strip()]
+                else:
+                    self._selected_categories_data = selected
+        return super().to_internal_value(data)
+    
+    def _validate_vat_rate_for_country(self, country):
+        """
+        Проверяет, есть ли ставка НДС для выбранной страны.
+        """
+        if not country:
+            return
+        
+        # Проверяем наличие ставки НДС в таблице VAT Rates
+        from billing.models import VATRate
+        country_code = getattr(country, 'code', str(country))
+        if VATRate.get_rate_for_country(country_code) is None:
+            raise serializers.ValidationError({
+                'country': _(
+                    'VAT rate for the selected country is not configured. '
+                    'Please contact support to request onboarding for this country.'
+                )
+            })
+    
+    def create(self, validated_data):
+        """Создает объект с выбранными категориями"""
+        selected_categories = getattr(self, '_selected_categories_data', [])
+        validated_data.pop('selected_categories', None)  # Убираем из validated_data
+        
+        # Валидация выбранных категорий
+        if not selected_categories:
+            raise serializers.ValidationError({
+                'selected_categories': _('At least one service category must be selected.')
+            })
+        
+        # Проверяем, что все категории существуют и имеют уровень 0
+        from catalog.models import Service
+        try:
+            categories = Service.objects.filter(id__in=selected_categories, level=0)
+            if categories.count() != len(selected_categories):
+                invalid_ids = set(selected_categories) - set(categories.values_list('id', flat=True))
+                raise serializers.ValidationError({
+                    'selected_categories': _('Invalid category IDs: {ids}. Only level 0 categories are allowed.').format(ids=list(invalid_ids))
+                })
+        except Exception as e:
+            raise serializers.ValidationError({
+                'selected_categories': _('Error validating categories: {error}').format(error=str(e))
+            })
+        
+        # Проверяем, что страна поддерживается (есть VAT Rate)
+        self._validate_vat_rate_for_country(validated_data.get('country'))
+        
+        # Проверяем уникальность email провайдера
+        provider_email = validated_data.get('provider_email')
+        if provider_email:
+            from providers.models import Provider
+            if Provider.objects.filter(email=provider_email).exists():
+                raise serializers.ValidationError({
+                    'provider_email': _('A provider with this email already exists.')
+                })
+        
+        # Проверяем уникальность телефона провайдера
+        provider_phone = validated_data.get('provider_phone')
+        if provider_phone:
+            from providers.models import Provider
+            if Provider.objects.filter(phone_number=str(provider_phone)).exists():
+                raise serializers.ValidationError({
+                    'provider_phone': _('A provider with this phone number already exists.')
+                })
+        
+        # Валидируем адрес через Google Maps API и сохраняем нормализованный адрес
+        provider_address = validated_data.get('provider_address')
+        if provider_address:
+            try:
+                from geolocation.services import GoogleMapsService
+                maps_service = GoogleMapsService()
+                geocode_result = maps_service.geocode_address(provider_address.strip())
+                
+                if geocode_result:
+                    # Сохраняем нормализованный адрес от Google Maps API
+                    formatted_address = geocode_result.get('formatted_address')
+                    if formatted_address:
+                        validated_data['provider_address'] = formatted_address
+            except Exception:
+                # Если валидация не удалась, оставляем исходный адрес
+                # (не прерываем создание формы, так как адрес может быть валидирован позже)
+                pass
+        
+        instance = super().create(validated_data)
+        
+        # Устанавливаем выбранные категории
+        instance.selected_categories.set(categories)
+        
+        return instance
+    
+    def update(self, instance, validated_data):
+        """Обновляет объект с выбранными категориями"""
+        selected_categories = getattr(self, '_selected_categories_data', [])
+        validated_data.pop('selected_categories', None)  # Убираем из validated_data
+        
+        # Проверяем, что страна поддерживается (есть VAT Rate)
+        country = validated_data.get('country', instance.country)
+        self._validate_vat_rate_for_country(country)
+        
+        # Валидируем адрес через Google Maps API и сохраняем нормализованный адрес
+        provider_address = validated_data.get('provider_address')
+        if provider_address:
+            try:
+                from geolocation.services import GoogleMapsService
+                maps_service = GoogleMapsService()
+                geocode_result = maps_service.geocode_address(provider_address.strip())
+                
+                if geocode_result:
+                    # Сохраняем нормализованный адрес от Google Maps API
+                    formatted_address = geocode_result.get('formatted_address')
+                    if formatted_address:
+                        validated_data['provider_address'] = formatted_address
+            except Exception:
+                # Если валидация не удалась, оставляем исходный адрес
+                pass
+        
+        # Проверяем уникальность email провайдера (исключая текущий экземпляр)
+        provider_email = validated_data.get('provider_email')
+        if provider_email and provider_email != instance.provider_email:
+            from providers.models import Provider
+            if Provider.objects.filter(email=provider_email).exists():
+                raise serializers.ValidationError({
+                    'provider_email': _('A provider with this email already exists.')
+                })
+        
+        # Проверяем уникальность телефона провайдера (исключая текущий экземпляр)
+        provider_phone = validated_data.get('provider_phone')
+        if provider_phone and str(provider_phone) != str(instance.provider_phone):
+            from providers.models import Provider
+            if Provider.objects.filter(phone_number=str(provider_phone)).exists():
+                raise serializers.ValidationError({
+                    'provider_phone': _('A provider with this phone number already exists.')
+                })
+        
+        instance = super().update(instance, validated_data)
+        
+        # Обновляем выбранные категории
+        if selected_categories is not None:
+            from catalog.models import Service
+            categories = Service.objects.filter(id__in=selected_categories, level=0)
+            instance.selected_categories.set(categories)
+        
+        return instance
+    
     class Meta:
         model = ProviderForm
         fields = [
-            'id', 'provider_name', 'provider_address', 
-            'provider_phone', 'documents', 'status',
-            'created_at', 'updated_at', 'approved_at'
+            'id', 'provider_name', 'provider_address',
+            'provider_phone', 'provider_email', 'documents', 'status',
+            'selected_categories', 'created_at', 'updated_at', 'approved_at',
+            'country', 'organization_type', 'director_name',
+            'registration_number', 'tax_id', 'kpp',
+            'is_vat_payer', 'vat_number', 'invoice_currency',
+            'iban', 'swift_bic', 'bank_name',
+            'offer_accepted', 'offer_accepted_at', 'offer_accepted_ip',
+            'offer_accepted_user_agent'
         ]
         read_only_fields = ['status', 'created_at', 'updated_at', 'approved_at']
 
@@ -590,3 +768,24 @@ class ResetPasswordSerializer(serializers.Serializer):
             )
         
         return value 
+
+
+class AccountDeactivationSerializer(serializers.Serializer):
+    """
+    Сериализатор для деактивации аккаунта пользователя.
+    Обрабатывает запрос на деактивацию с подтверждением.
+    """
+    confirm_deactivation = serializers.BooleanField(
+        required=True,
+        help_text=_('Confirmation that user wants to deactivate account')
+    )
+    
+    def validate_confirm_deactivation(self, value):
+        """
+        Проверяет, что пользователь подтвердил деактивацию.
+        """
+        if not value:
+            raise serializers.ValidationError(
+                _('You must confirm account deactivation')
+            )
+        return value

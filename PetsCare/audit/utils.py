@@ -192,7 +192,7 @@ def audit_role_changes():
                 from users.models import User
                 try:
                     user = User.objects.get(id=user_id)
-                    old_roles = list(user.roles.all().values_list('name', flat=True))
+                    old_roles = list(user.user_types.all().values_list('name', flat=True))
                 except User.DoesNotExist:
                     old_roles = []
             else:
@@ -205,7 +205,7 @@ def audit_role_changes():
             if user_id:
                 try:
                     user = User.objects.get(id=user_id)
-                    new_roles = list(user.roles.all().values_list('name', flat=True))
+                    new_roles = list(user.user_types.all().values_list('name', flat=True))
                     
                     # Аудируем изменение ролей
                     if old_roles != new_roles:

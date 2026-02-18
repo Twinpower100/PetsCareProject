@@ -1,4 +1,5 @@
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 from decimal import Decimal
 from billing.models import BlockingRule, ProviderBlocking, BlockingNotification
 from providers.models import Provider
@@ -54,8 +55,10 @@ def check_and_block_providers():
                     notification = BlockingNotification.objects.create(
                         provider_blocking=blocking,
                         notification_type='blocking_activated',
-                        subject='Учреждение заблокировано',
-                        message=f'Учреждение {provider.name} заблокировано по задолженности.'
+                        subject=_('Provider blocked'),
+                        message=_('Provider {provider} was blocked due to outstanding debt.').format(
+                            provider=provider.name
+                        )
                     )
                 break  # Применяем только одно правило
 
@@ -72,8 +75,10 @@ def check_and_block_providers():
                 notification = BlockingNotification.objects.create(
                     provider_blocking=blocking,
                     notification_type='blocking_resolved',
-                    subject='Блокировка снята',
-                    message=f'Блокировка учреждения {provider.name} снята после погашения долга.'
+                    subject=_('Blocking resolved'),
+                    message=_('Blocking for provider {provider} was resolved after debt repayment.').format(
+                        provider=provider.name
+                    )
                 )
     
     # Логируем завершение проверки
@@ -86,7 +91,7 @@ def get_provider_debt_info(provider):
     """
     # Пример: ищем максимальную просрочку и сумму по истории платежей
     overdue_payments = PaymentHistory.objects.filter(
-        contract__provider=provider,
+        provider=provider,
         status='overdue'
     )
     if not overdue_payments.exists():
@@ -110,10 +115,10 @@ def is_rule_applicable(rule, provider):
     """
     if not rule.is_mass_rule:
         return True
-    if rule.regions and provider.region_id not in rule.regions:
-        return False
+    if rule.regions:
+        if not provider.structured_address or provider.structured_address.region not in rule.regions:
+            return False
     if rule.service_types:
-        provider_service_types = provider.services.values_list('service_type_id', flat=True)
-        if not set(provider_service_types) & set(rule.service_types):
+        if not provider.locations.filter(available_services__id__in=rule.service_types).exists():
             return False
     return True 

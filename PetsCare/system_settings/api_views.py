@@ -75,16 +75,16 @@ class SystemSettingsAPIView(APIView):
                 # Логируем изменение настроек
                 UserAction.objects.create(
                     user=request.user,
-                    action='settings_updated',
-                    resource_type='system',
-                    resource_id=0,
-                    resource_name='System Settings',
+                    action_type='update',
                     details={
+                        'resource': 'system_settings',
                         'updated_settings': data,
                         'updated_by': request.user.email
                     },
                     ip_address=request.META.get('REMOTE_ADDR'),
-                    user_agent=request.META.get('HTTP_USER_AGENT')
+                    user_agent=request.META.get('HTTP_USER_AGENT'),
+                    http_method=request.method,
+                    url=request.build_absolute_uri()
                 )
 
                 # Очищаем кэш настроек
@@ -171,22 +171,25 @@ class FeatureSettingsAPIView(APIView):
             # Логируем изменение функции
             UserAction.objects.create(
                 user=request.user,
-                action='feature_toggled',
-                resource_type='system',
-                resource_id=0,
-                resource_name=f'Feature: {feature}',
+                action_type='system',
                 details={
+                    'resource': 'feature_toggle',
                     'feature': feature,
                     'enabled': enabled,
                     'reason': reason,
                     'toggled_by': request.user.email
                 },
                 ip_address=request.META.get('REMOTE_ADDR'),
-                user_agent=request.META.get('HTTP_USER_AGENT')
+                user_agent=request.META.get('HTTP_USER_AGENT'),
+                http_method=request.method,
+                url=request.build_absolute_uri()
             )
 
             return Response({
-                'message': f'Feature {feature} {"enabled" if enabled else "disabled"} successfully',
+                'message': _('Feature {feature} {status} successfully').format(
+                    feature=feature,
+                    status=_('enabled') if enabled else _('disabled')
+                ),
                 'feature': feature,
                 'enabled': enabled
             })

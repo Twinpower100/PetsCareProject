@@ -443,8 +443,8 @@ def _fallback_batch_distance_calculation(queryset, center_lat: float, center_lon
             if point is None:
                 if hasattr(obj, 'address') and obj.address:
                     point = obj.address.point
-                elif hasattr(obj, 'provider_address') and obj.provider_address:
-                    point = obj.provider_address.point
+                elif hasattr(obj, 'structured_address') and obj.structured_address:
+                    point = obj.structured_address.point
             
             if point is not None:
                 # Используем координаты из Point объекта
@@ -481,8 +481,9 @@ def create_geospatial_index_hint() -> str:
     -- GiST индекс для PointField в модели UserLocation
     CREATE INDEX idx_user_location_point_gist ON geolocation_userlocation USING GIST (point);
     
-    -- GiST индекс для PointField в модели Provider
-    CREATE INDEX idx_provider_point_gist ON providers_provider USING GIST (point);
+    -- GiST индекс для PointField в модели ProviderLocation (через structured_address)
+    CREATE INDEX idx_provider_location_address_point_gist ON geolocation_address USING GIST (point)
+    WHERE id IN (SELECT structured_address_id FROM providers_providerlocation WHERE structured_address_id IS NOT NULL);
     
     -- Составные индексы для оптимизации запросов с дополнительными условиями
     
@@ -490,9 +491,9 @@ def create_geospatial_index_hint() -> str:
     CREATE INDEX idx_address_point_status ON geolocation_address USING GIST (point) 
     WHERE validation_status = 'valid';
     
-    -- Provider с активностью
-    CREATE INDEX idx_provider_point_active ON providers_provider USING GIST (point) 
-    WHERE is_active = true;
+    -- ProviderLocation с активностью (через structured_address)
+    CREATE INDEX idx_provider_location_active ON providers_providerlocation (is_active)
+    WHERE is_active = true AND structured_address_id IS NOT NULL;
     
     -- UserLocation с источником
     CREATE INDEX idx_user_location_point_source ON geolocation_userlocation USING GIST (point) 
@@ -512,4 +513,5 @@ def create_geospatial_index_hint() -> str:
     ANALYZE geolocation_locationhistory;
     ANALYZE geolocation_userlocation;
     ANALYZE providers_provider;
+    ANALYZE providers_providerlocation;
     """ 

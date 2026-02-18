@@ -39,8 +39,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
     
     Поддерживаемые фильтры:
     - category_id - фильтрация по ID категории
-    - min_price - минимальная цена
-    - max_price - максимальная цена
+    - parent_id - фильтрация по ID родительской категории
     
     Поля для поиска:
     - name - название услуги
@@ -48,16 +47,16 @@ class ServiceViewSet(viewsets.ModelViewSet):
     
     Поля для сортировки:
     - name - по названию
-    - price - по цене
-    - duration - по длительности
+    - hierarchy_order - по порядку в иерархии
+    - level - по уровню в иерархии
     """
     queryset = Service.objects.all()
     serializer_class = ServiceSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['category_id']
+    filterset_fields = ['parent_id', 'level']
     search_fields = ['name', 'description']
-    ordering_fields = ['name', 'price', 'duration']
+    ordering_fields = ['name', 'hierarchy_order', 'level']
 
     def get_queryset(self):
         """
@@ -76,19 +75,10 @@ class ServiceViewSet(viewsets.ModelViewSet):
         
         queryset = Service.objects.all()
         
-        # Фильтрация по категории
+        # Фильтрация по родительской категории
         category_id = self.request.query_params.get('category_id')
         if category_id:
-            queryset = queryset.filter(category_id=category_id)
-        
-        # Фильтрация по ценовому диапазону
-        min_price = self.request.query_params.get('min_price')
-        max_price = self.request.query_params.get('max_price')
-        
-        if min_price:
-            queryset = queryset.filter(price__gte=min_price)
-        if max_price:
-            queryset = queryset.filter(price__lte=max_price)
+            queryset = queryset.filter(parent_id=category_id)
             
         return queryset
 
@@ -100,8 +90,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
         Поддерживаемые параметры поиска:
         - name (str): Название услуги (частичное совпадение)
         - category_id (int): ID категории услуги
-        - min_price (decimal): Минимальная цена
-        - max_price (decimal): Максимальная цена
+        - parent_id (int): ID родительской категории
         - sort_by (str): Поле для сортировки результатов
         
         Returns:
@@ -119,13 +108,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(name__icontains=data['name'])
 
         if data.get('category_id'):
-            queryset = queryset.filter(category_id=data['category_id'])
-
-        if data.get('min_price'):
-            queryset = queryset.filter(price__gte=data['min_price'])
-
-        if data.get('max_price'):
-            queryset = queryset.filter(price__lte=data['max_price'])
+            queryset = queryset.filter(parent_id=data['category_id'])
 
         # Применение сортировки
         sort_by = data.get('sort_by')

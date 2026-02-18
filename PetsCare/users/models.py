@@ -18,6 +18,8 @@ from django.utils import timezone
 from phonenumber_field.modelfields import PhoneNumberField
 from django.conf import settings
 from datetime import timedelta
+from django_countries.fields import CountryField
+from django.core.validators import RegexValidator, MinLengthValidator
 
 
 class UserManager(BaseUserManager):
@@ -37,36 +39,16 @@ class UserManager(BaseUserManager):
 
     def _generate_username(self, email):
         """
-        Генерирует уникальный username на основе email.
+        Генерирует username на основе email.
+        Поскольку email уникален, используем его напрямую.
         
         Args:
             email (str): Email пользователя
             
         Returns:
-            str: Уникальный username
+            str: Username (тот же email)
         """
-        import time
-        import re
-        
-        # Извлекаем имя пользователя из email
-        username_base = email.split('@')[0]
-        # Убираем специальные символы, оставляем только буквы, цифры и точки
-        username_base = re.sub(r'[^a-zA-Z0-9.]', '', username_base)
-        # Ограничиваем длину
-        username_base = username_base[:20]
-        
-        # Добавляем timestamp для уникальности
-        timestamp = str(int(time.time()))
-        username = f"{username_base}_{timestamp}"
-        
-        # Проверяем уникальность и добавляем суффикс если нужно
-        counter = 1
-        original_username = username
-        while self.model.objects.filter(username=username).exists():
-            username = f"{original_username}_{counter}"
-            counter += 1
-            
-        return username
+        return email
 
     def create_user(self, email, password=None, **extra_fields):
         """
@@ -123,6 +105,7 @@ class UserType(models.Model):
     Тип пользователя (роль) в системе.
     
     Определяет права и возможности пользователя:
+    - basic_user: Базовый пользователь
     - system_admin: Администратор системы
     - provider_admin: Администратор учреждения
     - billing_manager: Менеджер по биллингу
@@ -370,11 +353,22 @@ class User(AbstractUser):
     # Структурированный адрес пользователя (убрано для избежания циклических зависимостей)
     # Адрес пользователя можно получить через geolocation.Location
     
+    def get_default_user_type():
+        """Получает дефолтный тип пользователя"""
+        from django.conf import settings
+        if not settings.configured:
+            return None
+        try:
+            return UserType.objects.get(name='basic_user')
+        except UserType.DoesNotExist:
+            return None
+
     user_types = models.ManyToManyField(
         UserType,
         blank=True,
         verbose_name=_('User Types'),
         help_text=_('Roles of the user in the system.'),
+        default=get_default_user_type,
     )
 
     # Переопределяем поля для избежания конфликтов related_name
@@ -510,19 +504,166 @@ class User(AbstractUser):
         return self.user_types.filter(name__in=role_names).count() == len(role_names)
 
     def get_managed_providers(self):
-        """Возвращает список учреждений, которыми управляет пользователь"""
+        """
+        Возвращает queryset учреждений, которыми управляет пользователь.
+        
+        Returns:
+            QuerySet: Queryset объектов Provider
+        """
+        from providers.models import Provider
+        
         if self.has_role('provider_admin'):
-            from providers.models import Provider
-            try:
-                provider = Provider.objects.filter(admins=self).first()
-                return [provider] if provider else []
-            except Provider.DoesNotExist:
-                return []
+            # Получаем провайдеров через связь ProviderAdmin
+            return Provider.objects.filter(
+                admins__user=self,
+                admins__is_active=True
+            ).distinct()
         elif self.has_role('billing_manager'):
             # Менеджер по биллингу имеет доступ ко всем провайдерам
-            from providers.models import Provider
             return Provider.objects.filter(is_active=True)
-        return []
+        return Provider.objects.none()
+    
+    def has_active_role(self, role_name):
+        """
+        Проверяет, имеет ли пользователь активную функциональную роль.
+        
+        Активная роль означает:
+        1. Роль назначена пользователю (в user_types)
+        2. У пользователя есть необходимые данные для использования роли
+        
+        Например:
+        - pet_owner: роль назначена И есть хотя бы один питомец
+        - provider_admin: роль назначена И есть управляемые провайдеры
+        
+        Суперпользователь НЕ получает автоматически активные роли.
+        Он должен иметь роль в user_types и соответствующие данные.
+        
+        Args:
+            role_name (str): Название роли для проверки
+            
+        Returns:
+            bool: True, если роль активна (назначена и есть данные)
+        """
+        # Сначала проверяем, назначена ли роль
+        if not self.has_role(role_name):
+            return False
+        
+        # Проверяем наличие необходимых данных в зависимости от роли
+        if role_name == 'pet_owner':
+            # Для pet_owner требуется наличие хотя бы одного питомца
+            return self.pets.filter(is_active=True).exists()
+        
+        elif role_name == 'provider_admin':
+            # Для provider_admin требуется наличие управляемых провайдеров
+            return self.get_managed_providers().exists()
+        
+        elif role_name == 'pet_sitter':
+            # Для pet_sitter можно добавить проверку наличия профиля ситтера
+            # Пока возвращаем True, если роль назначена
+            return True
+        
+        # Для остальных ролей считаем активной, если она назначена
+        return True
+    
+    def has_system_permission(self, permission_name=None):
+        """
+        Проверяет системные права пользователя.
+        
+        Системные права - это права на управление системой:
+        - Суперпользователь имеет все системные права
+        - Остальные пользователи проверяются по ролям (system_admin, billing_manager и т.д.)
+        
+        Args:
+            permission_name (str, optional): Название разрешения для проверки.
+                                           Если None, проверяет общий доступ к админке.
+            
+        Returns:
+            bool: True, если пользователь имеет системное право
+        """
+        # Суперпользователь имеет все системные права
+        if self.is_superuser:
+            return True
+        
+        # Для конкретного разрешения можно добавить проверку через permissions
+        if permission_name:
+            # Здесь можно добавить проверку через Django permissions
+            pass
+        
+        # Проверяем системные роли
+        return self.has_role('system_admin') or self.has_role('billing_manager')
+    
+    def is_system_admin(self):
+        """
+        Проверяет, является ли пользователь системным администратором.
+        
+        Returns:
+            bool: True, если пользователь имеет роль system_admin
+        """
+        return self.has_role('system_admin')
+    
+    def is_billing_manager(self):
+        """
+        Проверяет, является ли пользователь биллинг-менеджером.
+        
+        Returns:
+            bool: True, если пользователь имеет роль billing_manager
+        """
+        return self.has_role('billing_manager')
+    
+    def is_provider_admin(self):
+        """
+        Проверяет, является ли пользователь администратором провайдера.
+        
+        Returns:
+            bool: True, если пользователь имеет роль provider_admin
+        """
+        return self.has_role('provider_admin')
+    
+    def is_employee(self):
+        """
+        Проверяет, является ли пользователь сотрудником учреждения.
+        
+        Returns:
+            bool: True, если пользователь имеет роль employee
+        """
+        return self.has_role('employee')
+    
+    def is_client(self):
+        """
+        Проверяет, является ли пользователь клиентом (владельцем питомца/базовым).
+        
+        Returns:
+            bool: True, если пользователь имеет роль pet_owner или basic_user
+        """
+        return self.has_role('pet_owner') or self.has_role('basic_user')
+    
+    def get_active_roles(self):
+        """
+        Возвращает список активных функциональных ролей пользователя.
+        
+        Активная роль = роль назначена + есть необходимые данные.
+        
+        Returns:
+            list: Список названий активных ролей
+        """
+        active_roles = []
+        assigned_roles = self.user_types.filter(is_active=True).values_list('name', flat=True)
+        
+        for role_name in assigned_roles:
+            if self.has_active_role(role_name):
+                active_roles.append(role_name)
+        
+        return active_roles
+    
+    def save(self, *args, **kwargs):
+        """
+        Переопределенный метод save для автоматической генерации username.
+        """
+        # Если username пустой или не указан, генерируем его автоматически
+        if not self.username and self.email:
+            self.username = self.email
+        
+        super().save(*args, **kwargs)
 
 
 class EmployeeSpecialization(models.Model):
@@ -692,6 +833,10 @@ class ProviderForm(models.Model):
     provider_phone = PhoneNumberField(
         verbose_name=_('Provider Phone')
     )
+    provider_email = models.EmailField(
+        verbose_name=_('Provider Email'),
+        help_text=_('Email address of the provider (may differ from the applicant email). Login credentials will be sent to this address upon approval.')
+    )
     documents = models.FileField(
         upload_to='provider_docs/%Y/%m/%d/',
         verbose_name=_('Registration Documents'),
@@ -719,6 +864,135 @@ class ProviderForm(models.Model):
         auto_now=True,
         verbose_name=_('Updated At')
     )
+    
+    # Выбранные категории услуг (уровень 0)
+    selected_categories = models.ManyToManyField(
+        'catalog.Service',
+        blank=True,
+        verbose_name=_('Selected Service Categories'),
+        help_text=_('Service categories that the provider wants to offer'),
+        related_name='provider_forms'
+    )
+    
+    # РЕКВИЗИТЫ (обязательные для упрощенного процесса)
+    # Временно nullable для миграции, но обязательные через валидацию clean()
+    tax_id = models.CharField(
+        _('Tax ID / INN'),
+        max_length=50,
+        null=True,
+        blank=True,
+        validators=[
+            RegexValidator(
+                regex=r'^[a-zA-Zа-яА-ЯёЁ0-9\s-]+$',
+                message=_('Tax ID can only contain letters, digits, spaces, and hyphens.')
+            ),
+            MinLengthValidator(3, message=_('Tax ID must be at least 3 characters long.'))
+        ],
+        help_text=_('Tax identification number / INN (required). Format: letters, digits, spaces, hyphens. Minimum 3 characters.')
+    )
+    registration_number = models.CharField(
+        _('Registration Number'),
+        max_length=100,
+        null=True,
+        blank=True,
+        validators=[
+            RegexValidator(
+                regex=r'^[a-zA-Zа-яА-ЯёЁ0-9\s-]+$',
+                message=_('Registration number can only contain letters, digits, spaces, and hyphens.')
+            ),
+            MinLengthValidator(3, message=_('Registration number must be at least 3 characters long.'))
+        ],
+        help_text=_('Registration number (required). Format: letters, digits, spaces, hyphens. Minimum 3 characters.')
+    )
+    country = CountryField(
+        _('Country'),
+        null=True,
+        blank=True,
+        help_text=_('Country of registration. Required for regional addendums and VAT requirements.')
+    )
+    invoice_currency = models.ForeignKey(
+        'billing.Currency',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='provider_forms',
+        verbose_name=_('Invoice Currency'),
+        help_text=_('Currency for provider invoices (required)')
+    )
+    
+    # ДОПОЛНИТЕЛЬНЫЕ РЕКВИЗИТЫ (из вашего списка)
+    organization_type = models.CharField(
+        _('Organization Type'),
+        max_length=50,
+        blank=True,
+        help_text=_('Type of organization: SP, OOO, Corp, LLC, etc. (required)')
+    )
+    director_name = models.CharField(
+        _('Director Name'),
+        max_length=200,
+        blank=True,
+        help_text=_('Full name of director (for offer template substitution) (required)')
+    )
+    kpp = models.CharField(
+        _('KPP (Russia only)'),
+        max_length=20,
+        blank=True,
+        help_text=_('KPP (tax registration reason code) - required for Russian LLCs, hidden for other countries')
+    )
+    is_vat_payer = models.BooleanField(
+        _('Is VAT Payer'),
+        default=False,
+        help_text=_('Whether the organization is a VAT payer (required)')
+    )
+    vat_number = models.CharField(
+        _('VAT Number (EU VAT ID)'),
+        max_length=50,
+        blank=True,
+        help_text=_('VAT Number (EU VAT ID) - required for EU VAT payers. Format: PL12345678')
+    )
+    iban = models.CharField(
+        _('IBAN'),
+        max_length=34,
+        blank=True,
+        help_text=_('IBAN - required for EU/UA. For Russia, use "Account Number" field instead')
+    )
+    swift_bic = models.CharField(
+        _('SWIFT / BIC'),
+        max_length=11,
+        blank=True,
+        help_text=_('SWIFT / BIC - bank identifier (required)')
+    )
+    bank_name = models.CharField(
+        _('Bank Name'),
+        max_length=200,
+        blank=True,
+        help_text=_('Bank name for invoices (required)')
+    )
+    
+    # ПРИНЯТИЕ ОФЕРТЫ (обязательное для упрощенного процесса)
+    offer_accepted = models.BooleanField(
+        _('Offer Accepted'),
+        default=False,
+        help_text=_('I have read and accepted the public offer (required)')
+    )
+    offer_accepted_at = models.DateTimeField(
+        _('Offer Accepted At'),
+        null=True,
+        blank=True,
+        help_text=_('Date and time when the offer was accepted')
+    )
+    offer_accepted_ip = models.GenericIPAddressField(
+        _('Offer Accepted IP'),
+        null=True,
+        blank=True,
+        help_text=_('IP address from which the offer was accepted')
+    )
+    offer_accepted_user_agent = models.TextField(
+        _('Offer Accepted User Agent'),
+        blank=True,
+        help_text=_('User agent from which the offer was accepted')
+    )
+    
     approved_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -754,6 +1028,65 @@ class ProviderForm(models.Model):
         self.approved_by = approved_by
         self.approved_at = timezone.now()
         self.save()
+
+    def clean(self):
+        """Валидация обязательных полей для упрощенного процесса"""
+        super().clean()
+        
+        # Проверяем обязательные реквизиты
+        if not self.tax_id or not self.tax_id.strip():
+            raise ValidationError({'tax_id': _('Tax ID is required')})
+        
+        if not self.registration_number or not self.registration_number.strip():
+            raise ValidationError({'registration_number': _('Registration number is required')})
+        
+        if not self.country:
+            raise ValidationError({'country': _('Country is required')})
+        
+        if not self.invoice_currency:
+            raise ValidationError({'invoice_currency': _('Invoice currency is required')})
+        
+        # Проверяем обязательные поля из вашего списка
+        if not self.organization_type or not self.organization_type.strip():
+            raise ValidationError({'organization_type': _('Organization type is required')})
+        
+        if not self.director_name or not self.director_name.strip():
+            raise ValidationError({'director_name': _('Director name is required')})
+        
+        if not self.swift_bic or not self.swift_bic.strip():
+            raise ValidationError({'swift_bic': _('SWIFT / BIC is required')})
+        
+        if not self.bank_name or not self.bank_name.strip():
+            raise ValidationError({'bank_name': _('Bank name is required')})
+        
+        # Условная валидация для РФ
+        if self.country == 'RU':
+            # For RU LLCs, KPP is required
+            if self.organization_type and any(token in self.organization_type for token in ['OOO', 'ООО']):
+                if not self.kpp or not self.kpp.strip():
+                    raise ValidationError({'kpp': _('KPP is required for Russian LLCs')})
+        
+        # Условная валидация для ЕС
+        from utils.countries import EU_COUNTRIES
+        if self.country in EU_COUNTRIES:
+            # Для ЕС требуется IBAN
+            if not self.iban or not self.iban.strip():
+                raise ValidationError({'iban': _('IBAN is required for EU countries')})
+            
+            # Если плательщик НДС, требуется VAT номер
+            if self.is_vat_payer:
+                if not self.vat_number or not self.vat_number.strip():
+                    raise ValidationError({'vat_number': _('VAT number is required for EU VAT payers')})
+        
+        # Проверяем принятие оферты
+        if not self.offer_accepted:
+            raise ValidationError({'offer_accepted': _('You must accept the public offer to submit the application')})
+        
+        # Если оферта принята, должны быть заполнены метаданные
+        if self.offer_accepted and not self.offer_accepted_at:
+            # Устанавливаем время принятия, если оно не указано
+            if not self.offer_accepted_at:
+                self.offer_accepted_at = timezone.now()
 
     def clean_documents(self):
         """Проверяет тип загруженного файла"""
@@ -1254,3 +1587,25 @@ class PasswordResetToken(models.Model):
         count = expired_tokens.count()
         expired_tokens.delete()
         return count 
+
+
+# Сигналы для автоматического назначения ролей
+from django.db.models.signals import post_save
+from django.dispatch import receiver
+
+@receiver(post_save, sender=User)
+def assign_basic_user_role(sender, instance, created, **kwargs):
+    """
+    Автоматически назначает роль basic_user новым пользователям.
+    """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
+    if created and not instance.user_types.exists():
+        try:
+            basic_user_type = UserType.objects.get(name='basic_user')
+            instance.user_types.add(basic_user_type)
+        except UserType.DoesNotExist:
+            pass

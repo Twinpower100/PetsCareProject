@@ -94,21 +94,21 @@ class NotificationRuleAdmin(admin.ModelAdmin):
     readonly_fields = ('created_at', 'updated_at')
     
     fieldsets = (
-        (_('Основные настройки'), {
+        (_('Basic Settings'), {
             'fields': ('event_type', 'template', 'priority', 'is_active')
         }),
-        (_('Условия и каналы'), {
+        (_('Conditions and Channels'), {
             'fields': ('condition', 'channels'),
-            'description': _('Условие - Python-выражение для оценки контекста события. '
-                           'Доступные переменные: user, booking, service, provider, pet, amount, '
+            'description': _('Condition is a Python expression evaluated against the event context. '
+                           'Available variables: user, booking, service, provider, pet, amount, '
                            'hours_before_start, price_increase_percent')
         }),
-        (_('Наследование'), {
+        (_('Inheritance'), {
             'fields': ('inheritance', 'user'),
-            'description': _('Глобальные правила применяются ко всем пользователям. '
-                           'Пользовательские правила переопределяют глобальные.')
+            'description': _('Global rules apply to all users. '
+                           'User-specific rules override global ones.')
         }),
-        (_('Метаданные'), {
+        (_('Metadata'), {
             'fields': ('created_by', 'created_at', 'updated_at'),
             'classes': ('collapse',)
         })

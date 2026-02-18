@@ -1,5 +1,5 @@
 from rest_framework import viewsets, generics, permissions, status
-from django.db.models import Q
+from django.db.models import Q, Count
 from .models import Service
 from .serializers import ServiceSerializer, ServiceCompatibilitySerializer
 from rest_framework.decorators import action
@@ -17,11 +17,40 @@ class ServiceViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):
-        return Service.objects.select_related('parent').all()
+        """
+        Возвращает queryset с поддержкой фильтрации по level.
+        """
+        if getattr(self, 'swagger_fake_view', False):
+            return Service.objects.none()
+        
+        queryset = Service.objects.select_related('parent').all()
+        
+        # Фильтрация по level (например, ?level=0 для корневых категорий)
+        level = self.request.query_params.get('level')
+        if level is not None:
+            try:
+                level = int(level)
+                # Для level=0 возвращаем только корневые категории (parent=None, есть дети)
+                if level == 0:
+                    queryset = Service.objects.filter(
+                        parent=None,
+                        level=0,
+                        is_active=True
+                    ).annotate(
+                        children_count=Count('children')
+                    ).filter(
+                        children_count__gt=0  # Только те, у которых есть дети (узлы)
+                    ).distinct().order_by('hierarchy_order', 'name')
+                else:
+                    queryset = queryset.filter(level=level, is_active=True).order_by('hierarchy_order', 'name')
+            except ValueError:
+                pass
+        
+        return queryset.order_by('hierarchy_order', 'name')
     
     @action(detail=False, methods=['get'])
     def tree(self, request):
-        root_items = Service.objects.filter(parent=None)
+        root_items = Service.objects.filter(parent=None).order_by('hierarchy_order', 'name')
         serializer = self.get_serializer(root_items, many=True)
         return Response(serializer.data)
     
@@ -41,13 +70,13 @@ class ServiceViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['get'])
     def categories(self, request):
-        categories = Service.objects.filter(children__isnull=True)
+        categories = Service.objects.filter(children__isnull=True).order_by('hierarchy_order', 'name')
         serializer = self.get_serializer(categories, many=True)
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
     def services(self, request):
-        services = Service.objects.filter(children__isnull=False)
+        services = Service.objects.filter(children__isnull=False).order_by('hierarchy_order', 'name')
         serializer = self.get_serializer(services, many=True)
         return Response(serializer.data)
     
@@ -56,7 +85,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
         periodic_services = Service.objects.filter(
             is_periodic=True,
             children__isnull=False
-        )
+        ).order_by('hierarchy_order', 'name')
         serializer = self.get_serializer(periodic_services, many=True)
         return Response(serializer.data)
     
@@ -65,7 +94,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
         mandatory_services = Service.objects.filter(
             is_mandatory=True,
             children__isnull=False
-        )
+        ).order_by('hierarchy_order', 'name')
         serializer = self.get_serializer(mandatory_services, many=True)
         return Response(serializer.data)
     
@@ -93,7 +122,7 @@ class ServiceViewSet(viewsets.ModelViewSet):
         available_services = Service.objects.filter(
             Q(allowed_pet_types__isnull=True) |  # Доступны для всех типов
             Q(allowed_pet_types=pet_type)        # Или специально для этого типа
-        ).distinct()
+        ).distinct().order_by('hierarchy_order', 'name')
         
         serializer = self.get_serializer(available_services, many=True)
         return Response(serializer.data)
@@ -113,7 +142,7 @@ class ServiceCategoryListCreateAPIView(generics.ListCreateAPIView):
     """
     API для получения списка категорий и создания новых.
     """
-    queryset = Service.objects.filter(children__isnull=True)
+    queryset = Service.objects.filter(children__isnull=True).order_by('hierarchy_order', 'name')
     serializer_class = ServiceSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -130,10 +159,45 @@ class ServiceCategoryRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroy
 class ServiceListCreateAPIView(generics.ListCreateAPIView):
     """
     API для получения списка услуг и создания новых.
+    Поддерживает фильтрацию по level через query параметр.
     """
-    queryset = Service.objects.filter(children__isnull=False)
     serializer_class = ServiceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """
+        Возвращает queryset услуг с поддержкой фильтрации по level.
+        """
+        if getattr(self, 'swagger_fake_view', False):
+            return Service.objects.none()
+        
+        # Фильтрация по level (например, ?level=0 для корневых категорий)
+        level = self.request.query_params.get('level')
+        if level is not None:
+            try:
+                level = int(level)
+                # Для level=0 возвращаем только корневые категории (parent=None, есть дети)
+                if level == 0:
+                    # Получаем только корневые категории, которые являются узлами (имеют детей)
+                    # Используем exists() для проверки наличия детей
+                    queryset = Service.objects.filter(
+                        parent=None,
+                        level=0,
+                        is_active=True
+                    ).annotate(
+                        children_count=Count('children')
+                    ).filter(
+                        children_count__gt=0  # Только те, у которых есть дети (узлы)
+                    ).distinct()
+                else:
+                    queryset = Service.objects.filter(level=level, is_active=True)
+            except ValueError:
+                queryset = Service.objects.none()
+        else:
+            # Если level не указан, возвращаем услуги (не категории)
+            queryset = Service.objects.filter(children__isnull=False)
+        
+        return queryset.order_by('hierarchy_order', 'name')
 
 
 class ServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -153,6 +217,9 @@ class ServiceSearchAPIView(generics.ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return Service.objects.none()
+        
         queryset = Service.objects.all()
         query = self.request.query_params.get('q', '')
         if query:
@@ -160,7 +227,7 @@ class ServiceSearchAPIView(generics.ListAPIView):
                 Q(name__icontains=query) |
                 Q(description__icontains=query)
             )
-        return queryset 
+        return queryset.order_by('hierarchy_order', 'name') 
 
 
 class PublicServiceCategoriesAPIView(generics.ListAPIView):
@@ -175,6 +242,9 @@ class PublicServiceCategoriesAPIView(generics.ListAPIView):
         """
         Возвращает только корневые категории услуг (parent=None, level=0).
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Service.objects.none()
+        
         return Service.objects.filter(
             parent=None,
             level=0,

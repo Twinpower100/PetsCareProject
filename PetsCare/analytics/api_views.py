@@ -15,13 +15,15 @@ from django.utils import timezone
 from rest_framework import status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from django.db.models import Count, Sum, Avg, Q
+from django.db.models import Count, Sum, Avg, Q, Min, Max, F
 from django.db.models.functions import TruncDate, TruncMonth, ExtractHour, ExtractWeekDay
+from django.contrib.contenttypes.models import ContentType
 
 from users.models import User
 from providers.models import Provider, Employee
 from billing.models import Payment, Invoice
 from booking.models import Booking
+from ratings.models import Rating
 # from users.permissions import IsSystemAdmin  # Заменено на стандартные permissions
 
 logger = logging.getLogger(__name__)
@@ -64,8 +66,10 @@ class UserGrowthAnalyticsAPIView(APIView):
             ).order_by('month')
             
             # Статистика по ролям
-            role_stats = User.objects.values('role').annotate(
-                count=Count('id')
+            role_stats = User.user_types.through.objects.values(
+                role=F('usertype__name')
+            ).annotate(
+                count=Count('user_id')
             ).order_by('-count')
             
             # Статистика по статусу
@@ -144,10 +148,13 @@ class ProviderPerformanceAnalyticsAPIView(APIView):
             ).order_by('-total_bookings')[:10]
             
             # Статистика по рейтингам
-            rating_stats = Provider.objects.aggregate(
-                avg_rating=Avg('rating'),
-                min_rating=Avg('rating'),
-                max_rating=Avg('rating')
+            provider_content_type = ContentType.objects.get_for_model(Provider)
+            rating_stats = Rating.objects.filter(
+                content_type=provider_content_type
+            ).aggregate(
+                avg_rating=Avg('current_rating'),
+                min_rating=Min('current_rating'),
+                max_rating=Max('current_rating')
             )
             
             # Статистика по сотрудникам
@@ -155,13 +162,14 @@ class ProviderPerformanceAnalyticsAPIView(APIView):
                 employee_count=Count('employees')
             ).aggregate(
                 avg_employees=Avg('employee_count'),
-                max_employees=Avg('employee_count'),
-                min_employees=Avg('employee_count')
+                max_employees=Max('employee_count'),
+                min_employees=Min('employee_count')
             )
             
-            # Статистика по услугам
+            # Статистика по услугам (через локации)
+            from providers.models import ProviderLocationService
             service_stats = Provider.objects.annotate(
-                service_count=Count('provider_services')
+                service_count=Count('locations__available_services', distinct=True)
             ).aggregate(
                 avg_services=Avg('service_count'),
                 max_services=Avg('service_count'),

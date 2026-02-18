@@ -30,21 +30,6 @@ def get_audit_service():
         })()
 
 
-# Временно отключено для устранения бесконечной рекурсии
-# @receiver(post_save, sender=UserAction)
-# def log_user_action_created(sender, instance, created, **kwargs):
-#     """Логирует создание записи действия пользователя"""
-#     if created:
-#         # Логируем создание лога (мета-логирование)
-#         get_logging_service().log_system_event(
-#             'user_action_created',
-#             {
-#                 'action_id': instance.id,
-#                 'user_id': instance.user.id if instance.user else None,
-#                 'action_type': instance.action_type,
-#             }
-#         )
-
 
 @receiver(post_save, sender=SecurityAudit)
 def log_security_audit_created(sender, instance, created, **kwargs):
@@ -73,7 +58,7 @@ def log_user_changes(sender, instance, created, **kwargs):
             details={
                 'user_id': instance.id,
                 'user_email': instance.email,
-                'user_type': getattr(instance, 'user_type', 'unknown')
+                'user_types': list(instance.user_types.values_list('name', flat=True))
             }
         )
     else:
@@ -81,7 +66,7 @@ def log_user_changes(sender, instance, created, **kwargs):
             user=instance,
             action_type='update',
             content_object=None,  # Не передаем объект User, чтобы избежать рекурсии
-            details={'user_type': getattr(instance, 'user_type', 'unknown')}
+            details={'user_types': list(instance.user_types.values_list('name', flat=True))}
         )
 
 
@@ -90,17 +75,17 @@ def log_pet_changes(sender, instance, created, **kwargs):
     """Логирует изменения питомцев"""
     if created:
         get_logging_service().log_action(
-            user=instance.owner,
+            user=instance.main_owner,
             action_type='create',
             content_object=None,  # Не передаем объект Pet, чтобы избежать рекурсии
-            details={'pet_name': instance.name, 'pet_type': instance.pet_type}
+            details={'pet_name': instance.name, 'pet_type': instance.pet_type.name if instance.pet_type else None}
         )
     else:
         get_logging_service().log_action(
-            user=instance.owner,
+            user=instance.main_owner,
             action_type='update',
             content_object=None,  # Не передаем объект Pet, чтобы избежать рекурсии
-            details={'pet_name': instance.name, 'pet_type': instance.pet_type}
+            details={'pet_name': instance.name, 'pet_type': instance.pet_type.name if instance.pet_type else None}
         )
 
 
@@ -108,10 +93,10 @@ def log_pet_changes(sender, instance, created, **kwargs):
 def log_pet_deletion(sender, instance, **kwargs):
     """Логирует удаление питомцев"""
     get_logging_service().log_action(
-        user=instance.owner,
+        user=instance.main_owner,
         action_type='delete',
         content_object=None,  # Не передаем объект Pet, чтобы избежать рекурсии
-        details={'pet_name': instance.name, 'pet_type': instance.pet_type}
+        details={'pet_name': instance.name, 'pet_type': instance.pet_type.name if instance.pet_type else None}
     )
 
 
@@ -119,16 +104,18 @@ def log_pet_deletion(sender, instance, **kwargs):
 def log_booking_changes(sender, instance, created, **kwargs):
     """Логирует изменения бронирований"""
     if created:
+        # Используем user из Booking (владелец питомца)
+        employee_name = instance.employee.user.get_full_name() if instance.employee and instance.employee.user else 'Unknown'
         get_logging_service().log_action(
-            user=instance.pet_owner,
+            user=instance.user,  # Используем user из Booking
             action_type='booking',
             content_object=None,  # Не передаем объект, чтобы избежать рекурсии
             details={
                 'booking_id': instance.id,
-                'pet_name': instance.pet.name,
-                'sitter_name': instance.sitter.get_full_name(),
-                'start_date': instance.start_date.isoformat(),
-                'end_date': instance.end_date.isoformat(),
+                'pet_name': instance.pet.name if instance.pet else 'Unknown',
+                'employee_name': employee_name,
+                'start_time': instance.start_time.isoformat() if hasattr(instance, 'start_time') and instance.start_time else None,
+                'end_time': instance.end_time.isoformat() if hasattr(instance, 'end_time') and instance.end_time else None,
             }
         )
     else:
@@ -137,7 +124,7 @@ def log_booking_changes(sender, instance, created, **kwargs):
             old_status = instance._state.fields_cache.get('status')
             if old_status and old_status != instance.status:
                 get_logging_service().log_action(
-                    user=instance.pet_owner,
+                    user=instance.user,  # Используем user из Booking
                     action_type='update',
                     content_object=None,  # Не передаем объект, чтобы избежать рекурсии
                     details={
@@ -148,44 +135,16 @@ def log_booking_changes(sender, instance, created, **kwargs):
                 )
 
 
-@receiver(post_save, sender='billing.Contract')
-def log_contract_changes(sender, instance, created, **kwargs):
-    """Логирует изменения договоров"""
-    if created:
-        get_audit_service().audit_financial_operation(
-            user=instance.provider.admin_user,
-            operation='contract_created',
-            amount=float(instance.commission_rate),
-            currency='%',
-            content_object=None,  # Не передаем объект, чтобы избежать рекурсии
-            details={
-                'provider_name': instance.provider.name,
-                'commission_rate': instance.commission_rate,
-            }
-        )
-    else:
-        get_audit_service().audit_financial_operation(
-            user=instance.provider.admin_user,
-            operation='contract_updated',
-            amount=float(instance.commission_rate),
-            currency='%',
-            content_object=None,  # Не передаем объект, чтобы избежать рекурсии
-            details={
-                'provider_name': instance.provider.name,
-                'commission_rate': instance.commission_rate,
-            }
-        )
-
-
 @receiver(post_save, sender='billing.Payment')
 def log_payment_operations(sender, instance, created, **kwargs):
     """Логирует платежные операции"""
     if created:
+        booking_user = instance.booking.user if instance.booking else None
         get_audit_service().audit_financial_operation(
-            user=instance.user,
+            user=booking_user,
             operation='payment_created',
             amount=float(instance.amount),
-            currency=instance.currency,
+            currency='unknown',
             content_object=None,  # Не передаем объект, чтобы избежать рекурсии
             details={
                 'payment_method': instance.payment_method,
@@ -198,11 +157,12 @@ def log_payment_operations(sender, instance, created, **kwargs):
         if hasattr(instance, '_state') and hasattr(instance._state, 'fields_cache'):
             old_status = instance._state.fields_cache.get('status')
             if old_status and old_status != instance.status:
+                booking_user = instance.booking.user if instance.booking else None
                 get_audit_service().audit_financial_operation(
-                    user=instance.user,
+                    user=booking_user,
                     operation='payment_status_changed',
                     amount=float(instance.amount),
-                    currency=instance.currency,
+                    currency='unknown',
                     content_object=None,  # Не передаем объект, чтобы избежать рекурсии
                     details={
                         'old_status': old_status,
@@ -293,12 +253,12 @@ def log_user_blocking(sender, instance, **kwargs):
 def log_ownership_transfer(sender, instance, **kwargs):
     """Логирует передачу прав владения питомцем"""
     if hasattr(instance, '_state') and hasattr(instance._state, 'fields_cache'):
-        old_owner = instance._state.fields_cache.get('owner')
-        if old_owner and old_owner != instance.owner:
+        old_main_owner = instance._state.fields_cache.get('main_owner')
+        if old_main_owner and old_main_owner != instance.main_owner:
             get_audit_service().audit_ownership_transfer(
-                user=old_owner,  # Кто передал права
+                user=old_main_owner,  # Кто передал права
                 pet=instance,
-                old_owner=old_owner,
-                new_owner=instance.owner,
-                reason="Pet ownership transferred"
+                old_owner=old_main_owner,
+                new_owner=instance.main_owner,
+                reason="Pet main ownership transferred"
             ) 

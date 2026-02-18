@@ -48,7 +48,7 @@ def api_docs_view(request):
     analytics_data = _('Analytics data')
     admin_title = _('Administration')
     admin_interface = _('Django admin interface')
-    jwt_instruction = _('Use /api/api/login/ endpoint to get JWT token')
+    jwt_instruction = _('Use /api/v1/login/ endpoint to get JWT token')
     header_instruction = _('All protected endpoints require header:')
     
     html_content = f"""
@@ -80,65 +80,65 @@ def api_docs_view(request):
             <h2>🔐 {auth_title}</h2>
             <div class="endpoint">
                 <span class="method post">POST</span>
-                <span class="url">/api/api/register/</span>
+                <span class="url">/api/v1/register/</span>
                 <div class="description">{user_reg}</div>
             </div>
             <div class="endpoint">
                 <span class="method post">POST</span>
-                <span class="url">/api/api/login/</span>
+                <span class="url">/api/v1/login/</span>
                 <div class="description">{user_login}</div>
             </div>
             <h2>🐕 {pets_title}</h2>
             <div class="endpoint">
                 <span class="method get">GET</span>
-                <span class="url">/api/pets/</span>
+                <span class="url">/api/v1/pets/</span>
                 <div class="description">{pets_list}</div>
             </div>
             <div class="endpoint">
                 <span class="method post">POST</span>
-                <span class="url">/api/pets/</span>
+                <span class="url">/api/v1/pets/</span>
                 <div class="description">{add_pet}</div>
             </div>
             <h2>🏢 {providers_title}</h2>
             <div class="endpoint">
                 <span class="method get">GET</span>
-                <span class="url">/api/providers/</span>
+                <span class="url">/api/v1/providers/</span>
                 <div class="description">{providers_list}</div>
             </div>
             <h2>📅 {bookings_title}</h2>
             <div class="endpoint">
                 <span class="method get">GET</span>
-                <span class="url">/api/booking/</span>
+                <span class="url">/api/v1/bookings/</span>
                 <div class="description">{bookings_list}</div>
             </div>
             <h2>🔔 {notifications_title}</h2>
             <div class="endpoint">
                 <span class="method get">GET</span>
-                <span class="url">/api/notifications/</span>
+                <span class="url">/api/v1/notifications/</span>
                 <div class="description">{notifications_list}</div>
             </div>
             <h2>💳 {billing_title}</h2>
             <div class="endpoint">
                 <span class="method get">GET</span>
-                <span class="url">/api/billing/</span>
+                <span class="url">/api/v1/billing/</span>
                 <div class="description">{payments_list}</div>
             </div>
             <h2>⭐ {ratings_title}</h2>
             <div class="endpoint">
                 <span class="method get">GET</span>
-                <span class="url">/api/ratings/</span>
+                <span class="url">/api/v1/ratings/</span>
                 <div class="description">{ratings_list}</div>
             </div>
             <h2>📍 {geolocation_title}</h2>
             <div class="endpoint">
                 <span class="method get">GET</span>
-                <span class="url">/api/geolocation/</span>
+                <span class="url">/api/v1/geolocation/</span>
                 <div class="description">{address_search}</div>
             </div>
             <h2>📊 {analytics_title}</h2>
             <div class="endpoint">
                 <span class="method get">GET</span>
-                <span class="url">/api/analytics/</span>
+                <span class="url">/api/v1/analytics/</span>
                 <div class="description">{analytics_data}</div>
             </div>
             <h2>🔧 {admin_title}</h2>
@@ -170,25 +170,7 @@ schema_view = get_schema_view(
     ),
     public=True,
     permission_classes=(permissions.AllowAny,),
-    patterns=[
-        # Рабочие приложения для Swagger
-        path('api/', include('catalog.urls')),
-        path('api/', include('services.urls')),
-        path('api/', include('geolocation.urls')),
-        path('api/', include('access.urls')),
-        path('api/', include('reports.urls')),
-        path('api/', include('analytics.urls')),
-        path('api/', include('audit.urls')),
-        path('api/', include('pets.urls')),
-        path('api/', include('billing.urls')),
-        path('api/', include('notifications.urls')),
-        path('api/', include('ratings.urls')),
-        path('api/', include('system_settings.urls')),
-        path('api/', include('users.urls')),
-        path('api/', include('providers.urls')),
-        path('api/', include('booking.urls')),
-        path('api/', include('sitters.urls')),
-    ],
+    # Swagger автоматически найдет все URL из urlpatterns
 )
 
 urlpatterns = [
@@ -199,31 +181,41 @@ urlpatterns = [
     path('docs/', api_docs_view, name='api-docs'),
     
     # Документация API (Swagger/ReDoc)
-    path('swagger<format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
+    path('swagger.<str:format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
+    # Альтернативный путь для схемы (если Swagger запрашивает через query параметр)
+    path('swagger.json', schema_view.without_ui(cache_timeout=0), name='schema-json-alt'),
+    path('swagger.yaml', schema_view.without_ui(cache_timeout=0), name='schema-yaml-alt'),
     
     # Корневой API endpoint
     path('api/', api_root, name='api-root'),
     
-    # API эндпоинты
-    path('api/', include('users.urls')),
-    path('api/', include('pets.urls')),
-    path('api/', include('providers.urls')),
-    path('api/', include('billing.urls')),
-    path('api/', include('booking.urls')),
-    path('api/', include('catalog.urls')),
-    path('api/', include('sitters.urls')),
-    path('api/', include('geolocation.urls')),
-    path('api/', include('notifications.urls')),
-    path('api/', include('access.urls')),
-    path('api/', include('reports.urls')),
-    path('api/', include('ratings.urls')),
-    path('api/', include('audit.urls')),
-    path('api/', include('analytics.urls')),
+    # API эндпоинты (версионированные v1)
+    # ВАЖНО: legal.urls должен быть ПЕРЕД pets.urls, чтобы избежать конфликтов с documents/
+    path('api/v1/', include(('users.urls', 'users'), namespace='v1:users')),
+    
+    path('api/v1/', include('legal.urls', namespace='v1:legal')),
+    path('api/v1/', include(('pets.urls', 'pets'), namespace='v1:pets')),
+    path('api/v1/', include(('providers.urls', 'providers'), namespace='v1:providers')),
+    path('api/v1/', include(('billing.urls', 'billing'), namespace='v1:billing')),
+    path('api/v1/', include(('booking.urls', 'booking'), namespace='v1:booking')),
+    path('api/v1/', include(('catalog.urls', 'catalog'), namespace='v1:catalog')),
+    path('api/v1/', include(('sitters.urls', 'sitters'), namespace='v1:sitters')),
+    path('api/v1/', include(('geolocation.urls', 'geolocation'), namespace='v1:geolocation')),
+    path('api/v1/', include(('notifications.urls', 'notifications'), namespace='v1:notifications')),
+    path('api/v1/', include(('access.urls', 'access'), namespace='v1:access')),
+    path('api/v1/', include(('reports.urls', 'reports'), namespace='v1:reports')),
+    path('api/v1/', include(('ratings.urls', 'ratings'), namespace='v1:ratings')),
+    path('api/v1/', include('audit.urls', namespace='v1:audit')),
+    path('api/v1/', include('analytics.urls', namespace='v1:analytics')),
+    path('api/v1/', include(('system_settings.urls', 'system_settings'), namespace='v1:settings')),
     
     # Аутентификация
     path('accounts/', include('allauth.urls')),
+    
+    # CKEditor 5 (WYSIWYG редактор для юридических документов)
+    path('ckeditor5/', include('django_ckeditor_5.urls')),
 ]
 
 # Статические и медиа файлы в режиме разработки

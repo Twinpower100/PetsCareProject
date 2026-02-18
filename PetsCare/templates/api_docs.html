@@ -1,5 +1,6 @@
+{% load i18n %}
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -64,128 +65,129 @@
 </head>
 <body>
     <div class="container">
-        <h1>🐾 PetsCare API Documentation</h1>
+        <h1>🐾 {% trans "PetsCare API Documentation" %}</h1>
         
         <div class="auth-required">
-            <strong>⚠️ Аутентификация:</strong> Большинство endpoints требуют JWT токен в заголовке Authorization: Bearer &lt;token&gt;
+            <strong>⚠️ {% trans "Authentication" %}:</strong>
+            {% trans "Most endpoints require a JWT token in the Authorization header: Bearer <token>" %}
         </div>
 
-        <h2>🔐 Аутентификация</h2>
+        <h2>🔐 {% trans "Authentication" %}</h2>
         <div class="endpoint">
             <span class="method post">POST</span>
-            <span class="url">/api/api/register/</span>
-            <div class="description">Регистрация нового пользователя</div>
-        </div>
-        <div class="endpoint">
-            <span class="method post">POST</span>
-            <span class="url">/api/api/login/</span>
-            <div class="description">Вход в систему</div>
+            <span class="url">/api/v1/register/</span>
+            <div class="description">{% trans "User registration" %}</div>
         </div>
         <div class="endpoint">
             <span class="method post">POST</span>
-            <span class="url">/api/api/google-auth/</span>
-            <div class="description">Аутентификация через Google</div>
-        </div>
-
-        <h2>🐕 Питомцы</h2>
-        <div class="endpoint">
-            <span class="method get">GET</span>
-            <span class="url">/api/pets/</span>
-            <div class="description">Список питомцев пользователя</div>
+            <span class="url">/api/v1/login/</span>
+            <div class="description">{% trans "User login" %}</div>
         </div>
         <div class="endpoint">
             <span class="method post">POST</span>
-            <span class="url">/api/pets/</span>
-            <div class="description">Добавить нового питомца</div>
+            <span class="url">/api/v1/google-auth/</span>
+            <div class="description">{% trans "Google authentication" %}</div>
         </div>
 
-        <h2>🏢 Поставщики услуг</h2>
+        <h2>🐕 {% trans "Pets" %}</h2>
         <div class="endpoint">
             <span class="method get">GET</span>
-            <span class="url">/api/providers/</span>
-            <div class="description">Список поставщиков услуг</div>
+            <span class="url">/api/v1/pets/</span>
+            <div class="description">{% trans "User pets list" %}</div>
         </div>
         <div class="endpoint">
             <span class="method post">POST</span>
-            <span class="url">/api/providers/</span>
-            <div class="description">Регистрация поставщика услуг</div>
+            <span class="url">/api/v1/pets/</span>
+            <div class="description">{% trans "Add a new pet" %}</div>
         </div>
 
-        <h2>📅 Бронирование</h2>
+        <h2>🏢 {% trans "Service Providers" %}</h2>
         <div class="endpoint">
             <span class="method get">GET</span>
-            <span class="url">/api/booking/</span>
-            <div class="description">Список бронирований</div>
+            <span class="url">/api/v1/providers/</span>
+            <div class="description">{% trans "Service providers list" %}</div>
         </div>
         <div class="endpoint">
             <span class="method post">POST</span>
-            <span class="url">/api/booking/</span>
-            <div class="description">Создать новое бронирование</div>
+            <span class="url">/api/v1/providers/</span>
+            <div class="description">{% trans "Register a service provider" %}</div>
         </div>
 
-        <h2>🔔 Уведомления</h2>
+        <h2>📅 {% trans "Bookings" %}</h2>
         <div class="endpoint">
             <span class="method get">GET</span>
-            <span class="url">/api/notifications/</span>
-            <div class="description">Список уведомлений</div>
-        </div>
-
-        <h2>💳 Биллинг</h2>
-        <div class="endpoint">
-            <span class="method get">GET</span>
-            <span class="url">/api/billing/</span>
-            <div class="description">Список платежей</div>
+            <span class="url">/api/v1/bookings/</span>
+            <div class="description">{% trans "Bookings list" %}</div>
         </div>
         <div class="endpoint">
             <span class="method post">POST</span>
-            <span class="url">/api/billing/</span>
-            <div class="description">Создать новый платеж</div>
+            <span class="url">/api/v1/bookings/</span>
+            <div class="description">{% trans "Create a new booking" %}</div>
         </div>
 
-        <h2>⭐ Рейтинги</h2>
+        <h2>🔔 {% trans "Notifications" %}</h2>
         <div class="endpoint">
             <span class="method get">GET</span>
-            <span class="url">/api/ratings/</span>
-            <div class="description">Список рейтингов</div>
+            <span class="url">/api/v1/notifications/</span>
+            <div class="description">{% trans "Notifications list" %}</div>
+        </div>
+
+        <h2>💳 {% trans "Billing" %}</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/v1/billing/</span>
+            <div class="description">{% trans "Payments list" %}</div>
         </div>
         <div class="endpoint">
             <span class="method post">POST</span>
-            <span class="url">/api/ratings/</span>
-            <div class="description">Оставить отзыв</div>
+            <span class="url">/api/v1/billing/</span>
+            <div class="description">{% trans "Create a new payment" %}</div>
         </div>
 
-        <h2>📍 Геолокация</h2>
+        <h2>⭐ {% trans "Ratings" %}</h2>
         <div class="endpoint">
             <span class="method get">GET</span>
-            <span class="url">/api/geolocation/</span>
-            <div class="description">Поиск по адресам</div>
+            <span class="url">/api/v1/ratings/</span>
+            <div class="description">{% trans "Ratings list" %}</div>
+        </div>
+        <div class="endpoint">
+            <span class="method post">POST</span>
+            <span class="url">/api/v1/ratings/</span>
+            <div class="description">{% trans "Leave a review" %}</div>
         </div>
 
-        <h2>📊 Аналитика</h2>
+        <h2>📍 {% trans "Geolocation" %}</h2>
         <div class="endpoint">
             <span class="method get">GET</span>
-            <span class="url">/api/analytics/</span>
-            <div class="description">Аналитические данные</div>
+            <span class="url">/api/v1/geolocation/</span>
+            <div class="description">{% trans "Address search" %}</div>
         </div>
 
-        <h2>👥 Пользователи</h2>
+        <h2>📊 {% trans "Analytics" %}</h2>
         <div class="endpoint">
             <span class="method get">GET</span>
-            <span class="url">/api/api/</span>
-            <div class="description">Информация о пользователе</div>
+            <span class="url">/api/v1/analytics/</span>
+            <div class="description">{% trans "Analytics data" %}</div>
         </div>
 
-        <h2>🔧 Администрирование</h2>
+        <h2>👥 {% trans "Users" %}</h2>
+        <div class="endpoint">
+            <span class="method get">GET</span>
+            <span class="url">/api/v1/profile/</span>
+            <div class="description">{% trans "User profile" %}</div>
+        </div>
+
+        <h2>🔧 {% trans "Administration" %}</h2>
         <div class="endpoint">
             <span class="method get">GET</span>
             <span class="url">/admin/</span>
-            <div class="description">Административный интерфейс Django</div>
+            <div class="description">{% trans "Django admin interface" %}</div>
         </div>
 
         <div style="margin-top: 40px; padding: 20px; background: #e9ecef; border-radius: 5px; text-align: center;">
-            <p><strong>PetsCare API v1.0</strong></p>
-            <p>Для получения JWT токена используйте endpoint /api/api/login/</p>
-            <p>Все запросы к защищенным endpoints должны содержать заголовок: <code>Authorization: Bearer &lt;your_token&gt;</code></p>
+            <p><strong>{% trans "PetsCare API v1.0" %}</strong></p>
+            <p>{% trans "To get a JWT token, use the /api/v1/login/ endpoint." %}</p>
+            <p>{% trans "All protected endpoints require the header:" %} <code>Authorization: Bearer &lt;your_token&gt;</code></p>
         </div>
     </div>
 </body>

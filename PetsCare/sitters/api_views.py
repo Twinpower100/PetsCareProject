@@ -63,8 +63,8 @@ class SitterProfileViewSet(viewsets.ModelViewSet):
     serializer_class = SitterProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [SearchFilter, OrderingFilter]  # Убираем DjangoFilterBackend для Swagger
-    search_fields = ['name', 'description']
-    ordering_fields = ['name', 'price', 'rating']
+    search_fields = ['user__first_name', 'user__last_name', 'description']
+    ordering_fields = ['hourly_rate', 'created_at']
 
     def get_queryset(self):
         """
@@ -91,9 +91,9 @@ class SitterProfileViewSet(viewsets.ModelViewSet):
         max_price = self.request.query_params.get('max_price')
         
         if min_price:
-            queryset = queryset.filter(price__gte=min_price)
+            queryset = queryset.filter(hourly_rate__gte=min_price)
         if max_price:
-            queryset = queryset.filter(price__lte=max_price)
+            queryset = queryset.filter(hourly_rate__lte=max_price)
             
         return queryset 
 
@@ -108,7 +108,7 @@ class PetSittingAdViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [SearchFilter, OrderingFilter]  # Убираем DjangoFilterBackend для Swagger
     search_fields = ['description', 'pet__name']
-    ordering_fields = ['start_date', 'created_at', 'rating']
+    ordering_fields = ['start_date', 'created_at']
 
     def get_queryset(self):
         """
@@ -178,8 +178,11 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         # Уведомление владельцу объявления
         notification = Notification.objects.create(
             user=response.ad.owner,
-            title='New response to your pet sitting ad',
-            message=f'{self.request.user.get_full_name()} responded to your ad for {response.ad.pet}.',
+            title=_('New response to your pet sitting ad'),
+            message=_('{user} responded to your ad for {pet}.').format(
+                user=self.request.user.get_full_name(),
+                pet=response.ad.pet
+            ),
             notification_type='system',
             channel='both',
             data={'ad_id': response.ad.id, 'response_id': response.id}
@@ -209,8 +212,8 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         # Уведомление ситтеру о принятии отклика
         notification = Notification.objects.create(
             user=response.sitter.user,
-            title='Your response was accepted',
-            message=f'Your response to the ad for {response.ad.pet} was accepted.',
+            title=_('Your response was accepted'),
+            message=_('Your response to the ad for {pet} was accepted.').format(pet=response.ad.pet),
             notification_type='system',
             channel='both',
             data={'ad_id': response.ad.id, 'response_id': response.id}
@@ -250,8 +253,8 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         # Уведомление ситтеру об отклонении отклика
         notification = Notification.objects.create(
             user=response.sitter.user,
-            title='Your response was rejected',
-            message=f'Your response to the ad for {response.ad.pet} was rejected.',
+            title=_('Your response was rejected'),
+            message=_('Your response to the ad for {pet} was rejected.').format(pet=response.ad.pet),
             notification_type='system',
             channel='both',
             data={'ad_id': response.ad.id, 'response_id': response.id}
@@ -315,8 +318,11 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         if user == sitting.ad.owner:
             notification = Notification.objects.create(
                 user=sitting.sitter.user,
-                title='Owner confirmed pet transfer',
-                message=f'{user.get_full_name()} confirmed pet transfer for {sitting.pet}.',
+                title=_('Owner confirmed pet transfer'),
+                message=_('{user} confirmed pet transfer for {pet}.').format(
+                    user=user.get_full_name(),
+                    pet=sitting.pet
+                ),
                 notification_type='system',
                 channel='both',
                 data={'sitting_id': sitting.id}
@@ -325,8 +331,11 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         else:
             notification = Notification.objects.create(
                 user=sitting.ad.owner,
-                title='Sitter confirmed pet transfer',
-                message=f'{user.get_full_name()} confirmed pet transfer for {sitting.pet}.',
+                title=_('Sitter confirmed pet transfer'),
+                message=_('{user} confirmed pet transfer for {pet}.').format(
+                    user=user.get_full_name(),
+                    pet=sitting.pet
+                ),
                 notification_type='system',
                 channel='both',
                 data={'sitting_id': sitting.id}
@@ -384,8 +393,11 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         if user == sitting.ad.owner:
             notification = Notification.objects.create(
                 user=sitting.sitter.user,
-                title='Owner confirmed pet return',
-                message=f'{user.get_full_name()} confirmed pet return for {sitting.pet}.',
+                title=_('Owner confirmed pet return'),
+                message=_('{user} confirmed pet return for {pet}.').format(
+                    user=user.get_full_name(),
+                    pet=sitting.pet
+                ),
                 notification_type='system',
                 channel='both',
                 data={'sitting_id': sitting.id}
@@ -394,8 +406,11 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         else:
             notification = Notification.objects.create(
                 user=sitting.ad.owner,
-                title='Sitter confirmed pet return',
-                message=f'{user.get_full_name()} confirmed pet return for {sitting.pet}.',
+                title=_('Sitter confirmed pet return'),
+                message=_('{user} confirmed pet return for {pet}.').format(
+                    user=user.get_full_name(),
+                    pet=sitting.pet
+                ),
                 notification_type='system',
                 channel='both',
                 data={'sitting_id': sitting.id}
@@ -433,14 +448,14 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         sitting = self.get_object()
         user = request.user
         if user != sitting.ad.owner:
-            return Response({'error': 'Only owner can leave review'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'error': _('Only owner can leave review')}, status=status.HTTP_403_FORBIDDEN)
         if sitting.status != 'waiting_review':
-            return Response({'error': 'Not allowed at this stage'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': _('Not allowed at this stage')}, status=status.HTTP_400_BAD_REQUEST)
         # Оценка обязательна
         rating = request.data.get('rating')
         text = request.data.get('text', '')
         if not rating:
-            return Response({'error': 'Rating is required'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': _('Rating is required')}, status=status.HTTP_400_BAD_REQUEST)
         from .models import SitterReview
         review = SitterReview.objects.create(
             history=sitting,
@@ -454,8 +469,8 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         # Уведомление ситтеру о завершении и отзыве
         notification = Notification.objects.create(
             user=sitting.sitter.user,
-            title='Pet sitting completed and reviewed',
-            message=f'Pet sitting for {sitting.pet} has been completed and reviewed.',
+            title=_('Pet sitting completed and reviewed'),
+            message=_('Pet sitting for {pet} has been completed and reviewed.').format(pet=sitting.pet),
             notification_type='system',
             channel='both',
             data={'sitting_id': sitting.id, 'review_id': review.id}
@@ -471,18 +486,18 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         sitting = self.get_object()
         user = request.user
         if sitting.status in ['completed', 'cancelled']:
-            return Response({'error': 'Already finished'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'error': _('Already finished')}, status=status.HTTP_400_BAD_REQUEST)
         # Только владелец или ситтер могут отменить
         if user != sitting.ad.owner and user != sitting.sitter.user:
-            return Response({'error': 'Not allowed'}, status=status.HTTP_403_FORBIDDEN)
+            return Response({'error': _('Not allowed')}, status=status.HTTP_403_FORBIDDEN)
         sitting.status = 'cancelled'
         sitting.save()
         # Уведомления обеим сторонам об отмене
         for notify_user in [sitting.ad.owner, sitting.sitter.user]:
             notification = Notification.objects.create(
                 user=notify_user,
-                title='Pet sitting cancelled',
-                message=f'Pet sitting for {sitting.pet} has been cancelled.',
+                title=_('Pet sitting cancelled'),
+                message=_('Pet sitting for {pet} has been cancelled.').format(pet=sitting.pet),
                 notification_type='system',
                 channel='both',
                 data={'sitting_id': sitting.id}
@@ -587,8 +602,8 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                     if (role == 'owner' and not sitting.owner_confirmed_start) or (role == 'sitter' and not sitting.sitter_confirmed_start):
                         notification = Notification.objects.create(
                             user=notify_user,
-                            title='Confirm pet transfer',
-                            message=f'Please confirm pet transfer for {sitting.pet}.',
+                            title=_('Confirm pet transfer'),
+                            message=_('Please confirm pet transfer for {pet}.').format(pet=sitting.pet),
                             notification_type='system',
                             channel='both',
                             data={'sitting_id': sitting.id}
@@ -600,8 +615,8 @@ class PetSittingViewSet(viewsets.ModelViewSet):
                     if (role == 'owner' and not sitting.owner_confirmed_end) or (role == 'sitter' and not sitting.sitter_confirmed_end):
                         notification = Notification.objects.create(
                             user=notify_user,
-                            title='Confirm pet return',
-                            message=f'Please confirm pet return for {sitting.pet}.',
+                            title=_('Confirm pet return'),
+                            message=_('Please confirm pet return for {pet}.').format(pet=sitting.pet),
                             notification_type='system',
                             channel='both',
                             data={'sitting_id': sitting.id}
@@ -611,8 +626,8 @@ class PetSittingViewSet(viewsets.ModelViewSet):
             elif sitting.status == 'waiting_review' and not sitting.review_left:
                 notification = Notification.objects.create(
                     user=sitting.ad.owner,
-                    title='Leave a review for pet sitting',
-                    message=f'Please leave a review for pet sitting of {sitting.pet}.',
+                    title=_('Leave a review for pet sitting'),
+                    message=_('Please leave a review for pet sitting of {pet}.').format(pet=sitting.pet),
                     notification_type='system',
                     channel='both',
                     data={'sitting_id': sitting.id}

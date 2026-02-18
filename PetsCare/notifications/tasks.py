@@ -605,8 +605,9 @@ def send_payment_failed_notification_task(payment_id: int, reason: str = None):
         
         notification_service = NotificationService()
         
+        booking_user = payment.booking.user if payment.booking else None
         notification = notification_service.send_notification(
-            user=payment.user,
+            user=booking_user,
             notification_type='payment',
             title=_('Payment Failed'),
             message=_('Your payment could not be processed. Please check your payment method.'),
@@ -615,7 +616,7 @@ def send_payment_failed_notification_task(payment_id: int, reason: str = None):
             data={
                 'payment_id': payment.id,
                 'amount': payment.amount,
-                'currency': payment.currency,
+                'currency': None,
                 'reason': reason
             }
         )
@@ -641,17 +642,18 @@ def send_refund_notification_task(refund_id: int):
         
         notification_service = NotificationService()
         
+        booking_user = refund.payment.booking.user if refund.payment and refund.payment.booking else None
         notification = notification_service.send_notification(
-            user=refund.payment.user,
+            user=booking_user,
             notification_type='payment',
             title=_('Refund Processed'),
             message=_('Your refund has been processed and will be credited to your account.'),
             channels=['email', 'push', 'in_app'],
             priority='medium',
-        data={
+            data={
                 'refund_id': refund.id,
                 'amount': refund.amount,
-                'currency': refund.currency,
+                'currency': None,
                 'payment_id': refund.payment.id
             }
         )

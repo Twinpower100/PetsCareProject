@@ -1,5 +1,6 @@
 from django.utils.translation import gettext_lazy as _
 from datetime import datetime, timedelta
+from decimal import Decimal
 from .models import Booking, BookingStatus
 
 def check_booking_availability(provider, employee, start_time, end_time, exclude_booking_id=None):
@@ -33,7 +34,7 @@ def check_booking_availability(provider, employee, start_time, end_time, exclude
         overlapping_bookings = overlapping_bookings.exclude(id=exclude_booking_id)
     
     # Проверяем статусы бронирований
-    active_statuses = ['Pending', 'Confirmed']
+    active_statuses = ['active', 'pending_confirmation']
     overlapping_bookings = overlapping_bookings.filter(
         status__name__in=active_statuses
     )
@@ -57,7 +58,10 @@ def calculate_booking_price(service, start_time, end_time):
     duration = (end_time - start_time).total_seconds() / 3600
     
     # Рассчитываем стоимость
-    return service.price * duration
+    service_price = getattr(service, 'price', None)
+    if service_price is None:
+        return Decimal('0.00')
+    return service_price * Decimal(str(duration))
 
 def update_booking_status(booking, new_status_name):
     """
@@ -79,10 +83,13 @@ def update_booking_status(booking, new_status_name):
     # Проверяем допустимость перехода между статусами
     current_status = booking.status.name
     valid_transitions = {
-        'Pending': ['Confirmed', 'Cancelled'],
-        'Confirmed': ['Completed', 'Cancelled'],
-        'Completed': [],
-        'Cancelled': []
+        'pending_confirmation': ['active', 'cancelled_by_client', 'cancelled_by_provider'],
+        'active': ['completed', 'cancelled_by_client', 'cancelled_by_provider', 'no_show_by_client', 'no_show_by_provider'],
+        'completed': [],
+        'cancelled_by_client': [],
+        'cancelled_by_provider': [],
+        'no_show_by_client': [],
+        'no_show_by_provider': []
     }
     
     if new_status_name not in valid_transitions.get(current_status, []):
@@ -120,7 +127,7 @@ def get_available_time_slots(provider_id, employee_id, date, duration):
         provider_id=provider_id,
         employee_id=employee_id,
         start_time__date=date,
-        status__name__in=['Pending', 'Confirmed']
+        status__name__in=['active', 'pending_confirmation']
     ).order_by('start_time')
     
     # Инициализируем список доступных слотов

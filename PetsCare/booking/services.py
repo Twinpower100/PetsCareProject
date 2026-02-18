@@ -15,7 +15,7 @@ from datetime import timedelta, time, date, datetime
 
 from .models import Booking, TimeSlot, BookingStatus, BookingAutoCompleteSettings
 from pets.models import Pet
-from providers.models import Employee, Provider, Schedule, ProviderService, ProviderSchedule
+from providers.models import Employee, Provider, Schedule, LocationSchedule, ProviderLocationService, ProviderLocation
 from catalog.models import Service
 from users.models import User
 
@@ -109,6 +109,7 @@ class BookingTransactionService:
             end_time: Время окончания
             price: Стоимость
             notes: Заметки
+            provider_location: Локация провайдера (опционально)
             
         Returns:
             Booking: Созданное бронирование
@@ -127,8 +128,10 @@ class BookingTransactionService:
         BookingTransactionService._validate_business_rules(booking_data)
         
         # Проверяем доступность на лету
+        # Получаем provider_location из booking_data, если есть
+        provider_location = booking_data.get('provider_location')
         if not BookingAvailabilityService.check_slot_availability(
-            employee, provider, start_time, end_time
+            employee, provider, start_time, end_time, provider_location
         ):
             raise ValidationError(_("Slot is not available, please refresh search"))
         
@@ -151,6 +154,7 @@ class BookingTransactionService:
             user=user,
             pet=pet,
             provider=provider,
+            provider_location=provider_location,
             employee=employee,
             service=service,
             status=active_status,
@@ -448,6 +452,11 @@ class BookingCompletionService:
     def _send_completion_notifications(booking, user):
         """Отправить уведомления о завершении бронирования"""
         from notifications.models import Notification
+        from users.models import ProviderAdmin
+        
+        provider = booking.provider
+        if not provider and booking.provider_location:
+            provider = booking.provider_location.provider
         
         # Email уведомление (уже есть в signals.py)
         
@@ -491,20 +500,25 @@ class BookingCompletionService:
             )
             
             # Уведомляем админа учреждения
-            if booking.provider.admin:
-                Notification.objects.create(
-                    user=booking.provider.admin,
-                    title=_("Booking Cancelled by Client"),
-                    message=_("Client cancelled booking at your facility"),
-                    notification_type='appointment',
-                    channel='both',
-                    priority='medium',
-                    data={
-                        'booking_id': booking.id,
-                        'client_name': booking.user.get_full_name() or booking.user.username,
-                        'employee_name': booking.employee.user.get_full_name() or booking.employee.user.username
-                    }
-                )
+            if provider:
+                provider_admins = ProviderAdmin.objects.filter(
+                    provider=provider,
+                    is_active=True
+                ).select_related('user')
+                for provider_admin in provider_admins:
+                    Notification.objects.create(
+                        user=provider_admin.user,
+                        title=_("Booking Cancelled by Client"),
+                        message=_("Client cancelled booking at your facility"),
+                        notification_type='appointment',
+                        channel='both',
+                        priority='medium',
+                        data={
+                            'booking_id': booking.id,
+                            'client_name': booking.user.get_full_name() or booking.user.username,
+                            'employee_name': booking.employee.user.get_full_name() or booking.employee.user.username
+                        }
+                    )
         else:
             # Отменил админ - уведомляем клиента
             Notification.objects.create(
@@ -530,21 +544,26 @@ class BookingCompletionService:
         from notifications.models import Notification
         
         # Уведомляем админа учреждения о автоматическом завершении
-        if booking.provider.admin:
-            Notification.objects.create(
-                user=booking.provider.admin,
-                title=_("Booking Auto-Completed"),
-                message=_("Booking was automatically completed by system"),
-                notification_type='system',
-                channel='both',
-                priority='low',
-                data={
-                    'booking_id': booking.id,
-                    'client_name': booking.user.get_full_name() or booking.user.username,
-                    'employee_name': booking.employee.user.get_full_name() or booking.employee.user.username,
-                    'service_name': booking.service.name
-                }
-            )
+        if provider:
+            provider_admins = ProviderAdmin.objects.filter(
+                provider=provider,
+                is_active=True
+            ).select_related('user')
+            for provider_admin in provider_admins:
+                Notification.objects.create(
+                    user=provider_admin.user,
+                    title=_("Booking Auto-Completed"),
+                    message=_("Booking was automatically completed by system"),
+                    notification_type='system',
+                    channel='both',
+                    priority='low',
+                    data={
+                        'booking_id': booking.id,
+                        'client_name': booking.user.get_full_name() or booking.user.username,
+                        'employee_name': booking.employee.user.get_full_name() or booking.employee.user.username,
+                        'service_name': booking.service.name
+                    }
+                )
 
 
 class BookingReportService:
@@ -637,7 +656,8 @@ class BookingAvailabilityService:
         employee: Employee,
         provider: Provider,
         start_time: timezone.datetime,
-        end_time: timezone.datetime
+        end_time: timezone.datetime,
+        provider_location=None
     ) -> bool:
         """
         Проверяет доступность слота на лету.
@@ -647,6 +667,7 @@ class BookingAvailabilityService:
             provider: Учреждение
             start_time: Время начала
             end_time: Время окончания
+            provider_location: Локация провайдера (опционально)
             
         Returns:
             bool: True если слот доступен
@@ -657,17 +678,21 @@ class BookingAvailabilityService:
             start_time__lt=end_time,
             end_time__gt=start_time,
             status__name__in=['active', 'pending_confirmation']
-        ).exists()
+        )
         
-        if conflicting_bookings:
+        # Если указана локация, фильтруем по ней
+        if provider_location:
+            conflicting_bookings = conflicting_bookings.filter(provider_location=provider_location)
+        
+        if conflicting_bookings.exists():
             return False
         
         # 2. Проверяем рабочее время учреждения
-        if not BookingAvailabilityService._is_provider_working(provider, start_time, end_time):
+        if not BookingAvailabilityService._is_provider_working(provider, start_time, end_time, provider_location):
             return False
         
         # 3. Проверяем доступность сотрудника
-        if not BookingAvailabilityService._is_employee_available(employee, start_time, end_time):
+        if not BookingAvailabilityService._is_employee_available(employee, start_time, end_time, provider_location):
             return False
         
         return True
@@ -678,7 +703,8 @@ class BookingAvailabilityService:
         provider: Provider,
         date: date,
         service: Service = None,
-        service_duration_minutes: int = None
+        service_duration_minutes: int = None,
+        provider_location=None
     ) -> List[Dict]:
         """
         Получает доступные слоты для сотрудника на конкретную дату.
@@ -689,27 +715,52 @@ class BookingAvailabilityService:
             date: Дата
             service: Услуга (для получения времени оказания)
             service_duration_minutes: Длительность услуги в минутах (если не указана услуга)
+            provider_location: Локация провайдера (опционально)
             
         Returns:
             List[Dict]: Список доступных слотов
         """
-        from providers.models import Schedule, ProviderService
+        from providers.models import Schedule, ProviderLocationService
         
-        # Определяем длительность услуги
+        # Определяем длительность услуги из локации провайдера
         if service and not service_duration_minutes:
-            try:
-                provider_service = ProviderService.objects.get(
-                    provider=provider,
-                    service=service,
-                    is_active=True
-                )
-                service_duration_minutes = provider_service.duration_minutes
-                # Добавляем технологический перерыв к общей длительности слота
-                tech_break_minutes = getattr(provider_service, 'tech_break_minutes', 0)
-                total_slot_duration = service_duration_minutes + tech_break_minutes
-            except ProviderService.DoesNotExist:
-                service_duration_minutes = 60  # По умолчанию 1 час
-                total_slot_duration = 60
+            # Если указана локация, используем её
+            if provider_location:
+                try:
+                    location_service = ProviderLocationService.objects.filter(
+                        location=provider_location,
+                        service=service,
+                        is_active=True
+                    ).first()
+                    if location_service:
+                        service_duration_minutes = location_service.duration_minutes
+                        tech_break_minutes = getattr(location_service, 'tech_break_minutes', 0)
+                        total_slot_duration = service_duration_minutes + tech_break_minutes
+                    else:
+                        service_duration_minutes = 60
+                        total_slot_duration = 60
+                except Exception:
+                    service_duration_minutes = 60
+                    total_slot_duration = 60
+            else:
+                # Используем первую найденную локацию провайдера с этой услугой
+                try:
+                    location_service = ProviderLocationService.objects.filter(
+                        location__provider=provider,
+                        location__is_active=True,
+                        service=service,
+                        is_active=True
+                    ).first()
+                    if location_service:
+                        service_duration_minutes = location_service.duration_minutes
+                        tech_break_minutes = getattr(location_service, 'tech_break_minutes', 0)
+                        total_slot_duration = service_duration_minutes + tech_break_minutes
+                    else:
+                        service_duration_minutes = 60
+                        total_slot_duration = 60
+                except Exception:
+                    service_duration_minutes = 60
+                    total_slot_duration = 60
         
         if not service_duration_minutes:
             service_duration_minutes = 60
@@ -719,12 +770,18 @@ class BookingAvailabilityService:
         weekday = date.weekday()
         
         # Получаем расписание сотрудника на этот день недели
+        # Если указана локация, фильтруем по ней
+        schedule_query = Schedule.objects.filter(
+            employee=employee,
+            day_of_week=weekday,
+            is_working=True
+        )
+        
+        if provider_location:
+            schedule_query = schedule_query.filter(provider_location=provider_location)
+        
         try:
-            schedule = Schedule.objects.get(
-                employee=employee,
-                day_of_week=weekday,
-                is_working=True
-            )
+            schedule = schedule_query.get()
         except Schedule.DoesNotExist:
             return []
         
@@ -776,49 +833,62 @@ class BookingAvailabilityService:
         return available_slots
     
     @staticmethod
-    def _is_provider_working(provider: Provider, start_time: timezone.datetime, end_time: timezone.datetime) -> bool:
+    def _is_provider_working(
+        provider: Provider, 
+        start_time: timezone.datetime, 
+        end_time: timezone.datetime,
+        provider_location: Optional[ProviderLocation] = None
+    ) -> bool:
         """
-        Проверяет, работает ли учреждение в указанное время.
+        Проверяет, работает ли локация в указанное время.
         
         Args:
             provider: Учреждение
             start_time: Время начала
             end_time: Время окончания
+            provider_location: Локация провайдера (обязательно для проверки расписания)
             
         Returns:
-            bool: True если учреждение работает
+            bool: True если локация работает
         """
-
+        # Если локация не указана, не можем проверить расписание
+        if not provider_location:
+            return True  # Если локация не указана, считаем что работает
         
         # Получаем день недели
         weekday = start_time.weekday()
         
-        # Получаем рабочие часы учреждения
+        # Получаем рабочие часы локации
         try:
-            provider_schedule = ProviderSchedule.objects.get(
-                provider=provider,
+            location_schedule = LocationSchedule.objects.get(
+                provider_location=provider_location,
                 weekday=weekday
             )
             
-            if provider_schedule.is_closed:
+            if location_schedule.is_closed:
                 return False
             
-            if not provider_schedule.open_time or not provider_schedule.close_time:
+            if not location_schedule.open_time or not location_schedule.close_time:
                 return True  # Если время не указано, считаем что работает
             
             # Проверяем, что время попадает в рабочие часы
             start_time_only = start_time.time()
             end_time_only = end_time.time()
             
-            return (provider_schedule.open_time <= start_time_only and 
-                    provider_schedule.close_time >= end_time_only)
+            return (location_schedule.open_time <= start_time_only and 
+                    location_schedule.close_time >= end_time_only)
                     
-        except ProviderSchedule.DoesNotExist:
+        except LocationSchedule.DoesNotExist:
             # Если нет настроек, считаем что работает
             return True
     
     @staticmethod
-    def _is_employee_available(employee: Employee, start_time: timezone.datetime, end_time: timezone.datetime) -> bool:
+    def _is_employee_available(
+        employee: Employee, 
+        start_time: timezone.datetime, 
+        end_time: timezone.datetime,
+        provider_location=None
+    ) -> bool:
         """
         Проверяет, доступен ли сотрудник в указанное время.
         
@@ -826,6 +896,7 @@ class BookingAvailabilityService:
             employee: Сотрудник
             start_time: Время начала
             end_time: Время окончания
+            provider_location: Локация провайдера (опционально, для фильтрации расписания)
             
         Returns:
             bool: True если сотрудник доступен
@@ -836,12 +907,18 @@ class BookingAvailabilityService:
         weekday = start_time.weekday()
         
         # Проверяем расписание сотрудника
+        # Если указана локация, фильтруем по ней
+        schedule_query = Schedule.objects.filter(
+            employee=employee,
+            day_of_week=weekday,
+            is_working=True
+        )
+        
+        if provider_location:
+            schedule_query = schedule_query.filter(provider_location=provider_location)
+        
         try:
-            schedule = Schedule.objects.get(
-                employee=employee,
-                day_of_week=weekday,
-                is_working=True
-            )
+            schedule = schedule_query.get()
             
             # Проверяем, попадает ли время в рабочие часы
             start_time_only = start_time.time()
@@ -967,7 +1044,7 @@ class EmployeeAutoBookingService:
         Returns:
             Employee: Подходящий работник или None
         """
-        from providers.models import EmployeeProvider, ProviderService
+        from providers.models import EmployeeProvider
         
         # Получаем работников учреждения, оказывающих данную услугу
         employees = EmployeeAutoBookingService._get_employees_for_service(
@@ -1025,7 +1102,23 @@ class EmployeeAutoBookingService:
         Returns:
             List[Employee]: Список работников
         """
-        from providers.models import EmployeeProvider, ProviderService
+        from providers.models import EmployeeProvider, ProviderLocationService
+        
+        # Проверяем, что провайдер может оказывать эту услугу (через available_category_levels)
+        # Услуга должна быть в категориях уровня 0 провайдера или их потомках
+        if not provider.available_category_levels.filter(
+            id=service.id
+        ).exists() and not provider.available_category_levels.filter(
+            id__in=service.get_ancestors().values_list('id', flat=True)
+        ).exists():
+            # Проверяем через локации (fallback)
+            if not ProviderLocationService.objects.filter(
+                location__provider=provider,
+                location__is_active=True,
+                service=service,
+                is_active=True
+            ).exists():
+                return []
         
         # Получаем активных работников учреждения
         employee_providers = EmployeeProvider.objects.filter(
@@ -1040,23 +1133,12 @@ class EmployeeAutoBookingService:
         for ep in employee_providers:
             employee = ep.employee
             
-            # Проверяем, оказывает ли работник данную услугу
-            try:
-                provider_service = ProviderService.objects.get(
-                    provider=provider,
-                    service=service,
-                    is_active=True
-                )
-                
-                # Проверяем, назначен ли работник на эту услугу
-                if hasattr(employee, 'services') and service in employee.services.all():
-                    employees.append(employee)
-                elif not hasattr(employee, 'services'):
-                    # Если у работника нет ограничений по услугам, считаем что может оказывать любую
-                    employees.append(employee)
-                    
-            except ProviderService.DoesNotExist:
-                continue
+            # Проверяем, назначен ли работник на эту услугу
+            if hasattr(employee, 'services') and service in employee.services.all():
+                employees.append(employee)
+            elif not hasattr(employee, 'services'):
+                # Если у работника нет ограничений по услугам, считаем что может оказывать любую
+                employees.append(employee)
         
         return employees
     

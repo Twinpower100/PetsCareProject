@@ -1083,7 +1083,6 @@ class ReminderSettingsViewSet(viewsets.ModelViewSet):
     - Сброса настроек к значениям по умолчанию
     - Тестирования настроек
     """
-    serializer_class = None  # Будет определен ниже
     permission_classes = [permissions.IsAuthenticated]
     
     def get_queryset(self):

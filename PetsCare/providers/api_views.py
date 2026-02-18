@@ -22,22 +22,72 @@ from rest_framework import generics, status, permissions, filters, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 from django.utils.translation import gettext_lazy as _
 from django_filters.rest_framework import DjangoFilterBackend
 
 from users.serializers import UserSerializer
-from .models import Provider, Employee, EmployeeProvider, Schedule, ProviderService, ProviderSchedule, EmployeeWorkSlot, EmployeeJoinRequest, SchedulePattern
+from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, EmployeeWorkSlot, EmployeeJoinRequest, SchedulePattern, ProviderLocation, ProviderLocationService
 from booking.models import Booking
 from .serializers import (
     ProviderSerializer, EmployeeSerializer, EmployeeProviderSerializer,
-    ScheduleSerializer, ProviderServiceSerializer,
+    ScheduleSerializer,
     EmployeeRegistrationSerializer,
     EmployeeProviderUpdateSerializer,
-    ProviderScheduleSerializer, EmployeeWorkSlotSerializer,
-    EmployeeJoinRequestSerializer, EmployeeProviderConfirmSerializer
+    EmployeeWorkSlotSerializer,
+    EmployeeJoinRequestSerializer, EmployeeProviderConfirmSerializer,
+    ProviderLocationSerializer, ProviderLocationServiceSerializer
 )
 # from users.permissions import IsProviderAdmin  # Класс определен ниже в этом файле
 from users.models import User
+
+
+def _user_has_role(user, role_name):
+    """
+    Безопасная проверка роли пользователя.
+    
+    Используется для защиты от ошибок при генерации Swagger схемы,
+    когда request.user может быть AnonymousUser.
+    
+    Args:
+        user: Объект пользователя (может быть AnonymousUser)
+        role_name: Название роли для проверки
+        
+    Returns:
+        bool: True если пользователь аутентифицирован и имеет роль, иначе False
+    """
+    if not hasattr(user, 'is_authenticated') or not user.is_authenticated:
+        return False
+    if not hasattr(user, 'has_role'):
+        return False
+    try:
+        return user.has_role(role_name)
+    except (AttributeError, TypeError):
+        return False
+
+
+def _get_provider_full_address(provider):
+    """
+    Возвращает форматированный адрес провайдера, если он доступен.
+    """
+    if provider.structured_address:
+        return provider.structured_address.formatted_address or str(provider.structured_address)
+    return None
+
+
+def _get_provider_rating_map(providers):
+    """
+    Возвращает карту рейтингов провайдеров по их ID.
+    """
+    provider_ids = [provider.id for provider in providers]
+    if not provider_ids:
+        return {}
+    provider_content_type = ContentType.objects.get_for_model(Provider)
+    ratings = Rating.objects.filter(
+        content_type=provider_content_type,
+        object_id__in=provider_ids
+    )
+    return {rating.object_id: float(rating.current_rating) for rating in ratings}
 
 
 class IsProviderAdmin(permissions.BasePermission):
@@ -55,9 +105,9 @@ class IsProviderAdmin(permissions.BasePermission):
         Returns:
             bool: True, если пользователь является администратором провайдера
         """
-        return hasattr(request.user, 'user_type') and request.user.user_type.name == 'provider_admin'
+        return _user_has_role(request.user, 'provider_admin')
 from django.core.mail import send_mail
-from django.utils.timezone import timezone
+from django.utils import timezone
 from django.shortcuts import get_object_or_404
 from rest_framework.decorators import action
 from .permissions import IsEmployee
@@ -65,10 +115,13 @@ from django.core.exceptions import ValidationError
 from datetime import datetime, timedelta
 from geolocation.utils import filter_by_distance, validate_coordinates, calculate_distance
 from django.contrib.gis.geos import Point
+from django.contrib.gis.db.models.functions import Distance
 from django.db.models import Q
+from django.contrib.contenttypes.models import ContentType
 from rest_framework.decorators import api_view
 from rest_framework.decorators import permission_classes
 import logging
+from ratings.models import Rating
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +145,8 @@ class ProviderListCreateAPIView(generics.ListCreateAPIView):
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['is_active']
-    search_fields = ['name', 'description', 'address']
-    ordering_fields = ['name', 'rating']
+    search_fields = ['name', 'description', 'structured_address__formatted_address']
+    ordering_fields = ['name']
     
     def get_queryset(self):
         """Возвращает queryset с проверкой swagger_fake_view."""
@@ -243,58 +296,16 @@ class ScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
     permission_classes = [permissions.IsAuthenticated]
 
 
-class ProviderServiceListCreateAPIView(generics.ListCreateAPIView):
-    """
-    API для просмотра списка и создания услуг провайдера.
-    
-    Основные возможности:
-    - Получение списка активных услуг
-    - Создание новой услуги
-    - Фильтрация по провайдеру, услуге и статусу активности
-    - Сортировка по цене
-    
-    Права доступа:
-    - Требуется аутентификация
-    """
-    queryset = ProviderService.objects.filter(is_active=True)
-    serializer_class = ProviderServiceSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    filterset_fields = ['provider', 'service', 'is_active']
-    ordering_fields = ['price']
-    
-    def get_queryset(self):
-        """Возвращает queryset с проверкой swagger_fake_view."""
-        if getattr(self, 'swagger_fake_view', False):
-            return ProviderService.objects.none()
-        return self.queryset
-
-
-class ProviderServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    API для работы с конкретной услугой провайдера.
-    
-    Основные возможности:
-    - Получение детальной информации
-    - Обновление данных
-    - Удаление услуги
-    
-    Права доступа:
-    - Требуется аутентификация
-    """
-    queryset = ProviderService.objects.all()
-    serializer_class = ProviderServiceSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
+# ProviderService API views удалены - используйте ProviderLocationService API views
 
 class ProviderSearchAPIView(generics.ListAPIView):
     """
     API для поиска провайдеров услуг.
     
     Основные возможности:
-    - Поиск по названию, описанию и адресу
+    - Поиск по названию организации, названию локации и адресу локации
     - Фильтрация по конкретной услуге
-    - Возвращает только активных провайдеров
+    - Возвращает только активных провайдеров с активными локациями
     - Исключает заблокированные учреждения
     
     Права доступа:
@@ -303,16 +314,22 @@ class ProviderSearchAPIView(generics.ListAPIView):
     serializer_class = ProviderSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [filters.SearchFilter]
-    search_fields = ['name', 'description', 'address']
+    search_fields = ['name', 'locations__name', 'locations__structured_address__formatted_address']
 
     def get_queryset(self):
         """
         Возвращает queryset с исключением заблокированных учреждений.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Provider.objects.none()
+        
         from billing.models import ProviderBlocking
         
-        # Получаем базовый queryset активных провайдеров
-        queryset = Provider.objects.filter(is_active=True)
+        # Получаем базовый queryset активных провайдеров с активными локациями
+        queryset = Provider.objects.filter(
+            is_active=True,
+            locations__is_active=True
+        ).distinct()
         
         # Исключаем заблокированные учреждения
         blocked_provider_ids = ProviderBlocking.objects.filter(
@@ -351,23 +368,6 @@ class EmployeeDeactivateAPIView(APIView):
     - Требуется аутентификация
     - Требуются права администратора провайдера
     """
-    permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
-
-
-class ProviderScheduleViewSet(viewsets.ModelViewSet):
-    """
-    API для управления расписанием провайдера.
-    
-    Основные возможности:
-    - CRUD операции с расписанием
-    - Автоматическая фильтрация по провайдеру администратора
-    
-    Права доступа:
-    - Требуется аутентификация
-    - Требуются права администратора провайдера
-    """
-    queryset = ProviderSchedule.objects.all()
-    serializer_class = ProviderScheduleSerializer
     permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
 
 
@@ -490,6 +490,9 @@ class ProviderSearchByDistanceAPIView(generics.ListAPIView):
         """
         Возвращает провайдеров в указанном радиусе с фильтрацией по цене и доступности.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Provider.objects.none()
+        
         from billing.models import ProviderBlocking
         from booking.models import Booking
         from datetime import datetime, timedelta
@@ -530,46 +533,50 @@ class ProviderSearchByDistanceAPIView(generics.ListAPIView):
         ).values_list('provider_id', flat=True)
         queryset = queryset.exclude(id__in=blocked_provider_ids)
         
-        # Фильтрация по услуге
+        # Фильтрация по услуге через локации
         if service_id:
             try:
                 service_id = int(service_id)
+                # Фильтруем провайдеров, у которых есть активные локации с этой услугой
                 queryset = queryset.filter(
-                    services__service_id=service_id,
-                    services__is_active=True
+                    locations__is_active=True,
+                    locations__available_services__service_id=service_id,
+                    locations__available_services__is_active=True
                 ).distinct()
             except (ValueError, TypeError):
                 pass
         
-        # Фильтрация по рейтингу
-        if min_rating:
-            try:
-                min_rating = float(min_rating)
-                queryset = queryset.filter(rating__gte=min_rating)
-            except (ValueError, TypeError):
-                pass
-        
-        # Фильтрация по цене
+        # Фильтрация по цене через локации
         if service_id and (price_min or price_max):
             try:
                 service_id = int(service_id)
-                price_filter = Q(services__service_id=service_id, services__is_active=True)
+                from providers.models import ProviderLocationService
+                
+                # Фильтруем локации с услугами в указанном диапазоне цен
+                location_services_filter = ProviderLocationService.objects.filter(
+                    location__provider__in=queryset,
+                    location__is_active=True,
+                    service_id=service_id,
+                    is_active=True
+                )
                 
                 if price_min:
                     try:
                         price_min_val = float(price_min)
-                        price_filter &= Q(services__price__gte=price_min_val)
+                        location_services_filter = location_services_filter.filter(price__gte=price_min_val)
                     except (ValueError, TypeError):
                         pass
                 
                 if price_max:
                     try:
                         price_max_val = float(price_max)
-                        price_filter &= Q(services__price__lte=price_max_val)
+                        location_services_filter = location_services_filter.filter(price__lte=price_max_val)
                     except (ValueError, TypeError):
                         pass
                 
-                queryset = queryset.filter(price_filter).distinct()
+                # Получаем ID провайдеров, у которых есть локации с подходящими ценами
+                provider_ids = location_services_filter.values_list('location__provider_id', flat=True).distinct()
+                queryset = queryset.filter(id__in=provider_ids)
             except (ValueError, TypeError):
                 pass
         
@@ -649,32 +656,80 @@ class ProviderSearchByDistanceAPIView(generics.ListAPIView):
             except (ValueError, TypeError):
                 pass
         
-        # Фильтруем провайдеров с адресами
-        queryset = queryset.filter(address__isnull=False).distinct()
+        # Фильтруем провайдеров с активными локациями, у которых есть адреса
+        queryset = queryset.filter(
+            locations__is_active=True,
+            locations__structured_address__isnull=False,
+            locations__structured_address__point__isnull=False
+        ).distinct()
         
-        # Получаем провайдеров в радиусе
-        providers_with_distance = filter_by_distance(
-            queryset, lat, lon, radius, 'address__point'
+        # Получаем локации в радиусе (вместо провайдеров)
+        # Сначала получаем все локации провайдеров
+        from providers.models import ProviderLocation
+        locations = ProviderLocation.objects.filter(
+            provider__in=queryset,
+            is_active=True,
+            structured_address__isnull=False,
+            structured_address__point__isnull=False
         )
+        
+        # Фильтруем локации по расстоянию
+        locations_with_distance = filter_by_distance(
+            locations, lat, lon, radius, 'structured_address__point'
+        )
+        
+        # Группируем локации по провайдерам и выбираем ближайшую локацию для каждого провайдера
+        providers_with_distance = []
+        provider_distances = {}  # {provider_id: min_distance}
+        
+        for location, distance in locations_with_distance:
+            provider_id = location.provider_id
+            if provider_id not in provider_distances or distance < provider_distances[provider_id]:
+                provider_distances[provider_id] = distance
+        
+        # Создаем список (provider, distance) для сортировки
+        for provider_id, distance in provider_distances.items():
+            try:
+                provider = Provider.objects.get(id=provider_id)
+                providers_with_distance.append((provider, distance))
+            except Provider.DoesNotExist:
+                pass
+        
+        rating_map = _get_provider_rating_map([provider for provider, _ in providers_with_distance])
+        get_rating = lambda provider: rating_map.get(provider.id, 0)
         
         # Сортировка
         if sort_by == 'rating':
-            providers_with_distance.sort(key=lambda x: (-x[0].rating, x[1]))
+            providers_with_distance.sort(key=lambda x: (-get_rating(x[0]), x[1]))
         elif sort_by == 'price_asc' and service_id:
-            # Сортировка по возрастанию цены
-            providers_with_distance.sort(key=lambda x: (
-                x[0].services.filter(service_id=service_id).first().price if x[0].services.filter(service_id=service_id).exists() else float('inf'),
-                x[1]
-            ))
+            # Сортировка по возрастанию цены (минимальная цена из всех локаций)
+            def get_min_price(provider):
+                from providers.models import ProviderLocationService
+                location_service = ProviderLocationService.objects.filter(
+                    location__provider=provider,
+                    location__is_active=True,
+                    service_id=service_id,
+                    is_active=True
+                ).order_by('price').first()
+                return location_service.price if location_service else float('inf')
+            
+            providers_with_distance.sort(key=lambda x: (get_min_price(x[0]), x[1]))
         elif sort_by == 'price_desc' and service_id:
-            # Сортировка по убыванию цены
-            providers_with_distance.sort(key=lambda x: (
-                -x[0].services.filter(service_id=service_id).first().price if x[0].services.filter(service_id=service_id).exists() else float('-inf'),
-                x[1]
-            ))
+            # Сортировка по убыванию цены (максимальная цена из всех локаций)
+            def get_max_price(provider):
+                from providers.models import ProviderLocationService
+                location_service = ProviderLocationService.objects.filter(
+                    location__provider=provider,
+                    location__is_active=True,
+                    service_id=service_id,
+                    is_active=True
+                ).order_by('-price').first()
+                return location_service.price if location_service else float('-inf')
+            
+            providers_with_distance.sort(key=lambda x: (-get_max_price(x[0]), x[1]))
         else:
             # Сортировка по расстоянию (по умолчанию)
-            providers_with_distance.sort(key=lambda x: (x[1], -x[0].rating))
+            providers_with_distance.sort(key=lambda x: (x[1], -get_rating(x[0])))
         
         # Возвращаем только объекты провайдеров
         return [provider for provider, distance in providers_with_distance[:limit]]
@@ -684,6 +739,8 @@ class ProviderSearchByDistanceAPIView(generics.ListAPIView):
         Добавляет контекст для расчета расстояний и информации о ценах/доступности в сериализатор.
         """
         context = super().get_serializer_context()
+        if getattr(self, 'swagger_fake_view', False):
+            return context
         context['latitude'] = self.request.query_params.get('latitude')
         context['longitude'] = self.request.query_params.get('longitude')
         context['service_id'] = self.request.query_params.get('service_id')
@@ -725,6 +782,10 @@ class SitterAdvancedSearchByDistanceAPIView(generics.ListAPIView):
         """
         Возвращает ситтеров в указанном радиусе с расширенными фильтрами.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            from users.models import User
+            return User.objects.none()
+        
         from geolocation.utils import filter_by_distance, validate_coordinates
         from sitters.models import PetSitting
         from datetime import datetime, time
@@ -761,91 +822,16 @@ class SitterAdvancedSearchByDistanceAPIView(generics.ListAPIView):
             user_types__name='sitter'
         )
         
-        # Фильтрация по рейтингу
-        if min_rating:
-            try:
-                min_rating = float(min_rating)
-                queryset = queryset.filter(rating__gte=min_rating)
-            except (ValueError, TypeError):
-                pass
-        
-        # Фильтрация по услуге
-        if service_id:
-            try:
-                service_id = int(service_id)
-                queryset = queryset.filter(
-                    sitter_services__service_id=service_id,
-                    sitter_services__is_active=True
-                ).distinct()
-            except (ValueError, TypeError):
-                pass
-        
-        # Фильтрация по цене
-        if max_price:
-            try:
-                max_price = float(max_price)
-                queryset = queryset.filter(
-                    sitter_services__price__lte=max_price
-                ).distinct()
-            except (ValueError, TypeError):
-                pass
-        
-        # Фильтрация по доступности
-        if available == 'true':
-            # Исключаем ситтеров с активными заявками
-            active_sittings = PetSitting.objects.filter(
-                status__in=['pending', 'confirmed', 'in_progress']
-            ).values_list('sitter_id', flat=True)
-            queryset = queryset.exclude(id__in=active_sittings)
-        
-        # Фильтрация по расписанию
-        if available_date and available_time:
-            try:
-                # Парсим дату и время
-                date_obj = datetime.strptime(available_date, '%Y-%m-%d').date()
-                time_obj = datetime.strptime(available_time, '%H:%M').time()
-                
-                # Получаем день недели (0=понедельник, 6=воскресенье)
-                day_of_week = date_obj.weekday()
-                
-                # Фильтруем по расписанию
-                queryset = queryset.filter(
-                    sitter_schedules__day_of_week=day_of_week,
-                    sitter_schedules__is_working=True,
-                    sitter_schedules__start_time__lte=time_obj,
-                    sitter_schedules__end_time__gte=time_obj
-                ).distinct()
-            except (ValueError, TypeError):
-                pass
-        
-        # Фильтруем ситтеров с адресами
-        queryset = queryset.filter(
-            Q(address__isnull=False) | 
-            Q(provider_address__isnull=False)
-        ).distinct()
-        
-        # Получаем ситтеров в радиусе
-        sitters_with_distance = filter_by_distance(
-            queryset, lat, lon, radius, 'address__point'
-        )
-        
-        # Если ситтер не найден по основному адресу, ищем по адресу провайдера
-        if not sitters_with_distance:
-            sitters_with_distance = filter_by_distance(
-                queryset, lat, lon, radius, 'provider_address__point'
-            )
-        
-        # Сортируем по расстоянию, рейтингу и цене
-        sitters_with_distance.sort(key=lambda x: (x[1], -x[0].rating))
-        
-        # Возвращаем только объекты пользователей
-        return [sitter for sitter, distance in sitters_with_distance[:limit]]
+        # В модели User нет геокоординат/рейтинга для поиска ситтеров по расстоянию
+        return User.objects.none()
     
     def get_serializer_context(self):
         """
         Добавляет контекст для расчета расстояний в сериализатор.
         """
         context = super().get_serializer_context()
+        if getattr(self, 'swagger_fake_view', False):
+            return context
         context['latitude'] = self.request.query_params.get('latitude')
         context['longitude'] = self.request.query_params.get('longitude')
         return context 
@@ -1031,25 +1017,27 @@ def get_provider_prices(request, provider_id):
         # Получаем параметры
         service_id = request.GET.get('service_id')
         
-        # Получаем услуги
+        # Получаем услуги из всех активных локаций провайдера
+        from .serializers import ProviderLocationServiceSerializer
+        
+        location_services = ProviderLocationService.objects.filter(
+            location__provider=provider,
+            location__is_active=True,
+            is_active=True
+        ).select_related('location', 'service')
+        
         if service_id:
             try:
                 service_id = int(service_id)
-                provider_services = provider.provider_services.filter(
-                    service_id=service_id,
-                    is_active=True
-                )
+                location_services = location_services.filter(service_id=service_id)
             except ValueError:
                 return Response({
                     'success': False,
                     'message': _('Invalid service ID')
                 }, status=400)
-        else:
-            provider_services = provider.provider_services.filter(is_active=True)
         
         # Сериализуем данные
-        from .serializers import ProviderServiceSerializer
-        serializer = ProviderServiceSerializer(provider_services, many=True)
+        serializer = ProviderLocationServiceSerializer(location_services, many=True)
         
         return Response({
             'success': True,
@@ -1117,21 +1105,24 @@ def get_provider_available_slots(request, provider_id):
                 'message': _('Invalid service ID')
             }, status=400)
         
-        # Get service information
-        try:
-            provider_service = provider.provider_services.get(
-                service_id=service_id,
-                is_active=True
-            )
-        except ProviderService.DoesNotExist:
+        # Get service information from provider locations
+        # Используем первую найденную локацию с этой услугой
+        location_service = ProviderLocationService.objects.filter(
+            location__provider=provider,
+            location__is_active=True,
+            service_id=service_id,
+            is_active=True
+        ).first()
+        
+        if not location_service:
             return Response({
                 'success': False,
-                'message': _('Service not found at this institution')
+                'message': _('Service not found at any active location of this institution')
             }, status=404)
         
         # Use service duration if not specified
         if not duration_minutes:
-            duration_minutes = provider_service.duration_minutes
+            duration_minutes = location_service.duration_minutes
         else:
             try:
                 duration_minutes = int(duration_minutes)
@@ -1251,13 +1242,22 @@ def get_provider_available_slots(request, provider_id):
                         })
                 
                 if available_employees:
+                    # Получаем цену из первой доступной локации провайдера с этой услугой
+                    location_service = ProviderLocationService.objects.filter(
+                        location__provider=provider,
+                        location__is_active=True,
+                        service_id=service_id,
+                        is_active=True
+                    ).first()
+                    price = float(location_service.price) if location_service else 0.0
+                    
                     slot_info = {
                         'date': current_date.strftime('%Y-%m-%d'),
                         'time': current_time.strftime('%H:%M'),
                         'end_time': slot_end_time.strftime('%H:%M'),
                         'duration_minutes': duration_minutes,
                         'available_employees': available_employees,
-                        'price': float(provider_service.price)
+                        'price': price
                     }
                     
                     available_slots.append(slot_info)
@@ -1422,31 +1422,50 @@ def search_providers_map_availability(request):
         # Get providers in radius
         providers = Provider.objects.filter(is_active=True)
         
-        # Filter by distance using PostGIS
-        providers = filter_by_distance(providers, latitude, longitude, radius, 'address__point')
+        # Получаем локации в радиусе (вместо провайдеров)
+        from providers.models import ProviderLocation
+        locations = ProviderLocation.objects.filter(
+            provider__in=providers,
+            is_active=True,
+            structured_address__isnull=False,
+            structured_address__point__isnull=False
+        )
         
-        # Filter by rating
-        if min_rating:
-            try:
-                min_rating = float(min_rating)
-                providers = providers.filter(rating__gte=min_rating)
-            except ValueError:
-                return Response({
-                    'success': False,
-                    'message': _('Invalid rating format')
-                }, status=400)
+        # Фильтруем локации по расстоянию
+        locations_with_distance = filter_by_distance(
+            locations, latitude, longitude, radius, 'structured_address__point'
+        )
         
-        # Filter by price
+        # Получаем уникальных провайдеров из локаций
+        provider_ids = set()
+        location_distances = {}  # {provider_id: min_distance}
+        
+        for location, distance in locations_with_distance:
+            provider_id = location.provider_id
+            provider_ids.add(provider_id)
+            if provider_id not in location_distances or distance < location_distances[provider_id]:
+                location_distances[provider_id] = distance
+        
+        providers = Provider.objects.filter(id__in=provider_ids)
+        
+        # Filter by price (через локации)
         if price_min or price_max:
-            providers = providers.filter(
-                provider_services__service_id=service_id,
-                provider_services__is_active=True
+            # Фильтруем провайдеров, у которых есть локации с услугами в указанном диапазоне цен
+            from providers.models import ProviderLocationService
+            
+            location_services_filter = ProviderLocationService.objects.filter(
+                location__provider__in=providers,
+                location__is_active=True,
+                is_active=True
             )
+            
+            if service_id:
+                location_services_filter = location_services_filter.filter(service_id=service_id)
             
             if price_min:
                 try:
                     price_min = float(price_min)
-                    providers = providers.filter(provider_services__price__gte=price_min)
+                    location_services_filter = location_services_filter.filter(price__gte=price_min)
                 except ValueError:
                     return Response({
                         'success': False,
@@ -1456,12 +1475,30 @@ def search_providers_map_availability(request):
             if price_max:
                 try:
                     price_max = float(price_max)
-                    providers = providers.filter(provider_services__price__lte=price_max)
+                    location_services_filter = location_services_filter.filter(price__lte=price_max)
                 except ValueError:
                     return Response({
                         'success': False,
                         'message': _('Invalid maximum price format')
                     }, status=400)
+            
+            # Получаем ID провайдеров, у которых есть локации с подходящими ценами
+            provider_ids = location_services_filter.values_list('location__provider_id', flat=True).distinct()
+            providers = providers.filter(id__in=provider_ids)
+        
+        providers = list(providers)
+        rating_map = _get_provider_rating_map(providers)
+        
+        # Filter by rating (по данным Rating)
+        if min_rating:
+            try:
+                min_rating = float(min_rating)
+                providers = [provider for provider in providers if rating_map.get(provider.id, 0) >= min_rating]
+            except ValueError:
+                return Response({
+                    'success': False,
+                    'message': _('Invalid rating format')
+                }, status=400)
         
         # Limit results
         providers = providers[:limit]
@@ -1470,22 +1507,43 @@ def search_providers_map_availability(request):
         providers_with_availability = []
         
         for provider in providers:
-            # Calculate distance using PostGIS
-            if hasattr(provider, 'address') and provider.address and provider.address.point:
-                distance = provider.address.point.distance(Point(longitude, latitude)) * 111.32  # Convert to km
-                distance = round(distance, 2) if distance else None
+            # Calculate distance using PostGIS (берем расстояние до ближайшей локации)
+            distance = location_distances.get(provider.id)
+            if distance is not None:
+                distance = round(distance, 2)
             else:
-                distance = None
+                # Fallback: ищем ближайшую локацию
+                from providers.models import ProviderLocation
+                from django.contrib.gis.geos import Point
+                user_point = Point(longitude, latitude, srid=4326)
+                nearest_location = ProviderLocation.objects.filter(
+                    provider=provider,
+                    is_active=True,
+                    structured_address__point__isnull=False
+                ).annotate(
+                    distance=Distance('structured_address__point', user_point)
+                ).order_by('distance').first()
+                
+                if nearest_location:
+                    distance = round(nearest_location.distance * 111.32, 2)  # Convert to km
+                else:
+                    distance = None
             
-            # Get service price
+            # Get service price from first available location
             try:
-                provider_service = provider.provider_services.get(
+                location_service = ProviderLocationService.objects.filter(
+                    location__provider=provider,
+                    location__is_active=True,
                     service_id=service_id,
                     is_active=True
-                )
-                price = float(provider_service.price)
-                duration_minutes = provider_service.duration_minutes
-            except ProviderService.DoesNotExist:
+                ).first()
+                
+                if not location_service:
+                    continue
+                    
+                price = float(location_service.price)
+                duration_minutes = location_service.duration_minutes
+            except (ProviderLocationService.DoesNotExist, AttributeError):
                 continue
             
             # Check availability
@@ -1496,8 +1554,8 @@ def search_providers_map_availability(request):
             provider_info = {
                 'id': provider.id,
                 'name': provider.name,
-                'address': provider.address.full_address if provider.address else None,
-                'rating': provider.rating,
+                'address': _get_provider_full_address(provider),
+                'rating': rating_map.get(provider.id, 0),
                 'distance': distance,
                 'price': price,
                 'duration_minutes': duration_minutes,
@@ -1741,4 +1799,227 @@ def find_next_available_slot(provider, service_id, start_date, duration_minutes)
         
     except Exception as e:
         logger.error(f'Error finding next available slot: {e}')
-        return None 
+        return None
+
+
+class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
+    """
+    API для просмотра списка и создания локаций провайдера.
+    
+    Основные возможности:
+    - Получение списка локаций провайдера
+    - Создание новой локации
+    - Фильтрация по провайдеру и статусу активности
+    
+    Права доступа:
+    - Требуется аутентификация
+    - Provider admin может управлять только локациями своей организации
+    """
+    serializer_class = ProviderLocationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['provider', 'is_active']
+    search_fields = ['name', 'phone_number', 'email']
+    ordering_fields = ['name', 'created_at']
+    
+    def get_queryset(self):
+        """
+        Возвращает queryset локаций с учетом прав доступа.
+        """
+        queryset = ProviderLocation.objects.select_related(
+            'provider', 'structured_address'
+        ).prefetch_related('available_services')
+        
+        # Provider admin видит только локации своей организации
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            queryset = queryset.filter(provider__in=managed_providers)
+        
+        return queryset
+    
+    def perform_create(self, serializer):
+        """
+        Создает локацию с проверкой прав доступа.
+        """
+        # Проверяем права доступа - только provider_admin и system_admin могут создавать локации
+        if not (_user_has_role(self.request.user, 'provider_admin') or _user_has_role(self.request.user, 'system_admin')):
+            raise PermissionDenied(
+                _('You do not have permission to create locations.')
+            )
+        
+        provider = serializer.validated_data.get('provider')
+        
+        # Проверяем права доступа для provider_admin
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            if provider not in managed_providers:
+                raise PermissionDenied(
+                    _('You can only create locations for your own organization.')
+                )
+        
+        serializer.save()
+
+
+class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    API для просмотра, обновления и удаления локации провайдера.
+    
+    Права доступа:
+    - Требуется аутентификация
+    - Provider admin может управлять только локациями своей организации
+    """
+    serializer_class = ProviderLocationSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """
+        Возвращает queryset локаций с учетом прав доступа.
+        """
+        queryset = ProviderLocation.objects.select_related(
+            'provider', 'structured_address'
+        ).prefetch_related('available_services')
+        
+        # Provider admin видит только локации своей организации
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            queryset = queryset.filter(provider__in=managed_providers)
+        
+        return queryset
+    
+    def perform_update(self, serializer):
+        """
+        Обновляет локацию с проверкой прав доступа.
+        """
+        provider = serializer.validated_data.get('provider', serializer.instance.provider)
+        
+        # Проверяем права доступа
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            if provider not in managed_providers:
+                raise PermissionDenied(
+                    _('You can only update locations of your own organization.')
+                )
+        
+        serializer.save()
+    
+    def perform_destroy(self, instance):
+        """
+        Удаляет локацию с проверкой прав доступа.
+        """
+        # Проверяем права доступа
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            if instance.provider not in managed_providers:
+                raise PermissionDenied(
+                    _('You can only delete locations of your own organization.')
+                )
+        
+        instance.delete()
+
+
+class ProviderLocationServiceListCreateAPIView(generics.ListCreateAPIView):
+    """
+    API для просмотра списка и создания услуг в локации провайдера.
+    
+    Основные возможности:
+    - Получение списка услуг локации
+    - Создание новой услуги в локации
+    - Фильтрация по локации и статусу активности
+    
+    Права доступа:
+    - Требуется аутентификация
+    - Provider admin может управлять только услугами локаций своей организации
+    """
+    serializer_class = ProviderLocationServiceSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['location', 'service', 'is_active']
+    ordering_fields = ['price', 'duration_minutes', 'created_at']
+    
+    def get_queryset(self):
+        """
+        Возвращает queryset услуг локаций с учетом прав доступа.
+        """
+        queryset = ProviderLocationService.objects.select_related(
+            'location', 'location__provider', 'service'
+        )
+        
+        # Provider admin видит только услуги локаций своей организации
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            queryset = queryset.filter(location__provider__in=managed_providers)
+        
+        return queryset
+    
+    def perform_create(self, serializer):
+        """
+        Создает услугу локации с проверкой прав доступа.
+        """
+        location = serializer.validated_data.get('location')
+        
+        # Проверяем права доступа
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            if location.provider not in managed_providers:
+                raise PermissionDenied(
+                    _('You can only create services for locations of your own organization.')
+                )
+        
+        serializer.save()
+
+
+class ProviderLocationServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    API для просмотра, обновления и удаления услуги в локации провайдера.
+    
+    Права доступа:
+    - Требуется аутентификация
+    - Provider admin может управлять только услугами локаций своей организации
+    """
+    serializer_class = ProviderLocationServiceSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get_queryset(self):
+        """
+        Возвращает queryset услуг локаций с учетом прав доступа.
+        """
+        queryset = ProviderLocationService.objects.select_related(
+            'location', 'location__provider', 'service'
+        )
+        
+        # Provider admin видит только услуги локаций своей организации
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            queryset = queryset.filter(location__provider__in=managed_providers)
+        
+        return queryset
+    
+    def perform_update(self, serializer):
+        """
+        Обновляет услугу локации с проверкой прав доступа.
+        """
+        location = serializer.validated_data.get('location', serializer.instance.location)
+        
+        # Проверяем права доступа
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            if location.provider not in managed_providers:
+                raise PermissionDenied(
+                    _('You can only update services of locations of your own organization.')
+                )
+        
+        serializer.save()
+    
+    def perform_destroy(self, instance):
+        """
+        Удаляет услугу локации с проверкой прав доступа.
+        """
+        # Проверяем права доступа
+        if _user_has_role(self.request.user, 'provider_admin'):
+            managed_providers = self.request.user.get_managed_providers()
+            if instance.location.provider not in managed_providers:
+                raise PermissionDenied(
+                    _('You can only delete services of locations of your own organization.')
+                )
+        
+        instance.delete() 

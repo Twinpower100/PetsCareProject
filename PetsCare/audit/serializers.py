@@ -17,6 +17,8 @@ class UserActionSerializer(serializers.ModelSerializer):
     """
     Serializer для действий пользователей.
     """
+    ip_address = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    
     class Meta:
         model = UserAction
         fields = [
@@ -37,6 +39,7 @@ class SecurityAuditSerializer(serializers.ModelSerializer):
     review_status_display = serializers.CharField(source='get_review_status_display', read_only=True)
     object_name = serializers.CharField(source='object_name', read_only=True)
     reviewed_by_email = serializers.CharField(source='reviewed_by.email', read_only=True)
+    ip_address = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
     class Meta:
         model = SecurityAudit

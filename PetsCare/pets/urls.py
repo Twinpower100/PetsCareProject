@@ -1,4 +1,4 @@
-﻿from django.urls import path, include
+from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import api_views
 from .api_views import (
@@ -24,16 +24,10 @@ router.register(r'incapacity-notifications', api_views.PetIncapacityNotification
 app_name = 'pets'
 
 urlpatterns = [
-    path('api/', include(router.urls)),
+    path('', include(router.urls)),
 
     # Pet endpoints
-    path('pets/', PetListCreateAPIView.as_view(), name='pet-list-create'),
-    path('pets/<int:pk>/', PetRetrieveUpdateDestroyAPIView.as_view(), name='pet-retrieve-update-destroy'),
     path('pets/<int:pk>/delete/', PetDeleteAPIView.as_view(), name='pet-delete'),
-
-    # Medical records endpoints
-    path('medical-records/', MedicalRecordListCreateAPIView.as_view(), name='medical-record-list-create'),
-    path('medical-records/<int:pk>/', MedicalRecordRetrieveUpdateDestroyAPIView.as_view(), name='medical-record-retrieve-update-destroy'),
 
     # Pet records endpoints
     path('records/', PetRecordListCreateAPIView.as_view(), name='pet-record-list-create'),

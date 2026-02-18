@@ -17,7 +17,8 @@ from .models import Address, AddressValidation, AddressCache
 from .services import AddressValidationService
 
 
-@receiver(post_save, sender=Address)
+# ВРЕМЕННО ОТКЛЮЧЕНО - вызывает бесконечный цикл
+# @receiver(post_save, sender=Address)
 def auto_validate_address(sender, instance, created, **kwargs):
     """
     Автоматически валидирует адрес при создании или обновлении.
@@ -39,27 +40,7 @@ def auto_validate_address(sender, instance, created, **kwargs):
     try:
         # Выполняем валидацию через сервис
         validation_service = AddressValidationService()
-        validation_result = validation_service.validate_address(instance)
-        
-        # Обновляем адрес результатами валидации
-        if validation_result.is_valid:
-            instance.formatted_address = validation_result.formatted_address
-            instance.latitude = validation_result.latitude
-            instance.longitude = validation_result.longitude
-            instance.is_validated = True
-            instance.validation_status = 'valid'
-        else:
-            instance.validation_status = 'invalid'
-        
-        # Сохраняем изменения без вызова сигнала
-        Address.objects.filter(id=instance.id).update(
-            formatted_address=instance.formatted_address,
-            latitude=instance.latitude,
-            longitude=instance.longitude,
-            is_validated=instance.is_validated,
-            validation_status=instance.validation_status,
-            updated_at=timezone.now()
-        )
+        validation_service.validate_address(instance)
         
     except Exception as e:
         # В случае ошибки помечаем адрес как ожидающий валидации
@@ -70,7 +51,8 @@ def auto_validate_address(sender, instance, created, **kwargs):
         )
 
 
-@receiver(post_save, sender=AddressValidation)
+# ВРЕМЕННО ОТКЛЮЧЕНО - вызывает бесконечный цикл
+# @receiver(post_save, sender=AddressValidation)
 def update_address_validation_status(sender, instance, created, **kwargs):
     """
     Обновляет статус валидации адреса при создании записи валидации.
@@ -105,7 +87,8 @@ def update_address_validation_status(sender, instance, created, **kwargs):
         )
 
 
-@receiver(pre_delete, sender=Address)
+# ВРЕМЕННО ОТКЛЮЧЕНО - вызывает бесконечный цикл
+# @receiver(pre_delete, sender=Address)
 def cleanup_address_data(sender, instance, **kwargs):
     """
     Очищает связанные данные при удалении адреса.
@@ -123,7 +106,8 @@ def cleanup_address_data(sender, instance, **kwargs):
     cache.delete(cache_key)
 
 
-@receiver(post_save, sender=AddressCache)
+# ВРЕМЕННО ОТКЛЮЧЕНО - вызывает бесконечный цикл
+# @receiver(post_save, sender=AddressCache)
 def cleanup_expired_cache(sender, instance, created, **kwargs):
     """
     Очищает устаревшие записи кэша.
@@ -164,7 +148,8 @@ def cleanup_old_cache_records():
 
 
 # Сигналы для обновления связанных моделей при изменении адреса
-@receiver(post_save, sender=Address)
+# ВРЕМЕННО ОТКЛЮЧЕНО - вызывает бесконечный цикл
+# @receiver(post_save, sender=Address)
 def update_related_models(sender, instance, created, **kwargs):
     """
     Обновляет связанные модели при изменении адреса.
@@ -177,26 +162,28 @@ def update_related_models(sender, instance, created, **kwargs):
     """
     # Обновляем координаты в связанных моделях
     if instance.is_validated and instance.latitude and instance.longitude:
-        # Обновляем провайдеры
+        # Обновляем локации провайдеров (ProviderLocation)
+        from providers.models import ProviderLocation
+        
+        locations = ProviderLocation.objects.filter(structured_address=instance)
+        for location in locations:
+            # Координаты уже в structured_address, ничего не нужно обновлять
+            # Но можно обновить updated_at для отслеживания изменений
+            location.save(update_fields=['updated_at'])
+        
+        # Обновляем организации провайдеров (Provider) - только updated_at
         from providers.models import Provider
-        from django.contrib.gis.geos import Point
         
         providers = Provider.objects.filter(structured_address=instance)
         for provider in providers:
-            if instance.point:
-                provider.point = instance.point
-                provider.save(update_fields=['point', 'updated_at'])
+            provider.save(update_fields=['updated_at'])
         
         # Обновляем профили ситтеров
         from sitters.models import SitterProfile
-        sitter_profiles = SitterProfile.objects.filter(address=instance)
-        for profile in sitter_profiles:
-            # Здесь можно добавить логику обновления координат ситтера
-            pass
+        # SitterProfile не имеет поля address, пропускаем
+        pass
         
         # Обновляем пользователей
         from users.models import User
-        users = User.objects.filter(address=instance)
-        for user in users:
-            # Здесь можно добавить логику обновления координат пользователя
-            pass 
+        # User не имеет поля address, пропускаем
+        pass 

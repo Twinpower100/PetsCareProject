@@ -11,7 +11,7 @@ Models for the scheduling module.
 5. SickLeave - больничные листы
 6. DayOff - отгулы сотрудников
 7. EmployeeSchedule - желаемое расписание работника
-8. ProviderSchedule - расписание учреждения
+8. LocationSchedule - расписание локаций
 9. StaffingRequirement - потребность в специалистах
 
 Особенности реализации:
@@ -80,12 +80,24 @@ class Workplace(models.Model):
         blank=True,
         help_text=_('Description of the workplace')
     )
+    # ВРЕМЕННО: оставляем для обратной совместимости, будет удалено после миграции данных
     provider = models.ForeignKey(
         Provider,
         on_delete=models.CASCADE,
         related_name='workplaces',
-        verbose_name=_('Provider'),
-        help_text=_('Provider this workplace belongs to')
+        verbose_name=_('Provider (Legacy)'),
+        null=True,
+        blank=True,
+        help_text=_('Legacy field - use provider_location instead')
+    )
+    provider_location = models.ForeignKey(
+        'providers.ProviderLocation',
+        on_delete=models.CASCADE,
+        related_name='workplaces',
+        verbose_name=_('Provider Location'),
+        null=True,
+        blank=True,
+        help_text=_('Location this workplace belongs to')
     )
     workplace_type = models.CharField(
         _('Workplace Type'),
@@ -132,7 +144,11 @@ class Workplace(models.Model):
         Returns:
             str: Название рабочего места и учреждения
         """
-        return f"{self.get_localized_name()} ({self.provider.name})"
+        provider = self.provider
+        if not provider and self.provider_location:
+            provider = self.provider_location.provider
+        provider_name = provider.name if provider else _('Unknown Provider')
+        return f"{self.get_localized_name()} ({provider_name})"
     
     def get_localized_name(self, language_code=None):
         """
@@ -261,12 +277,24 @@ class ServicePriority(models.Model):
     - Управление приоритетами для автоматического планирования
     - Автоматическое отслеживание времени создания и обновления
     """
+    # ВРЕМЕННО: оставляем для обратной совместимости, будет удалено после миграции данных
     provider = models.ForeignKey(
         Provider,
         on_delete=models.CASCADE,
         related_name='service_priorities',
-        verbose_name=_('Provider'),
-        help_text=_('Provider this priority applies to')
+        verbose_name=_('Provider (Legacy)'),
+        null=True,
+        blank=True,
+        help_text=_('Legacy field - use provider_location instead')
+    )
+    provider_location = models.ForeignKey(
+        'providers.ProviderLocation',
+        on_delete=models.CASCADE,
+        related_name='service_priorities',
+        verbose_name=_('Provider Location'),
+        null=True,
+        blank=True,
+        help_text=_('Location this priority applies to')
     )
     service = models.ForeignKey(
         Service,
@@ -296,7 +324,7 @@ class ServicePriority(models.Model):
     class Meta:
         verbose_name = _('Service Priority')
         verbose_name_plural = _('Service Priorities')
-        unique_together = ['provider', 'service']
+        unique_together = [['provider_location', 'service'], ['provider', 'service']]  # ВРЕМЕННО: поддержка обоих полей
         ordering = ['provider', 'priority', 'service']
         indexes = [
             models.Index(fields=['provider']),
@@ -312,7 +340,11 @@ class ServicePriority(models.Model):
         Returns:
             str: Название услуги, учреждения и приоритет
         """
-        return f"{self.service.name} at {self.provider.name} (Priority: {self.priority})"
+        provider = self.provider
+        if not provider and self.provider_location:
+            provider = self.provider_location.provider
+        provider_name = provider.name if provider else _('Unknown Provider')
+        return f"{self.service.name} at {provider_name} (Priority: {self.priority})"
 
     def clean(self):
         """
@@ -795,12 +827,24 @@ class StaffingRequirement(models.Model):
     - Уникальная связь по учреждению, услуге и дню недели
     - Автоматическое отслеживание времени создания и обновления
     """
+    # ВРЕМЕННО: оставляем для обратной совместимости, будет удалено после миграции данных
     provider = models.ForeignKey(
         Provider,
         on_delete=models.CASCADE,
         related_name='staffing_requirements',
-        verbose_name=_('Provider'),
-        help_text=_('Provider this requirement applies to')
+        verbose_name=_('Provider (Legacy)'),
+        null=True,
+        blank=True,
+        help_text=_('Legacy field - use provider_location instead')
+    )
+    provider_location = models.ForeignKey(
+        'providers.ProviderLocation',
+        on_delete=models.CASCADE,
+        related_name='staffing_requirements',
+        verbose_name=_('Provider Location'),
+        null=True,
+        blank=True,
+        help_text=_('Location this requirement applies to')
     )
     service = models.ForeignKey(
         Service,
@@ -853,7 +897,7 @@ class StaffingRequirement(models.Model):
     class Meta:
         verbose_name = _('Staffing Requirement')
         verbose_name_plural = _('Staffing Requirements')
-        unique_together = ['provider', 'service', 'day_of_week']
+        unique_together = [['provider_location', 'service', 'day_of_week'], ['provider', 'service', 'day_of_week']]  # ВРЕМЕННО: поддержка обоих полей
         ordering = ['provider', 'day_of_week', 'priority', 'service']
         indexes = [
             models.Index(fields=['provider']),

@@ -178,7 +178,7 @@ class ThreatDetectionService:
     
     def _check_brute_force(self, request: HttpRequest) -> Optional[SecurityThreat]:
         """Проверить brute force атаки"""
-        if request.path in ['/api/login/', '/admin/login/']:
+        if request.path in ['/api/login/', '/api/v1/login/', '/admin/login/']:
             client_ip = self._get_client_ip(request)
             cache_key = f"login_attempts:{client_ip}"
             
@@ -750,7 +750,7 @@ class AccessControlService:
         
         # Проверить ролевые ограничения
         if policy.allowed_roles:
-            user_roles = [role.name for role in user.roles.all()]
+            user_roles = [role.name for role in user.user_types.all()]
             if not any(role in user_roles for role in policy.allowed_roles):
                 return self._create_access_violation(
                     policy, user, 'unauthorized_role',

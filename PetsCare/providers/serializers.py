@@ -11,7 +11,7 @@ Serializers для API поставщиков.
 
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
-from .models import Provider, Employee, EmployeeProvider, Schedule, ProviderService, ProviderSchedule, EmployeeWorkSlot, EmployeeJoinRequest
+from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, EmployeeWorkSlot, EmployeeJoinRequest, ProviderLocation, ProviderLocationService
 from catalog.serializers import ServiceSerializer
 from catalog.models import Service
 from users.serializers import UserSerializer
@@ -39,16 +39,34 @@ class ProviderSerializer(serializers.ModelSerializer):
     availability_info = serializers.SerializerMethodField()
     
     def get_services(self, obj):
-        from .serializers import ProviderServiceSerializer
-        return ProviderServiceSerializer(obj.provider_services.all(), many=True).data
+        """
+        Возвращает услуги из всех локаций провайдера.
+        Используйте ProviderLocationService API для детальной информации.
+        """
+        # Для Swagger возвращаем пустой список, чтобы избежать циклических импортов
+        if getattr(self, 'swagger_fake_view', False):
+            return []
+        # Ленивый импорт для избежания циклических зависимостей
+        from .serializers import ProviderLocationServiceSerializer
+        # Получаем все услуги из всех активных локаций
+        location_services = ProviderLocationService.objects.filter(
+            location__provider=obj,
+            location__is_active=True,
+            is_active=True
+        ).select_related('location', 'service')
+        return ProviderLocationServiceSerializer(location_services, many=True).data
     
     def get_employees(self, obj):
+        # Для Swagger возвращаем пустой список
+        if getattr(self, 'swagger_fake_view', False):
+            return []
         from .serializers import EmployeeSerializer
         return EmployeeSerializer(obj.employees.all(), many=True).data
     
     def get_distance(self, obj):
         """
         Возвращает расстояние до провайдера, если указаны координаты поиска.
+        Использует координаты первой активной локации провайдера.
         """
         # Получаем координаты поиска из контекста
         context = self.context
@@ -64,18 +82,21 @@ class ProviderSerializer(serializers.ModelSerializer):
         except (ValueError, TypeError):
             return None
         
-        # Получаем координаты провайдера используя PostGIS
-        if hasattr(obj, 'address') and obj.address and obj.address.point:
+        # Получаем координаты из первой активной локации провайдера
+        # Координаты теперь хранятся в локациях (ProviderLocation), а не в организации
+        location = obj.locations.filter(is_active=True).first()
+        if location and location.point:
             from django.contrib.gis.geos import Point
-            search_point = Point(search_lon, search_lat)
-            distance = obj.address.point.distance(search_point) * 111.32  # Convert to km
+            search_point = Point(search_lon, search_lat, srid=location.point.srid)
+            distance = location.point.distance(search_point) * 111.32  # Convert to km
             return round(distance, 2) if distance is not None else None
         
         return None
     
     def get_price_info(self, obj):
         """
-        Возвращает информацию о ценах на услуги.
+        Возвращает информацию о ценах на услуги из всех локаций провайдера.
+        Возвращает минимальную и максимальную цену, если услуга доступна в нескольких локациях.
         """
         context = self.context
         service_id = context.get('service_id')
@@ -85,18 +106,27 @@ class ProviderSerializer(serializers.ModelSerializer):
         
         try:
             service_id = int(service_id)
-            provider_service = obj.provider_services.filter(
+            # Получаем все услуги из всех активных локаций провайдера
+            location_services = ProviderLocationService.objects.filter(
+                location__provider=obj,
+                location__is_active=True,
                 service_id=service_id,
                 is_active=True
-            ).first()
+            )
             
-            if provider_service:
+            if location_services.exists():
+                prices = [float(ls.price) for ls in location_services]
+                durations = [ls.duration_minutes for ls in location_services]
+                tech_breaks = [ls.tech_break_minutes for ls in location_services]
+                
                 return {
                     'service_id': service_id,
-                    'price': float(provider_service.price),
-                    'base_price': float(provider_service.base_price),
-                    'duration_minutes': provider_service.duration_minutes,
-                    'tech_break_minutes': provider_service.tech_break_minutes
+                    'price_min': min(prices),
+                    'price_max': max(prices) if len(prices) > 1 else prices[0],
+                    'price': min(prices),  # Для обратной совместимости
+                    'duration_minutes': durations[0] if durations else 60,
+                    'tech_break_minutes': tech_breaks[0] if tech_breaks else 0,
+                    'locations_count': location_services.count()
                 }
         except (ValueError, TypeError):
             pass
@@ -219,22 +249,12 @@ class ProviderSerializer(serializers.ModelSerializer):
     class Meta:
         model = Provider
         fields = [
-            'id', 'name', 'description', 'address', 'structured_address', 'point',
-            'phone_number', 'email', 'website', 'logo', 'rating',
+            'id', 'name', 'structured_address',
+            'phone_number', 'email', 'website', 'logo',
             'is_active', 'created_at', 'updated_at', 'available_category_levels', 'available_categories',
             'services', 'employees', 'distance', 'price_info', 'availability_info'
         ]
         read_only_fields = ['created_at', 'updated_at', 'distance', 'price_info', 'availability_info']
-
-    def validate_rating(self, value):
-        """
-        Проверяет, что рейтинг находится в диапазоне от 0 до 5.
-        """
-        if value < 0 or value > 5:
-            raise serializers.ValidationError(
-                _("Rating must be between 0 and 5")
-            )
-        return value
 
 
 class EmployeeSpecializationSerializer(serializers.ModelSerializer):
@@ -416,7 +436,9 @@ class ProviderSearchSerializer(serializers.Serializer):
             queryset = queryset.filter(name__icontains=data['name'])
 
         if data.get('address'):
-            queryset = queryset.filter(address__icontains=data['address'])
+            queryset = queryset.filter(
+                structured_address__formatted_address__icontains=data['address']
+            )
 
         if data.get('service_type'):
             queryset = queryset.filter(services__category__name=data['service_type'])
@@ -429,9 +451,9 @@ class ProviderSearchSerializer(serializers.Serializer):
             radius_meters = data['radius'] * 1000  # Convert km to meters
             
             queryset = queryset.filter(
-                point__distance_lte=(search_point, radius_meters)
+                structured_address__point__distance_lte=(search_point, radius_meters)
             ).annotate(
-                distance=Distance('point', search_point)
+                distance=Distance('structured_address__point', search_point)
             ).order_by('distance')
 
         if data.get('min_rating'):
@@ -467,12 +489,20 @@ class ProviderSearchSerializer(serializers.Serializer):
             )
 
         if data.get('price_min') or data.get('price_max'):
-            price_filter = Q()
+            # Фильтрация по цене через локации
+            from providers.models import ProviderLocationService
+            location_services_filter = ProviderLocationService.objects.filter(
+                location__provider__in=queryset,
+                location__is_active=True,
+                is_active=True
+            )
             if data.get('price_min'):
-                price_filter &= Q(provider_services__price__gte=data['price_min'])
+                location_services_filter = location_services_filter.filter(price__gte=data['price_min'])
             if data.get('price_max'):
-                price_filter &= Q(provider_services__price__lte=data['price_max'])
-            queryset = queryset.filter(price_filter)
+                location_services_filter = location_services_filter.filter(price__lte=data['price_max'])
+            # Получаем ID провайдеров с подходящими ценами
+            provider_ids = location_services_filter.values_list('location__provider_id', flat=True).distinct()
+            queryset = queryset.filter(id__in=provider_ids)
 
         return queryset.distinct()
 
@@ -491,7 +521,10 @@ class ServiceFilterSerializer(serializers.Serializer):
         """
         Возвращает queryset услуг, соответствующих запросу.
         """
-        queryset = ProviderService.objects.all()
+        queryset = ProviderLocationService.objects.filter(
+            location__is_active=True,
+            is_active=True
+        ).select_related('location', 'service', 'location__provider')
         data = self.validated_data
 
         if data.get('category'):
@@ -506,7 +539,7 @@ class ServiceFilterSerializer(serializers.Serializer):
             queryset = queryset.filter(price_filter)
 
         if data.get('provider_id'):
-            queryset = queryset.filter(provider_id=data['provider_id'])
+            queryset = queryset.filter(location__provider_id=data['provider_id'])
 
         if data.get('specialization'):
             queryset = queryset.filter(
@@ -551,58 +584,7 @@ class ScheduleSerializer(serializers.ModelSerializer):
         return data
 
 
-class ProviderServiceSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для услуги учреждения.
-    """
-    provider = ProviderSerializer(read_only=True)
-    service = serializers.PrimaryKeyRelatedField(
-        queryset=Service.objects.filter(is_active=True),
-        help_text=_('Select service from catalog')
-    )
-
-    class Meta:
-        model = ProviderService
-        fields = [
-            'id', 'provider', 'service', 'price', 'duration_minutes', 
-            'tech_break_minutes', 'base_price', 'is_active',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['created_at', 'updated_at']
-
-    def validate_price(self, value):
-        """
-        Проверяет, что цена не отрицательная.
-        """
-        if value < 0:
-            raise serializers.ValidationError(
-                _("Price cannot be negative")
-            )
-        return value
-
-    def validate(self, data):
-        """
-        Проверяет корректность данных услуги учреждения.
-        """
-        # Проверяем, что базовая цена не меньше основной цены
-        base_price = data.get('base_price')
-        price = data.get('price')
-        
-        if base_price and price and base_price < price:
-            raise serializers.ValidationError(
-                _("Base price cannot be less than main price")
-            )
-        
-        return data
-
-
-class ProviderScheduleSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для расписания учреждения.
-    """
-    class Meta:
-        model = ProviderSchedule
-        fields = '__all__'
+# ProviderServiceSerializer удален - используйте ProviderLocationServiceSerializer
 
 
 class EmployeeWorkSlotSerializer(serializers.ModelSerializer):
@@ -630,4 +612,153 @@ class EmployeeProviderConfirmSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = EmployeeProvider
-        fields = ['is_confirmed'] 
+        fields = ['is_confirmed']
+
+
+class ProviderLocationSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для локации провайдера (точки предоставления услуг).
+    
+    Основные характеристики:
+    - Связь с организацией (Provider)
+    - Адрес и координаты локации
+    - Контактная информация
+    - Список доступных услуг
+    """
+    provider_name = serializers.CharField(source='provider.name', read_only=True)
+    full_address = serializers.SerializerMethodField()
+    latitude = serializers.SerializerMethodField()
+    longitude = serializers.SerializerMethodField()
+    available_services = serializers.SerializerMethodField()
+    
+    def get_full_address(self, obj):
+        """
+        Возвращает полный адрес локации.
+        """
+        return obj.get_full_address()
+    
+    def get_latitude(self, obj):
+        """
+        Возвращает широту из структурированного адреса.
+        """
+        if obj.structured_address and obj.structured_address.latitude:
+            return float(obj.structured_address.latitude)
+        return None
+    
+    def get_longitude(self, obj):
+        """
+        Возвращает долготу из структурированного адреса.
+        """
+        if obj.structured_address and obj.structured_address.longitude:
+            return float(obj.structured_address.longitude)
+        return None
+    
+    def get_available_services(self, obj):
+        """
+        Возвращает список доступных услуг в локации.
+        """
+        # Для Swagger возвращаем пустой список, чтобы избежать циклических импортов
+        if getattr(self, 'swagger_fake_view', False):
+            return []
+        from .serializers import ProviderLocationServiceSerializer
+        services = ProviderLocationService.objects.filter(
+            location=obj,
+            is_active=True
+        )
+        return ProviderLocationServiceSerializer(services, many=True).data
+    
+    class Meta:
+        model = ProviderLocation
+        fields = [
+            'id', 'provider', 'provider_name', 'name',
+            'structured_address', 'full_address',
+            'latitude', 'longitude',
+            'phone_number', 'email',
+            'available_services',
+            'is_active',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'provider_name', 'full_address', 'latitude', 'longitude', 'available_services']
+    
+    def validate(self, data):
+        """
+        Валидация данных локации.
+        
+        Проверяет:
+        - Услуги должны быть из категорий уровня 0 организации
+        """
+        provider = data.get('provider')
+        if provider:
+            # Проверяем, что услуги из доступных категорий организации
+            # (это будет проверяться при создании ProviderLocationService)
+            pass
+        return data
+
+
+class ProviderLocationServiceSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для услуги в локации провайдера.
+    
+    Основные характеристики:
+    - Связь с локацией и услугой
+    - Цена услуги в конкретной локации
+    - Длительность услуги
+    - Технический перерыв
+    """
+    location_name = serializers.CharField(source='location.name', read_only=True)
+    service_name = serializers.CharField(source='service.name', read_only=True)
+    service_details = ServiceSerializer(source='service', read_only=True)
+    
+    class Meta:
+        model = ProviderLocationService
+        fields = [
+            'id', 'location', 'location_name',
+            'service', 'service_name', 'service_details',
+            'price', 'duration_minutes', 'tech_break_minutes',
+            'is_active',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'location_name', 'service_name', 'service_details']
+    
+    def validate(self, data):
+        """
+        Валидация данных услуги локации.
+        
+        Проверяет:
+        - Услуга должна быть из категорий уровня 0 организации
+        - Цена должна быть положительной
+        - Длительность должна быть положительной
+        """
+        location = data.get('location')
+        service = data.get('service')
+        
+        if location and service:
+            # Проверяем, что услуга из доступных категорий организации
+            provider = location.provider
+            available_categories = provider.available_category_levels.filter(level=0, parent__isnull=True)
+            
+            # Проверяем, что услуга является потомком одной из доступных категорий
+            from django.db.models import Q
+            if not Service.objects.filter(
+                Q(id=service.id) & (
+                    Q(id__in=available_categories.values_list('id', flat=True)) |
+                    Q(parent_id__in=available_categories.values_list('id', flat=True))
+                )
+            ).exists():
+                raise serializers.ValidationError(
+                    _('Service must be from provider\'s available category levels (level 0).')
+                )
+        
+        price = data.get('price')
+        if price is not None and price <= 0:
+            raise serializers.ValidationError(
+                _('Price must be positive.')
+            )
+        
+        duration = data.get('duration_minutes')
+        if duration is not None and duration <= 0:
+            raise serializers.ValidationError(
+                _('Duration must be positive.')
+            )
+        
+        return data 

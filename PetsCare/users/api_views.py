@@ -5,6 +5,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 import re
 from .serializers import (
     UserSerializer, 
@@ -15,7 +16,8 @@ from .serializers import (
     ProviderFormApprovalSerializer,
     ProviderAdminRegistrationSerializer,
     ForgotPasswordSerializer,
-    ResetPasswordSerializer
+    ResetPasswordSerializer,
+    AccountDeactivationSerializer
 )
 from google.oauth2 import id_token
 from google.auth.transport import requests
@@ -56,6 +58,21 @@ class UserRegistrationAPIView(generics.CreateAPIView):
     """
     serializer_class = UserRegistrationSerializer
     permission_classes = [permissions.AllowAny]
+    
+    def create(self, request, *args, **kwargs):
+        """
+        Создает пользователя и возвращает токены вместе с профилем.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'access': str(refresh.access_token),
+            'refresh': str(refresh),
+            'user': UserSerializer(user).data
+        }, status=status.HTTP_201_CREATED)
 
 
 class UserLoginAPIView(TokenObtainPairView):
@@ -63,6 +80,17 @@ class UserLoginAPIView(TokenObtainPairView):
     Класс для аутентификации пользователя и получения JWT-токенов.
     """
     permission_classes = [permissions.AllowAny]
+    
+    def post(self, request, *args, **kwargs):
+        """
+        Возвращает токены вместе с профилем пользователя.
+        """
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        data = serializer.validated_data
+        data['user'] = UserSerializer(serializer.user).data
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class UserProfileAPIView(generics.RetrieveUpdateAPIView):
@@ -74,6 +102,9 @@ class UserProfileAPIView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         # Возвращаем текущего пользователя без дополнительных проверок роли
+        if getattr(self, 'swagger_fake_view', False):
+            from users.models import User
+            return User.objects.none().first()  # Возвращаем None для схемы
         return self.request.user
 
 
@@ -89,10 +120,8 @@ class GoogleAuthAPIView(generics.CreateAPIView):
         """
         Обрабатывает аутентификацию через Google и выдаёт токены.
         """
-        logger.info(f"GoogleAuthAPIView: Received request data: {request.data}")
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        logger.info(f"GoogleAuthAPIView: Serializer validated successfully")
         
         try:
             # Получаем данные пользователя из сериализатора
@@ -196,6 +225,8 @@ class ProviderFormListCreateAPIView(generics.ListCreateAPIView):
         Возвращает queryset заявок в зависимости от роли пользователя.
         Системный администратор видит все заявки, обычный пользователь — только свои.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return ProviderForm.objects.none()
         if self.request.user.is_system_admin():
             return ProviderForm.objects.all()
         return ProviderForm.objects.filter(created_by=self.request.user)
@@ -288,71 +319,6 @@ class EmployeeDeactivationAPIView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-def can_delete_user(user):
-    """
-    Проверяет, может ли пользователь быть удалён с учётом ролей менеджера, сотрудника, ситтера и основного владельца питомца.
-    Возвращает (True, None) если можно, иначе (False, сообщение).
-    """
-    # Проверка: менеджер учреждения
-    manager_links = EmployeeProvider.objects.filter(
-        employee__user=user,
-        is_manager=True,
-        end_date=None
-    )
-    for link in manager_links:
-        # Считаем других подтверждённых менеджеров в учреждении
-        other_managers = EmployeeProvider.objects.filter(
-            provider=link.provider,
-            is_manager=True,
-            end_date=None
-        ).exclude(employee__user=user)
-        if not other_managers.exists():
-            return False, _('Cannot delete account: you are the last manager for provider "%(provider)s". Please transfer manager rights first.') % {'provider': link.provider.name}
-        # Проверка: есть ли неподтверждённые приглашения на передачу прав
-        if ManagerTransferInvite.objects.filter(
-            from_manager=link.employee,
-            provider=link.provider,
-            is_accepted=False,
-            is_declined=False
-        ).exists():
-            return False, _('Cannot delete account: manager rights transfer is pending confirmation for provider "%(provider)s".') % {'provider': link.provider.name}
-
-    # Проверка: сотрудник учреждения (не менеджер)
-    if Employee.objects.filter(user=user).exists():
-        return False, _('Cannot delete account: user is an employee')
-
-    # Проверка: активные заявки у ситтера
-    ACTIVE_STATUSES = ['waiting_start', 'active', 'waiting_end', 'waiting_review']
-    if PetSitting.objects.filter(sitter=user, status__in=ACTIVE_STATUSES).exists():
-        return False, _('Cannot delete account: you have active pet sitting requests.')
-
-    # Проверка: основной владелец питомца без других владельцев
-    pets_as_main_owner = Pet.objects.filter(main_owner=user)
-    for pet in pets_as_main_owner:
-        if pet.owners.count() <= 1:
-            return False, _('Cannot delete account: user is the only owner of a pet')
-
-    return True, None
-
-class UserSelfDeleteAPIView(APIView):
-    """
-    API endpoint для самостоятельного удаления учетной записи пользователя.
-    Пользователь не может удалить себя, если он менеджер (единственный или с незавершённой передачей прав), сотрудник учреждения, основной владелец питомца без других владельцев, или ситтер с активными заявками.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def delete(self, request):
-        """
-        Удаляет пользователя, если это разрешено бизнес-правилами.
-        """
-        user = request.user
-
-        can_delete, error = can_delete_user(user)
-        if not can_delete:
-            return Response({'error': error}, status=status.HTTP_400_BAD_REQUEST)
-
-        user.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
 
 class RoleInviteViewSet(APIView):
     """
@@ -394,7 +360,7 @@ class RoleInviteViewSet(APIView):
             return Response(serializer.data)
         except Exception as e:
             return Response(
-                {'error': 'Failed to get role invites'},
+                {'error': _('Failed to get role invites')},
                 status=status.HTTP_400_BAD_REQUEST
             )
     
@@ -429,7 +395,7 @@ class RoleInviteDetailView(APIView):
             return Response(serializer.data)
         except RoleInvite.DoesNotExist:
             return Response(
-                {'error': 'Role invite not found'},
+                {'error': _('Role invite not found')},
                 status=status.HTTP_404_NOT_FOUND
             )
         except Exception as e:
@@ -451,7 +417,7 @@ class RoleInviteDetailView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         except RoleInvite.DoesNotExist:
             return Response(
-                {'error': 'Role invite not found'},
+                {'error': _('Role invite not found')},
                 status=status.HTTP_404_NOT_FOUND
             )
         except Exception as e:
@@ -470,7 +436,7 @@ class RoleInviteDetailView(APIView):
             return Response(status=status.HTTP_204_NO_CONTENT)
         except RoleInvite.DoesNotExist:
             return Response(
-                {'error': 'Role invite not found'},
+                {'error': _('Role invite not found')},
                 status=status.HTTP_404_NOT_FOUND
             )
         except Exception as e:
@@ -821,25 +787,8 @@ class UserSearchByDistanceAPIView(generics.ListAPIView):
             elif user_type == 'pet_owner':
                 queryset = queryset.filter(user_types__name='pet_owner')
         
-        # Фильтруем пользователей с адресами
-        queryset = queryset.filter(
-            Q(address__isnull=False) | 
-            Q(provider_address__isnull=False)
-        ).distinct()
-        
-        # Получаем пользователей в радиусе
-        users_with_distance = filter_by_distance(
-            queryset, lat, lon, radius, 'address__point'
-        )
-        
-        # Если пользователь не найден по основному адресу, ищем по адресу провайдера
-        if not users_with_distance:
-            users_with_distance = filter_by_distance(
-                queryset, lat, lon, radius, 'provider_address__point'
-            )
-        
-        # Возвращаем только объекты пользователей (расстояния будут в сериализаторе)
-        return [user for user, distance in users_with_distance[:limit]]
+        # В модели User нет геокоординат для поиска по расстоянию
+        return User.objects.none()
     
     def get_serializer_context(self):
         """
@@ -909,44 +858,8 @@ class SitterSearchByDistanceAPIView(generics.ListAPIView):
             user_types__name='sitter'
         )
         
-        # Фильтрация по рейтингу
-        if min_rating:
-            try:
-                min_rating = float(min_rating)
-                queryset = queryset.filter(rating__gte=min_rating)
-            except (ValueError, TypeError):
-                pass
-        
-        # Фильтрация по доступности
-        if available == 'true':
-            # Исключаем ситтеров с активными заявками
-            active_sittings = PetSitting.objects.filter(
-                status__in=['pending', 'confirmed', 'in_progress']
-            ).values_list('sitter_id', flat=True)
-            queryset = queryset.exclude(id__in=active_sittings)
-        
-        # Фильтруем ситтеров с адресами
-        queryset = queryset.filter(
-            Q(address__isnull=False) | 
-            Q(provider_address__isnull=False)
-        ).distinct()
-        
-        # Получаем ситтеров в радиусе
-        sitters_with_distance = filter_by_distance(
-            queryset, lat, lon, radius, 'address__point'
-        )
-        
-        # Если ситтер не найден по основному адресу, ищем по адресу провайдера
-        if not sitters_with_distance:
-            sitters_with_distance = filter_by_distance(
-                queryset, lat, lon, radius, 'provider_address__point'
-            )
-        
-        # Сортируем по расстоянию и рейтингу
-        sitters_with_distance.sort(key=lambda x: (x[1], -x[0].rating))
-        
-        # Возвращаем только объекты пользователей
-        return [sitter for sitter, distance in sitters_with_distance[:limit]]
+        # В модели User нет геокоординат и рейтинга для ситтеров
+        return User.objects.none()
     
     def get_serializer_context(self):
         """
@@ -982,10 +895,11 @@ class BulkRoleAssignmentAPIView(APIView):
                     user = User.objects.get(id=user_id)
                     
                     # Проверяем, что роль существует
-                    if role not in dict(User.ROLE_CHOICES):
+                    from .models import UserType
+                    if not UserType.objects.filter(name=role).exists():
                         results['failed'].append({
                             'user_id': user_id,
-                            'error': f'Invalid role: {role}'
+                            'error': _('Invalid role: {role}').format(role=role)
                         })
                         continue
 
@@ -1017,7 +931,7 @@ class BulkRoleAssignmentAPIView(APIView):
                 except User.DoesNotExist:
                     results['failed'].append({
                         'user_id': user_id,
-                        'error': 'User not found'
+                        'error': _('User not found')
                     })
                 except Exception as e:
                     results['failed'].append({
@@ -1241,6 +1155,136 @@ class CheckPhoneAPIView(APIView):
         })
 
 
+class CheckProviderNameAPIView(APIView):
+    """
+    API для проверки уникальности названия провайдера.
+    
+    Проверяет, существует ли уже организация с таким названием
+    в ProviderForm или Provider.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        """
+        Проверяет уникальность названия провайдера.
+        
+        Query параметры:
+        - provider_name: название организации для проверки
+        
+        Returns:
+        - exists: True, если организация с таким названием уже существует
+        """
+        provider_name = request.query_params.get('provider_name')
+        
+        if not provider_name:
+            return Response(
+                {'error': _('Provider name parameter is required')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Проверяем уникальность в ProviderForm (заявки) и Provider (одобренные организации)
+        exists_in_forms = ProviderForm.objects.filter(provider_name__iexact=provider_name.strip()).exists()
+        exists_in_providers = Provider.objects.filter(name__iexact=provider_name.strip()).exists()
+        exists = exists_in_forms or exists_in_providers
+        
+        return Response({
+            'provider_name': provider_name,
+            'exists': exists
+        })
+
+
+class CheckProviderEmailAPIView(APIView):
+    """
+    API для проверки уникальности email провайдера.
+    
+    Проверяет, существует ли уже организация с таким email
+    в ProviderForm или Provider.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        """
+        Проверяет уникальность email провайдера.
+        
+        Query параметры:
+        - provider_email: email организации для проверки
+        
+        Returns:
+        - exists: True, если организация с таким email уже существует
+        - valid: True, если email имеет правильный формат
+        """
+        provider_email = request.query_params.get('provider_email')
+        
+        if not provider_email:
+            return Response(
+                {'error': _('Provider email parameter is required')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Валидация формата email
+        try:
+            validate_email(provider_email)
+            valid = True
+        except DjangoValidationError:
+            valid = False
+        
+        # Проверяем уникальность в ProviderForm (заявки) и Provider (одобренные организации)
+        exists_in_forms = ProviderForm.objects.filter(provider_email__iexact=provider_email.strip()).exists()
+        exists_in_providers = Provider.objects.filter(email__iexact=provider_email.strip()).exists()
+        exists = exists_in_forms or exists_in_providers
+        
+        return Response({
+            'provider_email': provider_email,
+            'exists': exists,
+            'valid': valid
+        })
+
+
+class CheckProviderPhoneAPIView(APIView):
+    """
+    API для проверки уникальности телефона провайдера.
+    
+    Проверяет, существует ли уже организация с таким телефоном
+    в ProviderForm или Provider.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        """
+        Проверяет уникальность телефона провайдера.
+        
+        Query параметры:
+        - provider_phone: телефон организации для проверки
+        
+        Returns:
+        - exists: True, если организация с таким телефоном уже существует
+        - valid: True, если телефон имеет правильный формат
+        """
+        provider_phone = request.query_params.get('provider_phone')
+        
+        if not provider_phone:
+            return Response(
+                {'error': _('Provider phone parameter is required')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Валидация формата телефона (базовая проверка)
+        phone_cleaned = provider_phone.strip().replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+        valid = len(phone_cleaned) >= 10 and phone_cleaned.replace('+', '').isdigit()
+        
+        # Проверяем уникальность в ProviderForm (заявки) и Provider (одобренные организации)
+        # Для ProviderForm используем provider_phone, для Provider - phone_number
+        exists_in_forms = ProviderForm.objects.filter(provider_phone__iexact=provider_phone.strip()).exists()
+        exists_in_providers = Provider.objects.filter(phone_number__iexact=provider_phone.strip()).exists()
+        exists = exists_in_forms or exists_in_providers
+        
+        return Response({
+            'provider_phone': provider_phone,
+            'exists': exists,
+            'valid': valid
+        })
+
+
 class ForgotPasswordAPIView(generics.CreateAPIView):
     """
     API для запроса восстановления пароля.
@@ -1408,3 +1452,494 @@ class ResetPasswordAPIView(generics.CreateAPIView):
         else:
             ip = request.META.get('REMOTE_ADDR')
         return ip 
+
+
+class AccountDeactivationView(APIView):
+    """
+    API view для деактивации аккаунта пользователя.
+    Обрабатывает запросы на деактивацию с проверкой прав и ролей.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        """
+        Деактивирует аккаунт пользователя.
+        """
+        serializer = AccountDeactivationSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        user = request.user
+        
+        # Проверяем, можно ли деактивировать аккаунт
+        deactivation_check = self._check_deactivation_permissions(user)
+        if not deactivation_check['can_deactivate']:
+            return Response({
+                'error': deactivation_check['reason']
+            }, status=status.HTTP_403_FORBIDDEN)
+        
+        try:
+            with transaction.atomic():
+                # Деактивируем аккаунт
+                self._deactivate_user_account(user)
+                
+                # Логируем действие
+                logger.info(f'User {user.id} deactivated their account')
+                
+                return Response({
+                    'message': _('Account successfully deactivated'),
+                    'success': True
+                }, status=status.HTTP_200_OK)
+                
+        except Exception as e:
+            logger.error(f'Error deactivating account for user {user.id}: {str(e)}', exc_info=True)
+            return Response({
+                'error': _('Failed to deactivate account. Please try again.')
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    def _check_deactivation_permissions(self, user):
+        """
+        Проверяет, можно ли деактивировать аккаунт пользователя.
+        """
+        # Получаем роли пользователя
+        user_roles = [role.name for role in user.user_types.all()]
+        
+        # Проверяем служебные роли
+        service_roles = ['system_admin', 'billing_manager', 'booking_manager', 'employee']
+        if any(role in user_roles for role in service_roles):
+            return {
+                'can_deactivate': False,
+                'reason': _('Users with service roles cannot deactivate their accounts')
+            }
+        
+        # Проверяем администратора учреждения
+        if 'provider_admin' in user_roles:
+            return {
+                'can_deactivate': False,
+                'reason': _('Institution administrators cannot deactivate their accounts. Please transfer your rights or contact support.')
+            }
+        
+        # Если только basic_user - можно деактивировать сразу
+        if user_roles == ['basic_user']:
+            return {'can_deactivate': True}
+        
+        # Проверяем активные услуги для других ролей
+        active_services = self._check_active_services(user)
+        if active_services:
+            return {
+                'can_deactivate': False,
+                'reason': _('You have active services. Please complete them before deactivating your account.')
+            }
+        
+        return {'can_deactivate': True}
+    
+    def _check_active_services(self, user):
+        """
+        Проверяет наличие активных услуг у пользователя.
+        """
+        # Проверяем активные передержки через SitterProfile
+        try:
+            from sitters.models import SitterProfile
+            sitter_profile = SitterProfile.objects.get(user=user)
+            active_sittings = PetSitting.objects.filter(
+                sitter=sitter_profile,
+                status__in=['waiting_start', 'active', 'waiting_end', 'waiting_review']
+            ).exists()
+            
+            if active_sittings:
+                return True
+        except SitterProfile.DoesNotExist:
+            # У пользователя нет профиля ситтера
+            pass
+        
+        # Проверяем активные бронирования (если есть такая модель)
+        # TODO: Добавить проверку активных бронирований когда модель будет готова
+        
+        return False
+    
+    def _deactivate_user_account(self, user):
+        """
+        Деактивирует аккаунт пользователя с обработкой всех связанных данных.
+        """
+        with transaction.atomic():
+            logger.info(f'Deactivating user account {user.id}')
+            
+            try:
+                # Отменяем будущие услуги
+                logger.info(f'Step 1: Cancelling future services for user {user.id}')
+                self._cancel_future_services(user)
+                
+                # Обрабатываем питомцев пользователя
+                logger.info(f'Step 2: Handling user pets for user {user.id}')
+                self._handle_user_pets(user)
+                
+                # Обрабатываем роли пользователя
+                logger.info(f'Step 3: Handling user roles for user {user.id}')
+                self._handle_user_roles(user)
+                
+                # Анонимизируем данные пользователя
+                logger.info(f'Step 4: Anonymizing user data for user {user.id}')
+                self._anonymize_user_data(user)
+                
+                # Деактивируем пользователя
+                logger.info(f'Step 5: Deactivating user {user.id}')
+                user.is_active = False
+                user.save()
+                
+                # Отправляем уведомления
+                logger.info(f'Step 6: Sending notifications for user {user.id}')
+                self._send_deactivation_notifications(user)
+                
+                logger.info(f'User {user.id} account deactivated successfully')
+            except Exception as e:
+                logger.error(f'Error during deactivation of user {user.id}: {e}')
+                raise
+    
+    def _cancel_future_services(self, user):
+        """
+        Отменяет все будущие услуги пользователя и уведомляет заинтересованных лиц.
+        """
+        # Отменяем будущие передержки через SitterProfile
+        try:
+            from sitters.models import SitterProfile
+            sitter_profile = SitterProfile.objects.get(user=user)
+            future_sittings = PetSitting.objects.filter(
+                sitter=sitter_profile,
+                status__in=['pending', 'confirmed', 'waiting_start']
+            )
+            
+            for sitting in future_sittings:
+                # Отменяем передержку
+                sitting.status = 'cancelled'
+                sitting.save()
+                
+                # Уведомляем владельца питомца об отмене
+                self._notify_pet_owner_cancellation(sitting)
+        except SitterProfile.DoesNotExist:
+            # У пользователя нет профиля ситтера
+            pass
+    
+    def _handle_user_pets(self, user):
+        """
+        Обрабатывает питомцев пользователя при деактивации.
+        """
+        # Получаем питомцев, где пользователь основной владелец
+        owned_pets = Pet.objects.filter(main_owner=user)
+        
+        for pet in owned_pets:
+            # Сохраняем совладельцев для уведомлений
+            co_owners = list(pet.owners.all())
+            
+            # Питомец остается как есть - это не личная информация владельца
+            
+            # Деактивируем питомца
+            pet.is_active = False
+            pet.save()
+            
+            # Оставляем всех владельцев для истории, но деактивируем питомца
+            # Совладельцы остаются в owners для возможности восстановления
+            # pet.owners остается как есть - все владельцы сохраняются
+            # pet.main_owner остается как есть - для истории
+    
+    def _check_co_owner_roles(self, co_owner):
+        """
+        Проверяет и обновляет роли совладельца после удаления из питомцев.
+        """
+        # Проверяем, есть ли у совладельца другие питомцы
+        other_pets = Pet.objects.filter(
+            owners=co_owner,
+            is_active=True
+        ).exists()
+        
+        if not other_pets:
+            # У совладельца не осталось питомцев - понижаем роль
+            from .models import UserType
+            try:
+                basic_user_role = UserType.objects.get(name='basic_user')
+                pet_owner_role = UserType.objects.get(name='pet_owner')
+                
+                co_owner.user_types.remove(pet_owner_role)
+                if not co_owner.user_types.filter(name='basic_user').exists():
+                    co_owner.user_types.add(basic_user_role)
+            except UserType.DoesNotExist as e:
+                logger.error(f'UserType not found: {e}')
+                # Продолжаем выполнение без изменения ролей
+    
+    def _handle_user_roles(self, user):
+        """
+        Обрабатывает роли пользователя при деактивации.
+        """
+        from .models import UserType
+        
+        try:
+            # Удаляем роли pet_owner и pet_sitter
+            pet_owner_role = UserType.objects.get(name='pet_owner')
+            pet_sitter_role = UserType.objects.get(name='pet_sitter')
+            
+            user.user_types.remove(pet_owner_role, pet_sitter_role)
+            
+            # Оставляем только basic_user
+            basic_user_role = UserType.objects.get(name='basic_user')
+            if not user.user_types.filter(name='basic_user').exists():
+                user.user_types.add(basic_user_role)
+        except UserType.DoesNotExist as e:
+            logger.error(f'UserType not found: {e}')
+            # Продолжаем выполнение без изменения ролей
+    
+    
+    def _anonymize_user_data(self, user):
+        """
+        Анонимизирует данные пользователя.
+        """
+        # Анонимизируем email
+        user.email = f'deactivated_{user.id}@anonymized.local'
+        
+        # Генерируем уникальный номер телефона
+        user.phone_number = self._generate_unique_phone_number()
+        
+        # Генерируем уникальное имя пользователя для деактивированного пользователя
+        user.username = self._generate_deactivated_username()
+        
+        # Анонимизируем имя
+        user.first_name = 'Deactivated'
+        user.last_name = 'User'
+        
+        user.save()
+    
+    def _generate_unique_phone_number(self):
+        """
+        Генерирует уникальный анонимный номер телефона.
+        """
+        import random
+        
+        # Генерируем уникальный номер
+        while True:
+            phone_number = f'+0000000{random.randint(1000, 9999)}'
+            if not User.objects.filter(phone_number=phone_number).exists():
+                return phone_number
+    
+    def _generate_deactivated_username(self):
+        """
+        Генерирует уникальное анонимное имя пользователя для деактивированного аккаунта.
+        """
+        import random
+        import string
+        
+        # Генерируем уникальное имя пользователя для деактивированного аккаунта
+        while True:
+            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+            username = f'deactivated_{random_suffix}'
+            if not User.objects.filter(username=username).exists():
+                return username
+    
+    def _notify_pet_owner_cancellation(self, sitting):
+        """
+        Уведомляет владельца питомца об отмене передержки.
+        """
+        # TODO: Реализовать отправку уведомления владельцу питомца
+        logger.info(f'Pet owner {sitting.pet.main_owner.id} should be notified about sitting {sitting.id} cancellation')
+    
+    def _send_deactivation_notifications(self, user):
+        """
+        Отправляет уведомления о деактивации аккаунта.
+        """
+        # TODO: Реализовать отправку уведомлений
+        logger.info(f'Deactivation notifications should be sent for user {user.id}')
+
+
+class UserRolesView(APIView):
+    """
+    API view для получения ролей пользователя.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        """
+        Возвращает роли текущего пользователя.
+        """
+        user = request.user
+        user_roles = [role.name for role in user.user_types.all()]
+        
+        return Response({
+            'roles': user_roles
+        })
+
+
+class UserSittingsView(APIView):
+    """
+    API view для получения информации о передержках пользователя.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        """
+        Возвращает информацию о передержках пользователя.
+        """
+        user = request.user
+        
+        try:
+            from sitters.models import SitterProfile
+            sitter_profile = SitterProfile.objects.get(user=user)
+            
+            # Проверяем активные передержки
+            active_sittings = PetSitting.objects.filter(
+                sitter=sitter_profile,
+                status__in=['waiting_start', 'active', 'waiting_end', 'waiting_review']
+            ).count()
+            
+            # Проверяем запланированные передержки
+            future_sittings = PetSitting.objects.filter(
+                sitter=sitter_profile,
+                status__in=['pending', 'confirmed', 'waiting_start']
+            ).count()
+            
+            return Response({
+                'has_active_sittings': active_sittings > 0,
+                'has_future_sittings': future_sittings > 0,
+                'active_count': active_sittings,
+                'future_count': future_sittings
+            })
+            
+        except SitterProfile.DoesNotExist:
+            return Response({
+                'has_active_sittings': False,
+                'has_future_sittings': False,
+                'active_count': 0,
+                'future_count': 0
+            })
+
+
+class UserPetsView(APIView):
+    """
+    API view для получения информации о питомцах пользователя.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def get(self, request):
+        """
+        Возвращает информацию о питомцах пользователя.
+        """
+        user = request.user
+        
+        # Проверяем, является ли пользователь основным владельцем
+        owned_pets = Pet.objects.filter(main_owner=user).count()
+        
+        # Проверяем, является ли пользователь совладельцем
+        co_owned_pets = Pet.objects.filter(owners=user).count()
+        
+        return Response({
+            'has_owned_pets': owned_pets > 0,
+            'has_co_owned_pets': co_owned_pets > 0,
+            'owned_count': owned_pets,
+            'co_owned_count': co_owned_pets
+        })
+
+
+class RemoveUserRoleView(APIView):
+    """
+    API view для удаления роли у пользователя.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        """
+        Удаляет роль у пользователя.
+        """
+        role_name = request.data.get('role_name')
+        if not role_name:
+            return Response({'error': _('Role name is required')}, status=400)
+        
+        user = request.user
+        
+        try:
+            from .models import UserType
+            role = UserType.objects.get(name=role_name)
+            
+            # Специальная логика для pet_owner согласно UserDeactivation.md
+            if role_name == 'pet_owner':
+                self._handle_pet_owner_removal(user)
+            
+            user.user_types.remove(role)
+            
+            return Response({
+                'message': _('Role {role_name} removed successfully').format(role_name=role_name),
+                'success': True
+            })
+            
+        except UserType.DoesNotExist:
+            return Response({'error': _('Role not found')}, status=404)
+        except Exception as e:
+            logger.error(f'Error removing role {role_name}: {e}')
+            return Response({'error': _('Failed to remove role')}, status=500)
+    
+    def _handle_pet_owner_removal(self, user):
+        """
+        Обрабатывает удаление роли pet_owner согласно UserDeactivation.md
+        """
+        from pets.models import Pet
+        
+        # 8.2.1.2.1. Для каждого питомца, у которого пользователь основной владелец
+        owned_pets = Pet.objects.filter(main_owner=user)
+        
+        for pet in owned_pets:
+            # 8.2.1.2.1.1. Для каждого совладельца: рассылка уведомлений
+            co_owners = pet.owners.exclude(id=user.id)
+            for co_owner in co_owners:
+                self._notify_co_owner_removal(co_owner, pet, user)
+            
+            # 8.2.1.2.1.3. Деактивация питомца
+            pet.is_active = False
+            pet.save()
+            
+            # 8.2.1.2.1.4. Проверка наличия иных питомцев у совладельцев
+            for co_owner in co_owners:
+                self._check_co_owner_remaining_pets(co_owner)
+        
+        # 8.2.2.2.1. Для каждого питомца, у которого пользователь совладелец
+        co_owned_pets = Pet.objects.filter(owners=user).exclude(main_owner=user)
+        
+        for pet in co_owned_pets:
+            # 8.2.2.2.1.1. Сообщение основному владельцу
+            if pet.main_owner:
+                self._notify_main_owner_co_owner_removal(pet.main_owner, pet, user)
+            
+            # 8.2.2.2.1.2. Удалить пользователя из состава совладельцев
+            pet.owners.remove(user)
+    
+    def _notify_co_owner_removal(self, co_owner, pet, removed_user):
+        """
+        Уведомляет совладельца об удалении из питомца
+        """
+        # TODO: Реализовать отправку уведомления
+        logger.info(f'Co-owner {co_owner.id} should be notified about removal from pet {pet.id} by user {removed_user.id}')
+    
+    def _notify_main_owner_co_owner_removal(self, main_owner, pet, removed_user):
+        """
+        Уведомляет основного владельца об удалении совладельца
+        """
+        # TODO: Реализовать отправку уведомления
+        logger.info(f'Main owner {main_owner.id} should be notified about co-owner {removed_user.id} removal from pet {pet.id}')
+    
+    def _check_co_owner_remaining_pets(self, co_owner):
+        """
+        Проверяет оставшиеся питомцы у совладельца и удаляет pet_owner роль если нет
+        """
+        from pets.models import Pet
+        
+        # Проверяем, есть ли у совладельца еще питомцы
+        remaining_pets = Pet.objects.filter(
+            owners=co_owner,
+            is_active=True
+        ).count()
+        
+        # Если питомцев нет, удаляем роль pet_owner
+        if remaining_pets == 0:
+            try:
+                from .models import UserType
+                pet_owner_role = UserType.objects.get(name='pet_owner')
+                co_owner.user_types.remove(pet_owner_role)
+                logger.info(f'Removed pet_owner role from user {co_owner.id} - no remaining pets')
+            except UserType.DoesNotExist:
+                logger.error('pet_owner role not found')
+            except Exception as e:
+                logger.error(f'Error removing pet_owner role from user {co_owner.id}: {e}')

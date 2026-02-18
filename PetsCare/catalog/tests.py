@@ -14,9 +14,10 @@
 """
 
 from django.test import TestCase, Client
+from unittest import skip
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
-from .models import ServiceCategory, Service
+from .models import Service
 
 
 class ServiceCategoryTest(TestCase):
@@ -32,21 +33,23 @@ class ServiceCategoryTest(TestCase):
     def setUp(self):
         """Подготовка тестовых данных."""
         self.category_data = {
+            'code': 'test_category',
             'name': 'Test Category',
             'description': 'Test Description',
-            'icon': 'test-icon'
+            'level': 0,
+            'is_active': True
         }
 
     def test_create_category(self):
         """Тест создания категории."""
-        category = ServiceCategory.objects.create(**self.category_data)
+        category = Service.objects.create(**self.category_data)
         self.assertEqual(category.name, self.category_data['name'])
         self.assertEqual(category.description, self.category_data['description'])
-        self.assertEqual(category.icon, self.category_data['icon'])
+        self.assertEqual(category.level, 0)
 
     def test_category_str(self):
         """Тест строкового представления категории."""
-        category = ServiceCategory.objects.create(**self.category_data)
+        category = Service.objects.create(**self.category_data)
         self.assertEqual(str(category), self.category_data['name'])
 
 
@@ -63,16 +66,19 @@ class ServiceTest(TestCase):
     """
     def setUp(self):
         """Подготовка тестовых данных."""
-        self.category = ServiceCategory.objects.create(
+        self.category = Service.objects.create(
+            code='test_category_parent',
             name='Test Category',
-            description='Test Description'
+            description='Test Description',
+            level=0,
+            is_active=True
         )
         self.service_data = {
-            'category': self.category,
+            'parent': self.category,
+            'code': 'test_service',
             'name': 'Test Service',
             'description': 'Test Description',
-            'duration_minutes': 60,
-            'price': 100.00,
+            'level': 1,
             'is_active': True
         }
 
@@ -80,18 +86,17 @@ class ServiceTest(TestCase):
         """Тест создания услуги."""
         service = Service.objects.create(**self.service_data)
         self.assertEqual(service.name, self.service_data['name'])
-        self.assertEqual(service.category, self.category)
-        self.assertEqual(service.duration_minutes, self.service_data['duration_minutes'])
-        self.assertEqual(service.price, self.service_data['price'])
+        self.assertEqual(service.parent, self.category)
+        self.assertEqual(service.level, 1)
         self.assertTrue(service.is_active)
 
     def test_service_str(self):
         """Тест строкового представления услуги."""
         service = Service.objects.create(**self.service_data)
-        expected_str = f"{self.service_data['name']} ({self.category.name})"
-        self.assertEqual(str(service), expected_str)
+        self.assertEqual(str(service), self.service_data['name'])
 
 
+@skip("Deprecated HTML catalog views removed")
 class CatalogViewTest(TestCase):
     """
     Тесты для представлений каталога.
@@ -105,16 +110,19 @@ class CatalogViewTest(TestCase):
     def setUp(self):
         """Подготовка тестовых данных."""
         self.client = Client()
-        self.category = ServiceCategory.objects.create(
+        self.category = Service.objects.create(
+            code='test_category_root',
             name='Test Category',
-            description='Test Description'
+            description='Test Description',
+            level=0,
+            is_active=True
         )
         self.service = Service.objects.create(
-            category=self.category,
+            parent=self.category,
+            code='test_service_child',
             name='Test Service',
             description='Test Description',
-            duration_minutes=60,
-            price=100.00,
+            level=1,
             is_active=True
         )
 

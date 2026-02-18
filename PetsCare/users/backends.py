@@ -21,6 +21,8 @@ class EmailBackend(ModelBackend):
             )
             
             # Проверяем пароль
+            if not self.user_can_authenticate(user):
+                return None
             if user.check_password(password):
                 return user
         except User.DoesNotExist:
@@ -30,7 +32,7 @@ class EmailBackend(ModelBackend):
             user = User.objects.filter(
                 Q(email=username) | Q(username=username)
             ).first()
-            if user and user.check_password(password):
+            if user and self.user_can_authenticate(user) and user.check_password(password):
                 return user
         return None
     

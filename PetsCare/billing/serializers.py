@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from .models import (
-    Payment, Invoice, Refund, Contract, ContractType,
+    Payment, Invoice, Refund,
     Currency, ServicePrice, PaymentHistory, BillingManagerProvider, BillingManagerEvent,
     BlockingRule, ProviderBlocking, BlockingNotification
 )
@@ -76,7 +76,8 @@ class PaymentHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = PaymentHistory
         fields = [
-            'id', 'contract', 'amount', 'currency', 'currency_id',
+            'id', 'provider', 'invoice', 'offer_acceptance',
+            'amount', 'currency', 'currency_id',
             'due_date', 'payment_date', 'status', 'description',
             'created_at', 'updated_at'
         ]
@@ -93,113 +94,7 @@ class PaymentHistorySerializer(serializers.ModelSerializer):
         return data
 
 
-class ContractTypeSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для типа контракта.
-    """
-    class Meta:
-        model = ContractType
-        fields = ['id', 'name', 'code', 'description', 'is_active']
-        read_only_fields = ['id']
-
-
-class ContractSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для контракта.
-    """
-    currency = CurrencySerializer(read_only=True)
-    currency_id = serializers.PrimaryKeyRelatedField(
-        queryset=Currency.objects.filter(is_active=True),
-        write_only=True,
-        source='currency'
-    )
-    base_currency = CurrencySerializer(read_only=True)
-    base_currency_id = serializers.PrimaryKeyRelatedField(
-        queryset=Currency.objects.filter(is_active=True),
-        write_only=True,
-        source='base_currency'
-    )
-
-    class Meta:
-        model = Contract
-        fields = [
-            'id', 'provider', 'contract_type', 'number',
-            'start_date', 'end_date', 'status', 'terms',
-            'document', 'document_name', 'currency', 'currency_id',
-            'base_currency', 'base_currency_id', 'payment_deferral_days',
-            'created_by', 'created_at', 'updated_at'
-        ]
-        read_only_fields = ['created_at', 'updated_at', 'document_name']
-
-    def validate(self, data):
-        """
-        Проверяет, что дата окончания не раньше даты начала
-        """
-        if data.get('end_date') and data['end_date'] < data['start_date']:
-            raise serializers.ValidationError(
-                _("Contract end date cannot be earlier than start date")
-            )
-        return data
-
-    def validate_document(self, value):
-        """Валидация загружаемого файла"""
-        if value:
-            # Проверка размера файла (10MB)
-            if value.size > 10 * 1024 * 1024:
-                raise serializers.ValidationError(_("File size should not exceed 10MB"))
-            
-            # Проверка расширения файла
-            valid_extensions = ['.pdf', '.jpg', '.jpeg', '.png']
-            if not any(value.name.lower().endswith(ext) for ext in valid_extensions):
-                raise serializers.ValidationError(
-                    _("File type not supported. Please upload PDF, JPG or PNG")
-                )
-        return value
-
-
-class ContractCreateSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для создания контракта.
-    """
-    class Meta:
-        model = Contract
-        fields = [
-            'provider', 'contract_type', 'number', 'start_date',
-            'end_date', 'terms', 'document', 'currency', 'base_currency',
-            'payment_deferral_days', 'debt_threshold', 'overdue_threshold_1',
-            'overdue_threshold_2', 'overdue_threshold_3'
-        ]
-    
-    def create(self, validated_data):
-        """Создает контракт с автоматическим наследованием глобальных порогов и стандартных условий."""
-        contract = super().create(validated_data)
-        
-        # Наследуем глобальные пороги, если они не указаны
-        if not validated_data.get('debt_threshold'):
-            contract.inherit_global_thresholds()
-        
-        # Наследуем стандартные условия из типа контракта, если они не указаны
-        if contract.contract_type:
-            if not validated_data.get('payment_deferral_days') and contract.contract_type.standard_payment_terms_days:
-                contract.payment_deferral_days = contract.contract_type.standard_payment_terms_days
-            
-            if not validated_data.get('terms') and contract.contract_type.standard_conditions_text:
-                contract.terms = contract.contract_type.standard_conditions_text
-            
-            if not validated_data.get('debt_threshold') and contract.contract_type.standard_debt_threshold:
-                contract.debt_threshold = contract.contract_type.standard_debt_threshold
-            
-            if not validated_data.get('overdue_threshold_1') and contract.contract_type.standard_overdue_threshold_1:
-                contract.overdue_threshold_1 = contract.contract_type.standard_overdue_threshold_1
-            
-            if not validated_data.get('overdue_threshold_2') and contract.contract_type.standard_overdue_threshold_2:
-                contract.overdue_threshold_2 = contract.contract_type.standard_overdue_threshold_2
-            
-            if not validated_data.get('overdue_threshold_3') and contract.contract_type.standard_overdue_threshold_3:
-                contract.overdue_threshold_3 = contract.contract_type.standard_overdue_threshold_3
-        
-        contract.save()
-        return contract
+# ContractTypeSerializer, ContractSerializer, ContractCreateSerializer удалены - используется LegalDocument и DocumentAcceptance
 
 
 class PaymentSerializer(serializers.ModelSerializer):

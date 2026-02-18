@@ -129,6 +129,9 @@ class SitterProfile(models.Model):
         Примечание:
             Рейтинг рассчитывается как среднее арифметическое всех оценок
         """
+        if not hasattr(self.user, 'sitter_rating') or not hasattr(self.user, 'sitter_reviews_count'):
+            return
+        
         self.user.sitter_rating = (
             (self.user.sitter_rating * self.user.sitter_reviews_count + new_rating) /
             (self.user.sitter_reviews_count + 1)

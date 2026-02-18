@@ -4,6 +4,7 @@ from django.utils.deprecation import MiddlewareMixin
 from django.core.cache import cache
 from django.conf import settings
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
 from datetime import timedelta
 
 from .services import get_threat_detection_service, get_ip_blocking_service, get_policy_enforcement_service, get_session_monitoring_service, get_access_control_service
@@ -88,14 +89,14 @@ class SecurityMonitoringMiddleware(MiddlewareMixin):
     def _blocked_response(self, request: HttpRequest) -> HttpResponse:
         """Ответ для заблокированных запросов"""
         return HttpResponseForbidden(
-            "Access denied. Your IP address has been blocked due to security violations.",
+            _("Access denied. Your IP address has been blocked due to security violations."),
             content_type="text/plain"
         )
     
     def _rate_limited_response(self, request: HttpRequest) -> HttpResponse:
         """Ответ для запросов, превысивших лимит"""
         return HttpResponseTooManyRequests(
-            "Too many requests. Please try again later.",
+            _("Too many requests. Please try again later."),
             content_type="text/plain"
         )
     

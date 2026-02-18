@@ -29,17 +29,17 @@ class UserAnalyticsService:
         # Группируем по типам пользователей
         owners = User.objects.filter(
             date_joined__date__range=[start_date, end_date],
-            user_type='owner'
+            user_types__name='pet_owner'
         ).count()
         
         sitters = User.objects.filter(
             date_joined__date__range=[start_date, end_date],
-            user_type='sitter'
+            user_types__name='sitter'
         ).count()
         
         providers = User.objects.filter(
             date_joined__date__range=[start_date, end_date],
-            user_type='provider'
+            user_types__name='provider_admin'
         ).count()
         
         # Общее количество новых пользователей
@@ -194,9 +194,9 @@ class UserAnalyticsService:
         ).values('stage').annotate(count=Count('id'))
         
         # Детализация по типам пользователей
-        owners_count = User.objects.filter(user_type='owner').count()
-        sitters_count = User.objects.filter(user_type='sitter').count()
-        providers_count = User.objects.filter(user_type='provider').count()
+        owners_count = User.objects.filter(user_types__name='pet_owner').count()
+        sitters_count = User.objects.filter(user_types__name='sitter').count()
+        providers_count = User.objects.filter(user_types__name='provider_admin').count()
         
         # Создаем или обновляем запись
         metrics, created = UserMetrics.objects.get_or_create(

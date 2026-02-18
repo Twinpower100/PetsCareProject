@@ -20,7 +20,7 @@ class IsOwnerOrProvider(permissions.BasePermission):
         if hasattr(obj, 'provider') and request.user.has_role('provider_admin'):
             # Проверяем, управляет ли пользователь этим учреждением
             managed_providers = request.user.get_managed_providers()
-            return obj.provider in managed_providers
+            return managed_providers.filter(id=obj.provider.id).exists()
             
         return False
 
@@ -34,7 +34,9 @@ class IsProvider(permissions.BasePermission):
         """
         Проверяет, имеет ли пользователь право на выполнение действия.
         """
-        return hasattr(request.user, 'provider')
+        if not request.user.is_authenticated:
+            return False
+        return request.user.has_role('provider_admin') or request.user.has_role('employee')
 
     def has_object_permission(self, request, view, obj):
         """

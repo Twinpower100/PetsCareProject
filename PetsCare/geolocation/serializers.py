@@ -111,7 +111,7 @@ class AddressSerializer(serializers.ModelSerializer):
             serializers.ValidationError: При ошибке валидации
         """
         # Проверяем, что указан хотя бы один компонент адреса
-        required_fields = ['street_number', 'route', 'locality', 'country']
+        required_fields = ['house_number', 'street', 'city', 'country']
         if not any(attrs.get(field) for field in required_fields):
             raise serializers.ValidationError(
                 _("At least one address component must be specified")
@@ -134,17 +134,7 @@ class AddressSerializer(serializers.ModelSerializer):
         
         # Выполняем валидацию через сервис
         validation_service = AddressValidationService()
-        validation_result = validation_service.validate_address(address)
-        
-        # Обновляем адрес результатами валидации
-        if validation_result.is_valid:
-            address.formatted_address = validation_result.formatted_address
-            address.latitude = validation_result.latitude
-            address.longitude = validation_result.longitude
-            address.is_validated = True
-            address.validation_status = 'valid'
-        else:
-            address.validation_status = 'invalid'
+        validation_service.validate_address(address)
         
         address.save()
         return address
@@ -171,17 +161,7 @@ class AddressSerializer(serializers.ModelSerializer):
         
         # Выполняем повторную валидацию
         validation_service = AddressValidationService()
-        validation_result = validation_service.validate_address(instance)
-        
-        # Обновляем результаты валидации
-        if validation_result.is_valid:
-            instance.formatted_address = validation_result.formatted_address
-            instance.latitude = validation_result.latitude
-            instance.longitude = validation_result.longitude
-            instance.is_validated = True
-            instance.validation_status = 'valid'
-        else:
-            instance.validation_status = 'invalid'
+        validation_service.validate_address(instance)
         
         instance.save()
         return instance

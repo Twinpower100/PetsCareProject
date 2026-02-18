@@ -16,6 +16,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from django.db.models import Q
 from datetime import datetime
 from .models import TimeSlot, Booking, BookingStatus, BookingPayment, BookingReview
 from .serializers import (
@@ -74,7 +75,11 @@ class TimeSlotViewSet(viewsets.ModelViewSet):
         
         # Для админов учреждений - слоты их учреждения
         elif self.request.user.is_provider_admin():
-            queryset = queryset.filter(provider__admin=self.request.user)
+            managed_providers = self.request.user.get_managed_providers()
+            queryset = queryset.filter(
+                Q(provider__in=managed_providers) |
+                Q(provider_location__provider__in=managed_providers)
+            )
             
         return queryset
 
@@ -148,9 +153,26 @@ class BookingViewSet(viewsets.ModelViewSet):
         
         # Для админов учреждений - бронирования их учреждения
         elif self.request.user.is_provider_admin():
-            queryset = queryset.filter(provider__admin=self.request.user)
+            managed_providers = self.request.user.get_managed_providers()
+            queryset = queryset.filter(
+                Q(provider__in=managed_providers) |
+                Q(provider_location__provider__in=managed_providers)
+            )
             
         return queryset
+
+    def _user_can_manage_provider(self, user, booking):
+        """
+        Проверяет, может ли админ учреждения управлять бронированием.
+        """
+        if not user.is_provider_admin():
+            return False
+        provider = booking.provider
+        if not provider and booking.provider_location:
+            provider = booking.provider_location.provider
+        if not provider:
+            return False
+        return user.get_managed_providers().filter(id=provider.id).exists()
     
     def get_serializer_class(self):
         """
@@ -239,7 +261,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
         else:  # provider admin
-            if booking.provider.admin != request.user:
+            if not self._user_can_manage_provider(request.user, booking):
                 return Response(
                     {'error': _('You can only cancel bookings of your provider')},
                     status=status.HTTP_403_FORBIDDEN
@@ -270,7 +292,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
         else:  # provider admin
-            if booking.provider.admin != request.user:
+            if not self._user_can_manage_provider(request.user, booking):
                 return Response(
                     {'error': _('You can only complete bookings of your provider')},
                     status=status.HTTP_403_FORBIDDEN
@@ -301,7 +323,7 @@ class BookingViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_403_FORBIDDEN
                 )
         else:  # provider admin
-            if booking.provider.admin != request.user:
+            if not self._user_can_manage_provider(request.user, booking):
                 return Response(
                     {'error': _('You can only mark no-shows for bookings of your provider')},
                     status=status.HTTP_403_FORBIDDEN
@@ -536,11 +558,15 @@ class CancelBookingAPIView(APIView):
             return Response({})
         try:
             booking = Booking.objects.get(id=booking_id)
-            booking.status = BookingStatus.CANCELLED
+            if request.user.has_role('provider_admin') or request.user.has_role('employee'):
+                status_name = 'cancelled_by_provider'
+            else:
+                status_name = 'cancelled_by_client'
+            booking.status = BookingStatus.objects.get(name=status_name)
             booking.save()
-            return Response({'message': 'Booking cancelled successfully'})
+            return Response({'message': _('Booking cancelled successfully')})
         except Booking.DoesNotExist:
-            return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': _('Booking not found')}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -555,11 +581,11 @@ class CompleteBookingAPIView(APIView):
             return Response({})
         try:
             booking = Booking.objects.get(id=booking_id)
-            booking.status = BookingStatus.COMPLETED
+            booking.status = BookingStatus.objects.get(name='completed')
             booking.save()
-            return Response({'message': 'Booking completed successfully'})
+            return Response({'message': _('Booking completed successfully')})
         except Booking.DoesNotExist:
-            return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': _('Booking not found')}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -574,11 +600,15 @@ class MarkNoShowAPIView(APIView):
             return Response({})
         try:
             booking = Booking.objects.get(id=booking_id)
-            booking.status = BookingStatus.NO_SHOW
+            if request.user.has_role('provider_admin') or request.user.has_role('employee'):
+                status_name = 'no_show_by_provider'
+            else:
+                status_name = 'no_show_by_client'
+            booking.status = BookingStatus.objects.get(name=status_name)
             booking.save()
-            return Response({'message': 'Booking marked as no-show'})
+            return Response({'message': _('Booking marked as no-show')})
         except Booking.DoesNotExist:
-            return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'error': _('Booking not found')}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -594,8 +624,17 @@ class GetAvailableTimeSlotsAPIView(APIView):
         try:
             booking = Booking.objects.get(id=booking_id)
             # Логика получения доступных слотов
+            provider = booking.provider
+            if not provider and booking.provider_location:
+                provider = booking.provider_location.provider
+            if not provider:
+                return Response(
+                    {'error': _('Provider not found for booking')},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
             available_slots = TimeSlot.objects.filter(
-                provider=booking.provider,
+                Q(provider=provider) | Q(provider_location__provider=provider),
                 is_available=True
             ).values('id', 'start_time', 'end_time')
             return Response(list(available_slots))

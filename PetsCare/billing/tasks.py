@@ -8,9 +8,10 @@ import requests
 from decimal import Decimal
 
 from .models import (
-    Contract, ProviderBlocking, BlockingNotification,
+    ProviderBlocking, BlockingNotification,
     BlockingSystemSettings, BlockingSchedule, Currency
 )
+from legal.models import LegalDocument, DocumentAcceptance, LegalDocumentType
 from .services import MultiLevelBlockingService
 
 logger = logging.getLogger(__name__)
@@ -42,20 +43,24 @@ def update_currency_rates():
 
             return {
                 'status': 'success',
-                'message': 'Курсы валют успешно обновлены',
+                'message': _('Currency rates updated successfully'),
                 'timestamp': timezone.now().isoformat()
             }
         else:
             return {
                 'status': 'error',
-                'message': f'Ошибка при получении курсов валют: {data.get("error")}',
+                'message': _('Failed to fetch currency rates: {error}').format(
+                    error=data.get("error")
+                ),
                 'timestamp': timezone.now().isoformat()
             }
 
     except Exception as e:
         return {
             'status': 'error',
-            'message': f'Ошибка при обновлении курсов валют: {str(e)}',
+            'message': _('Failed to update currency rates: {error}').format(
+                error=str(e)
+            ),
             'timestamp': timezone.now().isoformat()
         }
 
@@ -64,7 +69,8 @@ def run_blocking_check():
     """
     Периодическая задача для автоматической проверки и блокировки учреждений по задолженности.
     """
-    MultiLevelBlockingService.check_all_providers()
+    service = MultiLevelBlockingService()
+    service.check_all_providers()
 
 @shared_task
 def check_provider_blocking(provider_id):
@@ -340,4 +346,101 @@ def update_blocking_statistics():
         
     except Exception as e:
         logger.error(f"Error in update_blocking_statistics: {str(e)}")
+        return {'error': str(e)}
+
+
+@shared_task
+def activate_pending_offers():
+    """
+    Активирует оферты, у которых наступил effective_date.
+    
+    При активации новой оферты:
+    - Деактивирует старую активную оферту
+    - Активирует новую оферту
+    - Автоматически создает ProviderOfferAcceptance для всех активных провайдеров
+    - Деактивирует старые акцепты провайдеров
+    
+    Returns:
+        dict: Статистика активации
+    """
+    from django.db import transaction
+    from providers.models import Provider
+    
+    try:
+        today = timezone.now().date()
+        
+        # Находим оферты (LegalDocument типа global_offer), которые должны быть активированы сегодня
+        try:
+            global_offer_type = LegalDocumentType.objects.get(code='global_offer')
+        except LegalDocumentType.DoesNotExist:
+            logger.warning("LegalDocumentType 'global_offer' not found. Skipping offer activation.")
+            return
+        
+        pending_offers = LegalDocument.objects.filter(
+            document_type=global_offer_type,
+            is_active=False,
+            effective_date=today,
+            notification_sent_at__isnull=False  # Уведомления должны быть отправлены
+        )
+        
+        stats = {
+            'offers_found': pending_offers.count(),
+            'activated': 0,
+            'old_acceptances_deactivated': 0,
+            'errors': []
+        }
+        
+        for new_offer in pending_offers:
+            try:
+                with transaction.atomic():
+                    # Деактивируем старую активную оферту того же типа
+                    old_offer = LegalDocument.objects.filter(
+                        document_type=global_offer_type,
+                        is_active=True
+                    ).first()
+                    if old_offer:
+                        old_offer.is_active = False
+                        old_offer.save(update_fields=['is_active'])
+                        logger.info(f"Deactivated old offer {old_offer.id} ({old_offer.version})")
+                    
+                    # Активируем новую оферту
+                    new_offer.is_active = True
+                    new_offer.save(update_fields=['is_active'])
+                    logger.info(f"Activated new offer {new_offer.id} ({new_offer.version})")
+                    
+                    # Деактивируем старые акцепты (провайдеры должны явно акцептовать новую оферту)
+                    deactivated_count = 0
+                    if old_offer:
+                        deactivated_count = DocumentAcceptance.objects.filter(
+                            document=old_offer,
+                            is_active=True
+                        ).update(is_active=False)
+                        
+                        logger.info(
+                            f"Deactivated {deactivated_count} old offer acceptances. "
+                            f"Providers must explicitly accept the new offer."
+                        )
+                    
+                    stats['activated'] += 1
+                    stats['old_acceptances_deactivated'] += deactivated_count
+                    
+                    logger.info(
+                        f"Offer {new_offer.id} activated. "
+                        f"Deactivated {deactivated_count} old acceptances. "
+                        f"Providers must explicitly accept the new offer to continue using the service."
+                    )
+            
+            except Exception as e:
+                error_msg = f"Error activating offer {new_offer.id}: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                stats['errors'].append(error_msg)
+        
+        logger.info(f"Offer activation completed: {stats}")
+        return {
+            'status': 'completed',
+            'statistics': stats
+        }
+    
+    except Exception as e:
+        logger.error(f"Error in activate_pending_offers: {str(e)}", exc_info=True)
         return {'error': str(e)} 

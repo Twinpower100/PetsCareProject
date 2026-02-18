@@ -364,7 +364,7 @@ class DocumentTypeViewSet(viewsets.ModelViewSet):
     def by_service_category(self, request):
         """Возвращает типы документов для конкретной категории услуг"""
         category_id = request.query_params.get('category_id')
-        if category_id:
+        if category_id and hasattr(self.queryset.model, 'service_categories'):
             document_types = self.queryset.filter(
                 service_categories__id=category_id,
                 is_active=True
@@ -1304,6 +1304,8 @@ class PetSearchAPIView(generics.ListAPIView):
     def get_serializer_context(self):
         """Добавляет контекст для сериализатора."""
         context = super().get_serializer_context()
+        if getattr(self, 'swagger_fake_view', False):
+            return context
         context['include_medical_info'] = self.request.query_params.get('include_medical_info', 'false').lower() == 'true'
         context['include_records_count'] = self.request.query_params.get('include_records_count', 'false').lower() == 'true'
         return context

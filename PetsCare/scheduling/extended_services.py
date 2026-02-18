@@ -27,7 +27,7 @@ from .models import (
     Workplace, WorkplaceAllowedServices, ServicePriority,
     Vacation, SickLeave, DayOff, EmployeeSchedule, StaffingRequirement
 )
-from providers.models import Provider, Employee, Schedule, ProviderSchedule
+from providers.models import Provider, Employee, Schedule, LocationSchedule
 from booking.models import Booking, TimeSlot
 from catalog.models import Service
 from .services import SchedulePlannerService, AvailabilityChecker, ConflictResolver
@@ -64,7 +64,7 @@ class BookingIntegrationService:
             Dict: Информация о бронированиях
         """
         bookings = Booking.objects.filter(
-            provider=self.provider,
+            Q(provider=self.provider) | Q(provider_location__provider=self.provider),
             start_time__date__gte=start_date,
             start_time__date__lte=end_date,
             status__name__in=['active', 'pending_confirmation']
@@ -112,11 +112,22 @@ class BookingIntegrationService:
             for assignment in assignments:
                 try:
                     # Создаем или обновляем временной слот
+                    provider_location = assignment.get('provider_location')
+                    if not provider_location and assignment.get('workplace'):
+                        provider_location = assignment['workplace'].provider_location
+                    
+                    slot_filters = {
+                        'employee': assignment['employee'],
+                        'start_time': datetime.combine(date_obj, assignment['start_time']),
+                        'end_time': datetime.combine(date_obj, assignment['end_time'])
+                    }
+                    if provider_location:
+                        slot_filters['provider_location'] = provider_location
+                    else:
+                        slot_filters['provider'] = self.provider
+                    
                     slot, created = TimeSlot.objects.get_or_create(
-                        employee=assignment['employee'],
-                        provider=self.provider,
-                        start_time=datetime.combine(date_obj, assignment['start_time']),
-                        end_time=datetime.combine(date_obj, assignment['end_time']),
+                        **slot_filters,
                         defaults={'is_available': True}
                     )
                     
@@ -216,7 +227,7 @@ class EmergencyRescheduler:
         # Получаем затронутые бронирования
         affected_bookings = Booking.objects.filter(
             employee=employee,
-            provider=self.provider,
+            Q(provider=self.provider) | Q(provider_location__provider=self.provider),
             start_time__date__gte=start_date,
             start_time__date__lte=end_date,
             status__name__in=['active', 'pending_confirmation']
@@ -337,13 +348,18 @@ class EmergencyRescheduler:
             employee = assignment['alternative_employee']
             
             try:
-                slot = TimeSlot.objects.create(
-                    employee=employee,
-                    provider=self.provider,
-                    start_time=booking.start_time,
-                    end_time=booking.end_time,
-                    is_available=True
-                )
+                slot_data = {
+                    'employee': employee,
+                    'start_time': booking.start_time,
+                    'end_time': booking.end_time,
+                    'is_available': True
+                }
+                if booking.provider_location:
+                    slot_data['provider_location'] = booking.provider_location
+                else:
+                    slot_data['provider'] = self.provider
+                
+                slot = TimeSlot.objects.create(**slot_data)
                 created_slots.append(slot)
             except Exception as e:
                 pass
@@ -569,10 +585,16 @@ class AdvancedReportGenerator:
             for assignment in assignments:
                 service = assignment['service']
                 
-                # Получаем цену услуги
+                # Получаем цену услуги из первой доступной локации
                 try:
-                    provider_service = self.provider.provider_services.get(service=service)
-                    price = provider_service.price
+                    from providers.models import ProviderLocationService
+                    location_service = ProviderLocationService.objects.filter(
+                        location__provider=self.provider,
+                        location__is_active=True,
+                        service=service,
+                        is_active=True
+                    ).first()
+                    price = location_service.price if location_service else 0
                 except:
                     price = 0
                 

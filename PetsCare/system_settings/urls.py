@@ -14,7 +14,7 @@ app_name = 'settings'
 
 urlpatterns = [
     # Системные настройки
-    path('api/settings/system/', api_views.SystemSettingsAPIView.as_view(), name='system-settings'),
-    path('api/settings/features/', api_views.FeatureSettingsAPIView.as_view(), name='feature-settings'),
-    path('api/settings/health/', api_views.SystemHealthAPIView.as_view(), name='system-health'),
+    path('system/', api_views.SystemSettingsAPIView.as_view(), name='system-settings'),
+    path('features/', api_views.FeatureSettingsAPIView.as_view(), name='feature-settings'),
+    path('health/', api_views.SystemHealthAPIView.as_view(), name='system-health'),
 ] 

@@ -17,8 +17,10 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from django.core.cache import cache
 from django.db import transaction
+from django.db.models import Q
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext as _
+import logging
 
 from .models import Address, AddressValidation, AddressCache
 from .serializers import (
@@ -26,6 +28,8 @@ from .serializers import (
     AddressAutocompleteSerializer, AddressGeocodeSerializer, AddressReverseGeocodeSerializer
 )
 from .services import AddressValidationService, GoogleMapsService
+
+logger = logging.getLogger(__name__)
 
 
 class AddressViewSet(viewsets.ModelViewSet):
@@ -61,17 +65,20 @@ class AddressViewSet(viewsets.ModelViewSet):
         # Filter by city
         locality = self.request.query_params.get('locality')
         if locality:
-            queryset = queryset.filter(locality__icontains=locality)
+            queryset = queryset.filter(city__icontains=locality)
         
         # Search by address
         search = self.request.query_params.get('search')
         if search:
             queryset = queryset.filter(
-                formatted_address__icontains=search
-            ) | queryset.filter(
-                route__icontains=search
-            ) | queryset.filter(
-                locality__icontains=search
+                Q(formatted_address__icontains=search) |
+                Q(street__icontains=search) |
+                Q(house_number__icontains=search) |
+                Q(building__icontains=search) |
+                Q(city__icontains=search) |
+                Q(district__icontains=search) |
+                Q(region__icontains=search) |
+                Q(country__icontains=search)
             )
         
         return queryset.order_by('-created_at')
@@ -117,9 +124,10 @@ class AddressViewSet(viewsets.ModelViewSet):
                 })
                 
         except Exception as e:
+            logger.exception("Address validation failed: %s", e)
             return Response({
                 'success': False,
-                'error': str(e)
+                'error': _('Unexpected error')
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'])
@@ -227,9 +235,10 @@ class AddressAutocompleteView(APIView):
             })
 
         except Exception as e:
+            logger.exception("Address autocomplete failed: %s", e)
             return Response({
                 'success': False,
-                'error': str(e)
+                'error': _('Unexpected error')
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -255,16 +264,23 @@ class AddressGeocodeView(APIView):
         
         address_text = serializer.validated_data['address']
         
+        import logging
+        logger = logging.getLogger(__name__)
+        
         try:
             maps_service = GoogleMapsService()
-            geocode_result = maps_service.geocode_address(address_text)
+            
+            # Просто используем Google Maps API напрямую - он умеет обрабатывать адреса в разных форматах
+            geocode_result = maps_service.geocode_address(address_text.strip())
             
             if geocode_result:
+                # Извлекаем координаты из структуры, возвращаемой _parse_geocoding_result
+                coordinates = geocode_result.get('coordinates', {})
                 return Response({
                     'success': True,
                     'formatted_address': geocode_result.get('formatted_address'),
-                    'latitude': geocode_result.get('geometry', {}).get('location', {}).get('lat'),
-                    'longitude': geocode_result.get('geometry', {}).get('location', {}).get('lng'),
+                    'latitude': float(coordinates.get('latitude')) if coordinates.get('latitude') else None,
+                    'longitude': float(coordinates.get('longitude')) if coordinates.get('longitude') else None,
                     'place_id': geocode_result.get('place_id'),
                     'components': geocode_result.get('address_components', [])
                 })
@@ -274,10 +290,20 @@ class AddressGeocodeView(APIView):
                     'error': 'Address not found'
                 }, status=status.HTTP_404_NOT_FOUND)
                 
-        except Exception as e:
+        except ValueError as e:
+            # Ошибка с API ключом Google Maps
+            error_msg = str(e)
+            logger.error(f"Google Maps API key error: {error_msg}")
             return Response({
                 'success': False,
-                'error': str(e)
+                'error': 'Google Maps API configuration error. Please contact administrator.',
+                'details': error_msg if 'REQUEST_DENIED' in error_msg or 'invalid' in error_msg.lower() else None
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except Exception as e:
+            logger.exception("Unexpected error in geocoding: %s", e)
+            return Response({
+                'success': False,
+                'error': _('Unexpected error')
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -322,9 +348,10 @@ class AddressReverseGeocodeView(APIView):
                 }, status=status.HTTP_404_NOT_FOUND)
 
         except Exception as e:
+            logger.exception("Reverse geocoding failed: %s", e)
             return Response({
                 'success': False,
-                'error': str(e)
+                'error': _('Unexpected error')
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
@@ -392,7 +419,8 @@ class AddressValidationBulkView(APIView):
                 })
                 
         except Exception as e:
+            logger.exception("Bulk address validation failed: %s", e)
             return Response({
                 'success': False,
-                'error': str(e)
+                'error': _('Unexpected error')
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 

@@ -22,6 +22,7 @@ from typing import Dict, Any, List
 import openpyxl
 from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
+import logging
 
 from .services import (
     IncomeReportService,
@@ -33,6 +34,8 @@ from .services import (
 )
 from providers.models import Provider
 from users.models import User
+
+logger = logging.getLogger(__name__)
 
 
 def get_date_range_from_request(request) -> tuple:
@@ -95,9 +98,10 @@ def income_report(request):
         })
         
     except Exception as e:
+        logger.exception("Income report failed: %s", e)
         return Response({
             'success': False,
-            'error': str(e)
+            'error': _('Unexpected error')
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -134,9 +138,10 @@ def employee_workload_report(request):
         })
         
     except Exception as e:
+        logger.exception("Employee workload report failed: %s", e)
         return Response({
             'success': False,
-            'error': str(e)
+            'error': _('Unexpected error')
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -173,9 +178,10 @@ def debt_report(request):
         })
         
     except Exception as e:
+        logger.exception("Debt report failed: %s", e)
         return Response({
             'success': False,
-            'error': str(e)
+            'error': _('Unexpected error')
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -212,9 +218,10 @@ def activity_report(request):
         })
         
     except Exception as e:
+        logger.exception("Activity report failed: %s", e)
         return Response({
             'success': False,
-            'error': str(e)
+            'error': _('Unexpected error')
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -251,9 +258,10 @@ def payment_report(request):
         })
         
     except Exception as e:
+        logger.exception("Payment report failed: %s", e)
         return Response({
             'success': False,
-            'error': str(e)
+            'error': _('Unexpected error')
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -290,9 +298,10 @@ def cancellation_report(request):
         })
         
     except Exception as e:
+        logger.exception("Cancellation report failed: %s", e)
         return Response({
             'success': False,
-            'error': str(e)
+            'error': _('Unexpected error')
         }, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -334,7 +343,7 @@ def generate_income_excel_report(report_data: Dict[str, Any]) -> HttpResponse:
         cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
     
     for row, provider in enumerate(report_data['by_provider'], 2):
-        ws_providers.cell(row=row, column=1, value=provider['provider__name'])
+        ws_providers.cell(row=row, column=1, value=provider.get('provider_name', provider.get('provider__name', '')))
         ws_providers.cell(row=row, column=2, value=float(provider['income']))
         ws_providers.cell(row=row, column=3, value=provider['bookings_count'])
     
@@ -533,7 +542,7 @@ def generate_activity_excel_report(report_data: Dict[str, Any]) -> HttpResponse:
         cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
     
     for row, provider in enumerate(report_data['by_provider'], 2):
-        ws_providers.cell(row=row, column=1, value=provider['provider__name'])
+        ws_providers.cell(row=row, column=1, value=provider.get('provider_name', provider.get('provider__name', '')))
         ws_providers.cell(row=row, column=2, value=provider['total_bookings'])
         ws_providers.cell(row=row, column=3, value=provider['completed_bookings'])
         ws_providers.cell(row=row, column=4, value=provider['cancelled_bookings'])
@@ -597,7 +606,7 @@ def generate_payment_excel_report(report_data: Dict[str, Any]) -> HttpResponse:
         cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
     
     for row, provider in enumerate(report_data['by_provider'], 2):
-        ws_providers.cell(row=row, column=1, value=provider['booking__provider__name'])
+        ws_providers.cell(row=row, column=1, value=provider.get('provider_name', provider.get('booking__provider__name', '')))
         ws_providers.cell(row=row, column=2, value=float(provider['total_received'] or 0))
         ws_providers.cell(row=row, column=3, value=float(provider['total_expected'] or 0))
         ws_providers.cell(row=row, column=4, value=provider['payment_count'])
@@ -675,7 +684,7 @@ def generate_cancellation_excel_report(report_data: Dict[str, Any]) -> HttpRespo
         cell.fill = PatternFill(start_color="CCCCCC", end_color="CCCCCC", fill_type="solid")
     
     for row, provider in enumerate(report_data['by_provider'], 2):
-        ws_providers.cell(row=row, column=1, value=provider['booking__provider__name'])
+        ws_providers.cell(row=row, column=1, value=provider.get('provider_name', provider.get('booking__provider__name', '')))
         ws_providers.cell(row=row, column=2, value=provider['total_cancellations'])
         ws_providers.cell(row=row, column=3, value=provider['client_cancellations'])
         ws_providers.cell(row=row, column=4, value=provider['provider_cancellations'])

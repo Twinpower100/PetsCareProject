@@ -120,7 +120,7 @@
 - `users.User` - изменения пользователей
 - `pets.Pet` - изменения питомцев
 - `booking.Booking` - изменения бронирований
-- `billing.Contract` - изменения договоров
+- `legal.LegalDocument` - изменения юридических документов
 - `billing.Payment` - платежные операции
 - `access.RoleInvite` - управление инвайтами
 - `providers.Provider` - блокировка учреждений

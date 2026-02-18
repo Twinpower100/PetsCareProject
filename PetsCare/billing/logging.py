@@ -10,7 +10,6 @@
 
 import logging
 from django.utils import timezone
-from django.utils.translation import gettext as _
 from django.contrib.admin.models import LogEntry, CHANGE, ADDITION, DELETION
 from django.contrib.contenttypes.models import ContentType
 from .models import BlockingRule, ProviderBlocking, BlockingNotification
@@ -27,14 +26,11 @@ def log_blocking_created(blocking, created_by=None):
         blocking: Объект ProviderBlocking
         created_by: Пользователь, создавший блокировку (если не автоматически)
     """
-    message = _(  # Мультиязычное сообщение для логирования
-        'Blocking facility %(provider)s created. Debt: %(debt)s %(currency)s, Overdue: %(days)s days'
-    ) % {
-        'provider': blocking.provider.name,
-        'debt': blocking.debt_amount,
-        'currency': blocking.currency.code,
-        'days': blocking.overdue_days,
-    }
+    message = (
+        f"Blocking facility {blocking.provider.name} created. "
+        f"Debt: {blocking.debt_amount} {blocking.currency.code}, "
+        f"Overdue: {blocking.overdue_days} days"
+    )
     
     # Логируем в файл
     blocking_logger.info(message)
@@ -45,7 +41,7 @@ def log_blocking_created(blocking, created_by=None):
         user_id=created_by.id if created_by else None,
         content_type_id=content_type.id,
         object_id=blocking.id,
-        object_repr=_('Blocking %(provider)s') % {'provider': blocking.provider.name},
+        object_repr=f"Blocking {blocking.provider.name}",
         action_flag=ADDITION,
         change_message=message
     )
@@ -60,12 +56,12 @@ def log_blocking_resolved(blocking, resolved_by, notes=''):
         resolved_by: Пользователь, снявший блокировку
         notes: Примечания к снятию блокировки
     """
-    message = _('Provider blocking %(provider)s resolved. Resolved by: %(user)s') % {
-        'provider': blocking.provider.name,
-        'user': resolved_by.get_full_name() if resolved_by else 'System'
-    }
+    message = (
+        f"Provider blocking {blocking.provider.name} resolved. "
+        f"Resolved by: {resolved_by.get_full_name() if resolved_by else 'System'}"
+    )
     if notes:
-        message += _(', Notes: %(notes)s') % {'notes': notes}
+        message += f", Notes: {notes}"
     
     # Логируем в файл
     blocking_logger.info(message)
@@ -73,10 +69,10 @@ def log_blocking_resolved(blocking, resolved_by, notes=''):
     # Логируем в админку Django
     content_type = ContentType.objects.get_for_model(ProviderBlocking)
     LogEntry.objects.log_action(
-        user_id=resolved_by.id,
+        user_id=resolved_by.id if resolved_by else None,
         content_type_id=content_type.id,
         object_id=blocking.id,
-        object_repr=_('Blocking %(provider)s') % {'provider': blocking.provider.name},
+        object_repr=f"Blocking {blocking.provider.name}",
         action_flag=CHANGE,
         change_message=message
     )
@@ -90,13 +86,11 @@ def log_blocking_rule_created(rule, created_by):
         rule: Объект BlockingRule
         created_by: Пользователь, создавший правило
     """
-    message = _(  # Мультиязычное сообщение для логирования
-        'Blocking rule "%(name)s" created. Debt threshold: %(debt)s, Overdue threshold: %(days)s days'
-    ) % {
-        'name': rule.name,
-        'debt': rule.debt_amount_threshold,
-        'days': rule.overdue_days_threshold,
-    }
+    message = (
+        f'Blocking rule "{rule.name}" created. '
+        f"Debt threshold: {rule.debt_amount_threshold}, "
+        f"Overdue threshold: {rule.overdue_days_threshold} days"
+    )
     
     # Логируем в файл
     blocking_logger.info(message)
@@ -107,7 +101,7 @@ def log_blocking_rule_created(rule, created_by):
         user_id=created_by.id,
         content_type_id=content_type.id,
         object_id=rule.id,
-        object_repr=_('Rule %(name)s') % {'name': rule.name},
+        object_repr=f"Rule {rule.name}",
         action_flag=ADDITION,
         change_message=message
     )
@@ -123,10 +117,7 @@ def log_blocking_rule_updated(rule, updated_by, changes):
         changes: Словарь с изменениями
     """
     changes_text = ', '.join([f'{k}: {v}' for k, v in changes.items()])
-    message = _('Blocking rule "%(name)s" changed. Changes: %(changes)s') % {
-        'name': rule.name,
-        'changes': changes_text
-    }
+    message = f'Blocking rule "{rule.name}" changed. Changes: {changes_text}'
     
     # Логируем в файл
     blocking_logger.info(message)
@@ -137,7 +128,7 @@ def log_blocking_rule_updated(rule, updated_by, changes):
         user_id=updated_by.id,
         content_type_id=content_type.id,
         object_id=rule.id,
-        object_repr=_('Rule %(name)s') % {'name': rule.name},
+        object_repr=f"Rule {rule.name}",
         action_flag=CHANGE,
         change_message=message
     )
@@ -150,13 +141,11 @@ def log_notification_sent(notification):
     Args:
         notification: Объект BlockingNotification
     """
-    message = _(  # Мультиязычное сообщение для логирования
-        'Notification sent. Facility: %(provider)s, Type: %(type)s, Recipient: %(recipient)s'
-    ) % {
-        'provider': notification.provider_blocking.provider.name,
-        'type': notification.get_notification_type_display(),
-        'recipient': notification.recipient_email or notification.recipient_phone
-    }
+    message = (
+        f"Notification sent. Facility: {notification.provider_blocking.provider.name}, "
+        f"Type: {notification.get_notification_type_display()}, "
+        f"Recipient: {notification.recipient_email or notification.recipient_phone}"
+    )
     
     # Логируем в файл
     blocking_logger.info(message)

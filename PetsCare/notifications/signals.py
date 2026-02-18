@@ -13,6 +13,7 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.utils.translation import gettext as _
 from django.contrib.auth import get_user_model
+from django.apps import apps
 from .tasks import (
     send_email_verification_task,
     send_password_reset_task,
@@ -259,7 +260,7 @@ def handle_provider_blocking_notifications(sender, instance, **kwargs):
                 
                 # Отправляем уведомление владельцу учреждения
                 notification = notification_service.send_notification(
-                    user=instance.owner,
+                    user=instance.main_owner,
                     notification_type=notification_type,
                     title=title,
                     message=message,
@@ -319,7 +320,7 @@ def handle_pet_reminder_notifications(sender, instance, created, **kwargs):
             
             # Отправляем приветственное уведомление о питомце
             notification = notification_service.send_notification(
-                user=instance.owner,
+                user=instance.main_owner,
                 notification_type='reminder',
                 title=_('Pet Added Successfully'),
                 message=_('Your pet ') + instance.name + _(' has been added to your profile'),
@@ -458,7 +459,6 @@ def handle_role_invite_expiration_notifications(sender, instance, **kwargs):
 
 
 # Сигналы для задолженности
-@receiver(post_save, sender='billing.Debt')
 def handle_debt_notifications(sender, instance, created, **kwargs):
     """
     Обрабатывает уведомления о задолженности.
@@ -482,3 +482,14 @@ def handle_debt_notifications(sender, instance, created, **kwargs):
             
     except Exception as e:
         logger.error(f"Failed to handle debt notification for debt {instance.id}: {e}") 
+
+
+try:
+    Debt = apps.get_model('billing', 'Debt')
+    post_save.connect(
+        handle_debt_notifications,
+        sender=Debt,
+        dispatch_uid='handle_debt_notifications'
+    )
+except LookupError:
+    logger.warning("Debt model not found; debt notifications disabled.")

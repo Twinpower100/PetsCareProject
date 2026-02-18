@@ -48,6 +48,9 @@ class RatingViewSet(viewsets.ReadOnlyModelViewSet):
         """
         Фильтрует queryset по параметрам запроса.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Rating.objects.none()
+        
         queryset = Rating.objects.all()
         
         # Фильтр по типу контента
@@ -78,12 +81,12 @@ class RatingViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             new_rating = service.calculate_rating(rating.content_object)
             return Response({
-                'message': 'Rating recalculated successfully',
+                'message': _('Rating recalculated successfully'),
                 'new_rating': new_rating
             })
         except Exception as e:
             return Response({
-                'error': f'Error recalculating rating: {str(e)}'
+                'error': _('Error recalculating rating: {error}').format(error=str(e))
             }, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=True, methods=['get'])
@@ -99,7 +102,7 @@ class RatingViewSet(viewsets.ReadOnlyModelViewSet):
             return Response(weight_details)
         except Exception as e:
             return Response({
-                'error': f'Error getting review weights: {str(e)}'
+                'error': _('Error getting review weights: {error}').format(error=str(e))
             }, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=False, methods=['get'])
@@ -157,6 +160,9 @@ class ReviewViewSet(viewsets.ModelViewSet):
         """
         Фильтрует queryset по параметрам запроса.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Review.objects.none()
+        
         queryset = Review.objects.all()
         
         # Фильтр по типу контента
@@ -280,6 +286,9 @@ class ComplaintViewSet(viewsets.ModelViewSet):
         """
         Фильтрует queryset по параметрам запроса.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Complaint.objects.none()
+        
         queryset = Complaint.objects.all()
         
         # Фильтр по типу контента
@@ -448,6 +457,9 @@ class ComplaintResponseViewSet(viewsets.ReadOnlyModelViewSet):
         """
         Фильтрует queryset по параметрам запроса.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return ComplaintResponse.objects.none()
+        
         queryset = ComplaintResponse.objects.all()
         
         # Фильтр по жалобе
@@ -479,6 +491,9 @@ class SuspiciousActivityViewSet(viewsets.ReadOnlyModelViewSet):
         """
         Фильтрует queryset по параметрам запроса.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return SuspiciousActivity.objects.none()
+        
         queryset = SuspiciousActivity.objects.all()
         
         # Фильтр по пользователю

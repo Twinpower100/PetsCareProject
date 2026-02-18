@@ -13,8 +13,8 @@
         <p><strong>{% trans "Service" %}:</strong> {{ service.name }}</p>
         <p><strong>{% trans "Date and time" %}:</strong> {{ booking.start_time|date:"d.m.Y H:i" }}</p>
         <p><strong>{% trans "Duration" %}:</strong> {{ service.duration }} {% trans "minutes" %}</p>
-        <p><strong>{% trans "Cost" %}:</strong> {{ booking.total_price }} {{ booking.currency }}</p>
-        <p><strong>{% trans "Address" %}:</strong> {{ provider.address }}</p>
+        <p><strong>{% trans "Cost" %}:</strong> {{ booking.price }}{% if provider.invoice_currency %} {{ provider.invoice_currency.code }}{% endif %}</p>
+        <p><strong>{% trans "Address" %}:</strong> {{ provider.structured_address.formatted_address|default:provider.structured_address }}</p>
     </div>
     
     {% if pet %}
@@ -44,7 +44,7 @@
     
     <p style="margin-top: 20px; font-size: 14px; color: #666;">
         <strong>{% trans "Contact information" %}:</strong><br>
-        {% trans "Phone" %}: {{ provider.phone|default:"Not specified" }}<br>
+        {% trans "Phone" %}: {{ provider.phone_number|default:"Not specified" }}<br>
         {% trans "Email" %}: {{ provider.email|default:"Not specified" }}
     </p>
 </div>

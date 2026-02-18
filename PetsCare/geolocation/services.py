@@ -47,8 +47,13 @@ class GoogleMapsService:
         Returns:
             Dictionary with geocoding results or None on error
         """
+        # Проверяем, что адрес не пустой
+        if not address or not address.strip():
+            logger.warning("Empty address provided to geocode_address")
+            return None
+            
         params = {
-            'address': address,
+            'address': address.strip(),
             'key': self.api_key,
             'language': getattr(settings, 'ADDRESS_VALIDATION_SETTINGS', {}).get('DEFAULT_LANGUAGE', 'en')
         }
@@ -62,9 +67,27 @@ class GoogleMapsService:
             
             data = response.json()
             
-            if data['status'] == 'OK' and data['results']:
+            # Логируем статус ответа для отладки
+            status = data.get('status')
+            results_count = len(data.get('results', []))
+            logger.info(f"Google Maps API response status: {status}, results count: {results_count}")
+            logger.info(f"Google Maps API request URL: {response.url}")
+            logger.info(f"Google Maps API full response: {json.dumps(data, ensure_ascii=False, indent=2)[:1000]}")
+            
+            if status == 'OK' and data.get('results'):
                 return self._parse_geocoding_result(data['results'][0])
             else:
+                # Логируем причину неудачи
+                error_message = data.get('error_message', 'N/A')
+                logger.warning(f"Google Maps API returned status: {status}, error_message: {error_message}")
+                if status == 'ZERO_RESULTS':
+                    logger.warning(f"Address not found in Google Maps: '{address}'")
+                elif status == 'REQUEST_DENIED':
+                    logger.error(f"Google Maps API request denied. Check API key and billing. Error: {error_message}")
+                    # Выбрасываем исключение, чтобы было понятно, что проблема в API ключе
+                    raise ValueError(f"Google Maps API key is invalid or request denied: {error_message}")
+                elif status == 'INVALID_REQUEST':
+                    logger.error(f"Google Maps API invalid request. Check address format. Error: {error_message}")
                 return None
                 
         except requests.RequestException as e:
@@ -327,6 +350,11 @@ class AddressValidationService:
         # Form address string for geocoding
         address_string = address.get_full_address()
         
+        # Логируем адрес для отладки
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(f"_geocode_address called with address_string: '{address_string}' (length: {len(address_string) if address_string else 0})")
+        
         return self.google_service.geocode_address(
             address_string, 
             country=address.country
@@ -434,10 +462,12 @@ class AddressValidationService:
         )
         
         # Update address status
-        if not is_valid:
-            address.validation_status = 'invalid'
-            address.validated_at = timezone.now()
-            address.save()
+        address.is_valid = is_valid
+        address.is_geocoded = bool(address.point)
+        address.is_validated = True
+        address.validation_status = 'valid' if is_valid else 'invalid'
+        address.validated_at = timezone.now()
+        address.save()
     
     def _cache_result(self, address: Address, result: Dict[str, Any]) -> None:
         """

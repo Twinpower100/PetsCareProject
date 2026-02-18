@@ -275,7 +275,7 @@ def search_providers_nearby(lat, lon, radius=10):
     # Фильтруем по расстоянию
     nearby_providers = filter_by_distance(
         providers, lat, lon, radius,
-        'address__latitude', 'address__longitude'
+        'structured_address__point'
     )
     
     return [provider for provider, distance in nearby_providers]

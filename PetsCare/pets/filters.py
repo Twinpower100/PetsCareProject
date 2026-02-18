@@ -220,6 +220,9 @@ class PetFilter(django_filters.FilterSet):
     
     def filter_by_location(self, queryset, name, value):
         """Фильтрация по геолокации с использованием PostGIS."""
+        from users.models import User
+        if not hasattr(User, 'address'):
+            return queryset.none()
         # Получаем параметры геолокации из request
         request = self.request
         if not request:

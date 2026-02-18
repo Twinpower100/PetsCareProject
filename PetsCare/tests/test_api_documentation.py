@@ -62,19 +62,19 @@ class APIDocumentationTestCase(TestCase):
         
         # Список обязательных endpoints
         required_endpoints = [
-            '/api/login/',
-            '/api/register/',
-            '/api/profile/',
-            '/api/pets/',
-            '/api/providers/',
-            '/api/bookings/',
-            '/api/payments/',
-            '/api/notifications/',
-            '/api/ratings/',
-            '/api/reports/',
-            '/api/audit/',
-            '/api/settings/',
-            '/api/analytics/',
+            '/api/v1/login/',
+            '/api/v1/register/',
+            '/api/v1/profile/',
+            '/api/v1/pets/',
+            '/api/v1/providers/',
+            '/api/v1/bookings/',
+            '/api/v1/payments/',
+            '/api/v1/notifications/',
+            '/api/v1/ratings/',
+            '/api/v1/reports/income/',
+            '/api/v1/audit/actions/',
+            '/api/v1/system/',
+            '/api/v1/analytics/user-growth/',
         ]
         
         for endpoint in required_endpoints:
@@ -89,7 +89,7 @@ class APIDocumentationTestCase(TestCase):
         paths = schema_dict.get('paths', {})
         
         # Проверяем login endpoint
-        login_path = paths.get('/api/login/', {})
+        login_path = paths.get('/api/v1/login/', {})
         self.assertIn('post', login_path, "POST метод для /api/login/ отсутствует")
         
         login_post = login_path['post']
@@ -101,7 +101,7 @@ class APIDocumentationTestCase(TestCase):
         self.assertIn('application/json', request_body['content'])
         
         # Проверяем register endpoint
-        register_path = paths.get('/api/register/', {})
+        register_path = paths.get('/api/v1/register/', {})
         self.assertIn('post', register_path, "POST метод для /api/register/ отсутствует")
     
     def test_pets_endpoints(self):
@@ -112,7 +112,7 @@ class APIDocumentationTestCase(TestCase):
         schema_dict = schema.to_dict()
         paths = schema_dict.get('paths', {})
         
-        pets_path = paths.get('/api/pets/', {})
+        pets_path = paths.get('/api/v1/pets/', {})
         
         # Проверяем GET метод
         self.assertIn('get', pets_path, "GET метод для /api/pets/ отсутствует")
@@ -138,20 +138,20 @@ class APIDocumentationTestCase(TestCase):
         schema_dict = schema.to_dict()
         paths = schema_dict.get('paths', {})
         
-        bookings_path = paths.get('/api/bookings/', {})
+        bookings_path = paths.get('/api/v1/bookings/', {})
         
         # Проверяем основные методы
         self.assertIn('get', bookings_path, "GET метод для /api/bookings/ отсутствует")
         self.assertIn('post', bookings_path, "POST метод для /api/bookings/ отсутствует")
         
         # Проверяем детальный endpoint
-        booking_detail_path = paths.get('/api/bookings/{id}/', {})
+        booking_detail_path = paths.get('/api/v1/bookings/{id}/', {})
         self.assertIn('get', booking_detail_path, "GET метод для /api/bookings/{id}/ отсутствует")
         self.assertIn('put', booking_detail_path, "PUT метод для /api/bookings/{id}/ отсутствует")
         self.assertIn('delete', booking_detail_path, "DELETE метод для /api/bookings/{id}/ отсутствует")
         
         # Проверяем cancel endpoint
-        cancel_path = paths.get('/api/bookings/{id}/cancel/', {})
+        cancel_path = paths.get('/api/v1/bookings/{id}/cancel/', {})
         self.assertIn('post', cancel_path, "POST метод для /api/bookings/{id}/cancel/ отсутствует")
     
     def test_notifications_endpoints(self):
@@ -162,17 +162,17 @@ class APIDocumentationTestCase(TestCase):
         schema_dict = schema.to_dict()
         paths = schema_dict.get('paths', {})
         
-        notifications_path = paths.get('/api/notifications/', {})
+        notifications_path = paths.get('/api/v1/notifications/', {})
         
         # Проверяем GET метод
         self.assertIn('get', notifications_path, "GET метод для /api/notifications/ отсутствует")
         
         # Проверяем mark as read endpoint
-        mark_read_path = paths.get('/api/notifications/{id}/mark-as-read/', {})
+        mark_read_path = paths.get('/api/v1/notifications/{id}/mark-as-read/', {})
         self.assertIn('post', mark_read_path, "POST метод для mark-as-read отсутствует")
         
         # Проверяем mark all as read endpoint
-        mark_all_read_path = paths.get('/api/notifications/mark-all-as-read/', {})
+        mark_all_read_path = paths.get('/api/v1/notifications/mark-all-as-read/', {})
         self.assertIn('post', mark_all_read_path, "POST метод для mark-all-as-read отсутствует")
     
     def test_reports_endpoints(self):
@@ -185,12 +185,12 @@ class APIDocumentationTestCase(TestCase):
         
         # Проверяем основные отчеты
         report_endpoints = [
-            '/api/income/',
-            '/api/workload/',
-            '/api/debt/',
-            '/api/activity/',
-            '/api/payments/',
-            '/api/cancellations/',
+            '/api/v1/reports/income/',
+            '/api/v1/reports/workload/',
+            '/api/v1/reports/debt/',
+            '/api/v1/reports/activity/',
+            '/api/v1/reports/payment/',
+            '/api/v1/reports/cancellation/',
         ]
         
         for endpoint in report_endpoints:

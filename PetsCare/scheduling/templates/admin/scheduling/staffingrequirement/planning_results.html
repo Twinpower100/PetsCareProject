@@ -121,7 +121,7 @@
         <div class="provider-info">
             <h3>{% trans 'Provider Information' %}</h3>
             <p><strong>{% trans 'Name' %}:</strong> {{ provider.name }}</p>
-            <p><strong>{% trans 'Address' %}:</strong> {{ provider.address }}</p>
+            <p><strong>{% trans 'Address' %}:</strong> {{ provider.structured_address.formatted_address|default:provider.structured_address }}</p>
             <p><strong>{% trans 'Phone' %}:</strong> {{ provider.phone_number }}</p>
         </div>
         

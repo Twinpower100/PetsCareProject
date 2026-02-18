@@ -2,11 +2,11 @@
 {% load i18n %}
 
 {% block content %}
-  <h1>{% trans 'Экспорт расписания' %}</h1>
+  <h1>{% trans 'Schedule export' %}</h1>
   <form method="post" action="{% url 'admin:provider-schedule-export' %}" id="export-form">
     {% csrf_token %}
     <div>
-      <label for="providers">{% trans 'Провайдеры' %}:</label>
+      <label for="providers">{% trans 'Providers' %}:</label>
       <select name="provider_ids" id="providers" multiple size="5" onchange="filterEmployees()">
         {% for provider in providers %}
           <option value="{{ provider.id }}">{{ provider.name }}</option>
@@ -14,16 +14,16 @@
       </select>
     </div>
     <div style="margin-top: 1em;">
-      <label for="employees">{% trans 'Сотрудники' %}:</label>
+      <label for="employees">{% trans 'Employees' %}:</label>
       <select name="employee_ids" id="employees" multiple size="8">
         {% for employee in employees %}
           <option value="{{ employee.id }}" data-providers="{{ employee.provider_ids|join:',' }}">{{ employee }}</option>
         {% endfor %}
       </select>
-      <div><small>{% trans 'Если не выбрано ни одного сотрудника — будут экспортированы все сотрудники выбранных провайдеров.' %}</small></div>
+      <div><small>{% trans 'If no employees are selected, all employees of the selected providers will be exported.' %}</small></div>
     </div>
     <div style="margin-top: 2em;">
-      <button type="submit">{% trans 'Выгрузить расписание в Excel' %}</button>
+      <button type="submit">{% trans 'Export schedule to Excel' %}</button>
     </div>
   </form>
   <script>
@@ -38,6 +38,6 @@
     }
   </script>
   {% if providers|length == 0 %}
-    <p>{% trans 'Нет доступных провайдеров для экспорта.' %}</p>
+    <p>{% trans 'No providers available for export.' %}</p>
   {% endif %}
 {% endblock %} 

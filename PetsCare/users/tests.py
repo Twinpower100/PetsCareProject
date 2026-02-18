@@ -44,15 +44,15 @@ class UserModelTest(TestCase):
             'password': 'testpass123',
             'first_name': 'Test',
             'last_name': 'User',
-            'user_type': self.user_type
         }
 
     def test_create_user(self):
         """Тест создания пользователя."""
         user = User.objects.create_user(**self.user_data)
+        user.user_types.add(self.user_type)
         self.assertEqual(user.email, self.user_data['email'])
         self.assertTrue(user.check_password(self.user_data['password']))
-        self.assertEqual(user.user_type, self.user_type)
+        self.assertTrue(user.user_types.filter(id=self.user_type.id).exists())
 
     def test_create_superuser(self):
         """Тест создания суперпользователя."""
@@ -151,9 +151,9 @@ class UserViewTest(TestCase):
             email='test@example.com',
             password='testpass123',
             first_name='Test',
-            last_name='User',
-            user_type=self.user_type
+            last_name='User'
         )
+        self.user.user_types.add(self.user_type)
 
     def test_registration_view(self):
         """Тест представления регистрации."""
@@ -199,9 +199,9 @@ class UserURLTest(TestCase):
             email='test@example.com',
             password='testpass123',
             first_name='Test',
-            last_name='User',
-            user_type=self.user_type
+            last_name='User'
         )
+        self.user.user_types.add(self.user_type)
 
     def test_register_url(self):
         """Тест URL регистрации."""

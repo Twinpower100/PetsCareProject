@@ -22,6 +22,7 @@ from datetime import date, timedelta
 from dateutil.relativedelta import relativedelta
 from django.core.validators import RegexValidator
 from django.core.exceptions import ValidationError
+import django_countries.fields
 
 
 class Currency(models.Model):
@@ -88,958 +89,83 @@ class Currency(models.Model):
         pass
 
 
-class ContractType(models.Model):
+class VATRate(models.Model):
     """
-    Модель для типов договоров.
+    Модель для хранения ставок НДС по странам.
     
-    Особенности:
-    - Уникальные коды типов (code)
-    - Проверка уникальности и формата кода
-    - Управление статусом активности
-    - Подробное описание
+    Используется для расчета НДС в счетах:
+    - Если провайдер НЕ плательщик НДС: комиссия * (1 + vat_rate/100)
+    - Если провайдер плательщик НДС (ЕС): Reverse Charge (0% НДС)
     """
-    name = models.CharField(_('Name'), max_length=100)
-    code = models.CharField(
-        _('Code'),
-        max_length=50,
-        unique=True,
-        validators=[RegexValidator(
-            regex=r'^[a-zA-Z0-9_]+$',
-            message='Code must contain only Latin letters, numbers and underscores.'
-        )],
-        help_text=_('Unique technical code (Latin letters, numbers, underscores). Used for integrations and business logic.')
+    country = django_countries.fields.CountryField(
+        verbose_name=_('Country'),
+        help_text=_('Country code (ISO 3166-1 alpha-2)')
     )
-    description = models.TextField(_('Description'), blank=True)
-    is_active = models.BooleanField(_('Is Active'), default=True)
-
-    # Стандартные условия для автоматической сверки
-    standard_commission_percent = models.DecimalField(
-        _('Standard Commission Percent'),
+    rate = models.DecimalField(
         max_digits=5,
         decimal_places=2,
-        null=True,
-        blank=True,
-        help_text=_('Standard commission percentage for this contract type')
+        verbose_name=_('VAT Rate'),
+        help_text=_('VAT rate percentage (e.g., 20.00 for 20%)')
     )
-    standard_commission_fixed = models.DecimalField(
-        _('Standard Commission Fixed'),
-        max_digits=10,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text=_('Standard fixed commission amount for this contract type')
+    effective_date = models.DateField(
+        verbose_name=_('Effective Date'),
+        help_text=_('Date when this VAT rate becomes effective')
     )
-    standard_payment_terms_days = models.PositiveIntegerField(
-        _('Standard Payment Terms (Days)'),
-        default=30,
-        help_text=_('Standard payment terms in days for this contract type')
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name=_('Is Active'),
+        help_text=_('Whether this VAT rate is currently active')
     )
-    standard_conditions_text = models.TextField(
-        _('Standard Conditions Text'),
-        blank=True,
-        help_text=_('Standard terms and conditions text for this contract type')
-    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_('Created At'))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_('Updated At'))
     
-    # Стандартные пороги блокировки
-    standard_debt_threshold = models.DecimalField(
-        _('Standard Debt Threshold'),
-        max_digits=12,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text=_('Standard debt threshold for this contract type')
-    )
-    standard_overdue_threshold_1 = models.PositiveIntegerField(
-        _('Standard Overdue Threshold 1 (Days)'),
-        null=True,
-        blank=True,
-        help_text=_('Standard overdue threshold 1 for this contract type')
-    )
-    standard_overdue_threshold_2 = models.PositiveIntegerField(
-        _('Standard Overdue Threshold 2 (Days)'),
-        null=True,
-        blank=True,
-        help_text=_('Standard overdue threshold 2 for this contract type')
-    )
-    standard_overdue_threshold_3 = models.PositiveIntegerField(
-        _('Standard Overdue Threshold 3 (Days)'),
-        null=True,
-        blank=True,
-        help_text=_('Standard overdue threshold 3 for this contract type')
-    )
-
     class Meta:
-        verbose_name = _('Contract Type')
-        verbose_name_plural = _('Contract Types')
-        ordering = ['name']
-
-    def __str__(self):
-        return self.get_localized_name()
-    
-    def get_localized_name(self, language_code=None):
-        """
-        Получает локализованное название типа договора.
-        
-        Args:
-            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
-            
-        Returns:
-            str: Локализованное название
-        """
-        if language_code is None:
-            from django.utils import translation
-            language_code = translation.get_language()
-        
-        if language_code == 'en' and self.name_en:
-            return self.name_en
-        elif language_code == 'ru' and self.name_ru:
-            return self.name_ru
-        elif language_code == 'me' and self.name_me:
-            return self.name_me
-        elif language_code == 'de' and self.name_de:
-            return self.name_de
-        else:
-            return self.name
-
-
-INVOICE_PERIOD_CHOICES = [
-    ('month', _('Once a month')),
-    ('n_months', _('Once in N months')),
-    ('week', _('Once a week')),
-    ('n_weeks', _('Once in N weeks')),
-]
-
-class Contract(models.Model):
-    """
-    Модель для работы с договорами учреждений.
-    
-    Особенности:
-    - Управление статусами договора
-    - Хранение скан-копий документов
-    - Настройка отсрочки платежей
-    - Мультивалютность
-    - Добавлены поля invoice_period и invoice_period_value для настройки частоты выставления счетов
-    """
-    STATUS_CHOICES = [
-        ('draft', _('Draft')),
-        ('pending_approval', _('Pending Approval')),
-        ('active', _('Active')),
-        ('rejected', _('Rejected')),
-        ('suspended', _('Suspended')),
-        ('terminated', _('Terminated')),
-    ]
-
-    provider = models.ForeignKey(
-        Provider,
-        on_delete=models.CASCADE,
-        verbose_name=_('Provider'),
-        related_name='contracts'
-    )
-    contract_type = models.ForeignKey(
-        ContractType,
-        on_delete=models.PROTECT,
-        verbose_name=_('Contract Type'),
-        related_name='contracts'
-    )
-    number = models.CharField(
-        _('Contract Number'),
-        max_length=50,
-        unique=True
-    )
-    start_date = models.DateField(_('Start Date'))
-    end_date = models.DateField(_('End Date'), null=True, blank=True)
-    status = models.CharField(
-        _('Status'),
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='draft'
-    )
-    terms = models.TextField(_('Terms And Conditions'))
-    document = models.FileField(
-        _('Contract Document'),
-        upload_to='contracts/%Y/%m/%d/',
-        null=True,
-        blank=True,
-        help_text=_('Upload scanned contract document')
-    )
-    document_name = models.CharField(
-        _('Document Name'),
-        max_length=255,
-        null=True,
-        blank=True,
-        help_text=_('Original name of the uploaded document')
-    )
-    payment_deferral_days = models.PositiveIntegerField(
-        _('Payment Deferral Days'),
-        default=0,
-        help_text=_('Number of days for payment deferral after service completion')
-    )
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        verbose_name=_('Created By'),
-        related_name='created_contracts'
-    )
-    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
-    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
-    currency = models.ForeignKey(
-        Currency,
-        on_delete=models.PROTECT,
-        verbose_name=_('Currency'),
-        related_name='contracts',
-        help_text=_('Contract currency')
-    )
-    base_currency = models.ForeignKey(
-        Currency,
-        on_delete=models.PROTECT,
-        verbose_name=_('Base Currency'),
-        related_name='base_contracts',
-        help_text=_('Base currency for calculations')
-    )
-    invoice_period = models.CharField(
-        max_length=20,
-        choices=INVOICE_PERIOD_CHOICES,
-        default='month',
-        verbose_name=_('Invoice Period'),
-        help_text=_('Frequency of invoice generation')
-    )
-    invoice_period_value = models.PositiveIntegerField(
-        default=1,
-        verbose_name=_('Invoice Period Value'),
-        help_text=_('Number of months or weeks for invoice period. For example, enter 3 for "Once in N months" to generate an invoice every 3 months. For "Once a month" or "Once a week" leave as 1.')
-    )
-    
-    # Поля для автоматической блокировки
-    debt_threshold = models.DecimalField(
-        _('Debt Threshold'),
-        max_digits=12,
-        decimal_places=2,
-        help_text=_('Maximum allowed debt amount in contract currency')
-    )
-    overdue_threshold_1 = models.PositiveIntegerField(
-        _('Overdue Threshold 1 (Days)'),
-        help_text=_('Days overdue for information notification')
-    )
-    overdue_threshold_2 = models.PositiveIntegerField(
-        _('Overdue Threshold 2 (Days)'),
-        help_text=_('Days overdue for exclusion from search')
-    )
-    overdue_threshold_3 = models.PositiveIntegerField(
-        _('Overdue Threshold 3 (Days)'),
-        help_text=_('Days overdue for full blocking')
-    )
-    
-    # Настройки исключения из автоматических проверок
-    exclude_from_automatic_blocking = models.BooleanField(
-        _('Exclude From Automatic Blocking'),
-        default=False,
-        help_text=_('Whether this contract should be excluded from automatic blocking checks')
-    )
-    blocking_exclusion_reason = models.TextField(
-        _('Blocking Exclusion Reason'),
-        blank=True,
-        help_text=_('Reason for excluding this contract from automatic blocking')
-    )
-    
-    # Поля для workflow согласования
-    submitted_for_approval_at = models.DateTimeField(
-        _('Submitted For Approval At'),
-        null=True,
-        blank=True,
-        help_text=_('When the contract was submitted for approval')
-    )
-    approved_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        verbose_name=_('Approved By'),
-        related_name='approved_contracts',
-        help_text=_('User who approved the contract')
-    )
-    approved_at = models.DateTimeField(
-        _('Approved At'),
-        null=True,
-        blank=True,
-        help_text=_('When the contract was approved')
-    )
-    rejection_reason = models.TextField(
-        _('Rejection Reason'),
-        blank=True,
-        help_text=_('Reason for rejecting the contract')
-    )
-
-    class Meta:
-        verbose_name = _('Contract')
-        verbose_name_plural = _('Contracts')
-        ordering = ['-created_at']
+        verbose_name = _('VAT Rate')
+        verbose_name_plural = _('VAT Rates')
+        unique_together = ['country', 'effective_date']
+        ordering = ['country', '-effective_date']
         indexes = [
-            models.Index(fields=['provider', 'status']),
-            models.Index(fields=['start_date', 'end_date']),
-            models.Index(fields=['status']),
-            models.Index(fields=['exclude_from_automatic_blocking']),
+            models.Index(fields=['country', 'is_active']),
+            models.Index(fields=['effective_date']),
         ]
-
+    
     def __str__(self):
-        return f"{self.number} - {self.provider.name}"
-
-    def save(self, *args, **kwargs):
-        """Сохраняет оригинальное имя загруженного файла документа"""
-        if self.document and not self.document_name:
-            self.document_name = self.document.name
-        super().save(*args, **kwargs)
-
-    def delete(self, *args, **kwargs):
-        """Удаляет файл документа при удалении записи договора"""
-        if self.document:
-            self.document.delete(save=False)
-        super().delete(*args, **kwargs)
-
-    def calculate_debt(self, start_date=None, end_date=None, target_currency=None):
+        return f"{self.country} - {self.rate}% (from {self.effective_date})"
+    
+    @classmethod
+    def get_rate_for_country(cls, country_code, date=None):
         """
-        Рассчитывает задолженность по договору за указанный период.
-        
-        Параметры:
-        - start_date: начальная дата периода
-        - end_date: конечная дата периода
-        - target_currency: валюта для расчета
-        """
-        if not target_currency:
-            target_currency = self.currency
-
-        if not start_date:
-            start_date = self.start_date
-        if not end_date:
-            end_date = timezone.now().date()
-
-        total_debt = Decimal('0')
-        overdue_debt = Decimal('0')
-        expected_payments = Decimal('0')
-
-        # Получаем все активные комиссии
-        active_commissions = self.commissions.filter(is_active=True)
-
-        for commission in active_commissions:
-            # Получаем все завершенные бронирования за период
-            bookings = Booking.objects.filter(
-                provider=self.provider,
-                status='completed',
-                end_date__gte=start_date,
-                end_date__lte=end_date
-            )
-
-            for booking in bookings:
-                # Рассчитываем комиссию
-                commission_amount = commission.calculate_commission(
-                    booking.amount,
-                    booking.currency
-                )
-                total_debt += commission_amount
-
-                # Проверяем просрочку
-                payment_deadline = booking.end_date + timezone.timedelta(
-                    days=self.payment_deferral_days
-                )
-                if payment_deadline < timezone.now().date():
-                    overdue_debt += commission_amount
-
-        # Конвертируем в целевую валюту
-        if target_currency != self.currency:
-            total_debt = self.currency.convert_amount(total_debt, target_currency)
-            overdue_debt = self.currency.convert_amount(overdue_debt, target_currency)
-
-        return {
-            'total_debt': total_debt,
-            'overdue_debt': overdue_debt,
-            'expected_payments': expected_payments
-        }
-
-    def get_payment_schedule(self, start_date=None, end_date=None):
-        """
-        Возвращает график платежей по договору.
-        
-        Параметры:
-        - start_date: начальная дата периода
-        - end_date: конечная дата периода
-        """
-        if not start_date:
-            start_date = self.start_date
-        if not end_date:
-            end_date = self.end_date or timezone.now().date()
-
-        schedule = []
-        active_commissions = self.commissions.filter(is_active=True)
-
-        for commission in active_commissions:
-            # Получаем все завершенные бронирования за период
-            bookings = Booking.objects.filter(
-                provider=self.provider,
-                status='completed',
-                end_date__gte=start_date,
-                end_date__lte=end_date
-            )
-
-            for booking in bookings:
-                # Рассчитываем комиссию
-                commission_amount = commission.calculate_commission(
-                    booking.amount,
-                    booking.currency
-                )
-
-                # Определяем дату платежа
-                payment_date = booking.end_date + timezone.timedelta(
-                    days=self.payment_deferral_days
-                )
-
-                schedule.append({
-                    'date': payment_date,
-                    'amount': commission_amount,
-                    'currency': self.currency,
-                    'booking': booking,
-                    'commission': commission
-                })
-
-        # Сортируем по дате
-        schedule.sort(key=lambda x: x['date'])
-        return schedule
-
-    def get_default_invoice_period(self):
-        """
-        Возвращает рекомендуемые start_date и end_date для нового инвойса по условиям контракта.
-        Если invoice_period = 'n_months', invoice_period_value = 3, то период инвойса будет 3 месяца.
-        Если invoice_period = 'n_weeks', invoice_period_value = 2, то период инвойса будет 2 недели.
-        Если invoice_period = 'month' или 'week', invoice_period_value игнорируется и считается как 1.
-        """
-        last_invoice = self.invoices.order_by('-end_date').first()
-        if last_invoice:
-            # Начало нового периода — день после окончания последнего инвойса
-            start_date = last_invoice.end_date + timedelta(days=1)
-        else:
-            # Если инвойсов не было — с даты начала контракта
-            start_date = self.start_date
-        period_value = self.invoice_period_value or 1
-        # Расчет даты окончания периода в зависимости от типа периода
-        if self.invoice_period == 'month':
-            end_date = (start_date + relativedelta(months=1)) - timedelta(days=1)
-        elif self.invoice_period == 'n_months':
-            end_date = (start_date + relativedelta(months=period_value)) - timedelta(days=1)
-        elif self.invoice_period == 'week':
-            end_date = start_date + timedelta(weeks=1) - timedelta(days=1)
-        elif self.invoice_period == 'n_weeks':
-            end_date = start_date + timedelta(weeks=period_value) - timedelta(days=1)
-        else:
-            end_date = date.today()
-        return start_date, end_date
-
-    def get_blocking_level(self):
-        """
-        Определяет текущий уровень блокировки учреждения на основе задолженности.
-        
-        Возвращает:
-        - 0: нет блокировки
-        - 1: информационное уведомление
-        - 2: исключение из поиска
-        - 3: полная блокировка
-        """
-        # Наследуем глобальные пороги, если они не установлены
-        self.inherit_global_thresholds()
-            
-        debt_info = self.calculate_debt()
-        overdue_debt = debt_info['overdue_debt']
-        
-        # Проверяем пороги по сумме
-        if self.debt_threshold and overdue_debt >= self.debt_threshold:
-            return 3  # Полная блокировка
-            
-        # Проверяем пороги по дням просрочки
-        max_overdue_days = self.get_max_overdue_days()
-        
-        if self.overdue_threshold_3 and max_overdue_days >= self.overdue_threshold_3:
-            return 3  # Полная блокировка
-        elif self.overdue_threshold_2 and max_overdue_days >= self.overdue_threshold_2:
-            return 2  # Исключение из поиска
-        elif self.overdue_threshold_1 and max_overdue_days >= self.overdue_threshold_1:
-            return 1  # Информационное уведомление
-            
-        return 0
-
-    def get_max_overdue_days(self):
-        """
-        Рассчитывает максимальное количество дней просрочки по договору.
-        
-        Особенности:
-        - Учитывает только рабочие дни (если настроено)
-        - Исключает праздники (если настроено)
-        - Учитывает отсрочку платежей
-        - Возвращает 0 если нет просрочки
-        """
-        from django.utils import timezone
-        from datetime import timedelta
-        
-        # Получаем настройки системы блокировки
-        try:
-            settings = BlockingSystemSettings.get_settings()
-        except:
-            # Если настройки не найдены, используем стандартный расчет
-            settings = None
-        
-        # Получаем все завершенные бронирования
-        bookings = Booking.objects.filter(
-            provider=self.provider,
-            status='completed'
-        )
-        
-        max_overdue_days = 0
-        
-        for booking in bookings:
-            # Рассчитываем дату платежа с учетом отсрочки
-            payment_deadline = booking.end_date + timedelta(days=self.payment_deferral_days)
-            
-            # Если есть настройки системы, учитываем рабочие дни
-            if settings and settings.exclude_holidays:
-                # Рассчитываем количество рабочих дней просрочки
-                overdue_days = self._calculate_working_days_overdue(payment_deadline, settings)
-            else:
-                # Стандартный расчет по календарным дням
-                overdue_days = (timezone.now().date() - payment_deadline).days
-            
-            max_overdue_days = max(max_overdue_days, overdue_days)
-                
-        return max_overdue_days
-
-    def _calculate_working_days_overdue(self, payment_deadline, settings):
-        """
-        Рассчитывает количество рабочих дней просрочки.
+        Получает актуальную ставку НДС для страны на указанную дату.
         
         Args:
-            payment_deadline: Дата платежа
-            settings: Настройки системы блокировки
+            country_code: ISO 3166-1 alpha-2 код страны
+            date: Дата для проверки (по умолчанию - сегодня)
             
         Returns:
-            int: Количество рабочих дней просрочки
+            Decimal или None: Ставка НДС или None если не найдена
         """
         from django.utils import timezone
-        from datetime import timedelta
         
-        today = timezone.now().date()
+        if date is None:
+            date = timezone.now().date()
         
-        # Если платеж еще не просрочен
-        if payment_deadline >= today:
-            return 0
-        
-        # Рассчитываем количество рабочих дней
-        working_days = 0
-        current_date = payment_deadline + timedelta(days=1)  # Начинаем со следующего дня
-        
-        while current_date <= today:
-            if settings.is_working_day(current_date):
-                working_days += 1
-            current_date += timedelta(days=1)
-        
-        return working_days
-
-    def get_overdue_days_for_booking(self, booking):
-        """
-        Рассчитывает количество дней просрочки для конкретного бронирования.
-        
-        Args:
-            booking: Объект Booking
-            
-        Returns:
-            int: Количество дней просрочки
-        """
-        from django.utils import timezone
-        from datetime import timedelta
-        
-        # Получаем настройки системы блокировки
         try:
-            settings = BlockingSystemSettings.get_settings()
-        except:
-            settings = None
-        
-        # Рассчитываем дату платежа с учетом отсрочки
-        payment_deadline = booking.end_date + timedelta(days=self.payment_deferral_days)
-        
-        # Если есть настройки системы, учитываем рабочие дни
-        if settings and settings.exclude_holidays:
-            return self._calculate_working_days_overdue(payment_deadline, settings)
-        else:
-            # Стандартный расчет по календарным дням
-            overdue_days = (timezone.now().date() - payment_deadline).days
-            return max(0, overdue_days)
-
-    def should_be_blocked(self):
-        """
-        Проверяет, должно ли учреждение быть заблокировано.
-        """
-        return self.get_blocking_level() >= 2
-
-    def should_be_excluded_from_search(self):
-        """
-        Проверяет, должно ли учреждение быть исключено из поиска.
-        """
-        return self.get_blocking_level() >= 2
-
-    def get_blocking_reason(self):
-        """
-        Возвращает причину блокировки в виде строки.
-        
-        Returns:
-            str: Причина блокировки или None если блокировки нет
-        """
-        blocking_level = self.get_blocking_level()
-        if blocking_level == 0:
+            rate = cls.objects.filter(
+                country=country_code,
+                is_active=True,
+                effective_date__lte=date
+            ).order_by('-effective_date').first()
+            
+            return rate.rate if rate else None
+        except Exception:
             return None
-        elif blocking_level == 1:
-            return _("Information notification: overdue %(days)d days, debt %(amount)s %(currency)s") % {
-                'days': self.get_max_overdue_days(),
-                'amount': self.calculate_debt(),
-                'currency': self.currency.code
-            }
-        elif blocking_level == 2:
-            return _("Search exclusion: overdue %(days)d days, debt %(amount)s %(currency)s") % {
-                'days': self.get_max_overdue_days(),
-                'amount': self.calculate_debt(),
-                'currency': self.currency.code
-            }
-        elif blocking_level == 3:
-            return _("Full blocking: overdue %(days)d days, debt %(amount)s %(currency)s") % {
-                'days': self.get_max_overdue_days(),
-                'amount': self.calculate_debt(),
-                'currency': self.currency.code
-            }
-        
-        return None
-
-    def get_notification_recipients(self):
-        """
-        Возвращает список получателей уведомлений о блокировках.
-        """
-        recipients = []
-        
-        # Добавляем контактные данные учреждения
-        if self.provider.email:
-            recipients.append({
-                'email': self.provider.email,
-                'name': self.provider.name,
-                'type': 'provider'
-            })
-        
-        # Добавляем менеджера по биллингу
-        billing_managers = BillingManagerProvider.get_active_managers_for_provider(self.provider)
-        for manager in billing_managers:
-            if manager.get_effective_manager().email:
-                recipients.append({
-                    'email': manager.get_effective_manager().email,
-                    'name': manager.get_effective_manager().get_full_name(),
-                    'type': 'billing_manager'
-                })
-        
-        return recipients
-
-    def apply_blocking_template(self):
-        """
-        Автоматически применяет шаблон блокировки к договору.
-        
-        Returns:
-            bool: True если шаблон найден и применен, False если шаблон не найден
-        """
-        from .models import BlockingTemplate
-        
-        template = BlockingTemplate.find_template_for_provider(self.provider)
-        if template:
-            template.apply_to_contract(self)
-            return True
-        return False
-
-    def save(self, *args, **kwargs):
-        """
-        Сохраняет договор и автоматически применяет шаблон блокировки при создании.
-        """
-        is_new = self.pk is None
-        super().save(*args, **kwargs)
-        
-        # Применяем шаблон только при создании нового договора
-        if is_new and self.status == 'draft':
-            self.apply_blocking_template()
-    
-    def inherit_global_thresholds(self):
-        """Наследует глобальные пороги блокировки из настроек системы."""
-        from .models import BlockingSystemSettings
-        
-        settings = BlockingSystemSettings.get_settings()
-        
-        # Наследуем глобальные пороги, если они не установлены
-        if not hasattr(self, 'debt_threshold') or self.debt_threshold is None:
-            self.debt_threshold = settings.get_global_debt_threshold()
-        
-        if not hasattr(self, 'overdue_threshold_1') or self.overdue_threshold_1 is None:
-            self.overdue_threshold_1 = settings.get_global_overdue_threshold_1()
-        
-        if not hasattr(self, 'overdue_threshold_2') or self.overdue_threshold_2 is None:
-            self.overdue_threshold_2 = settings.get_global_overdue_threshold_2()
-        
-        if not hasattr(self, 'overdue_threshold_3') or self.overdue_threshold_3 is None:
-            self.overdue_threshold_3 = settings.get_global_overdue_threshold_3()
-    
-    def is_standard_conditions(self) -> bool:
-        """
-        Проверяет, соответствуют ли условия контракта стандартным для его типа.
-        
-        Returns:
-            bool: True если условия стандартные, False если есть отклонения
-        """
-        if not self.contract_type:
-            return False
-        
-        # Проверяем соответствие порогов блокировки
-        if (self.contract_type.standard_debt_threshold is not None and 
-            self.debt_threshold != self.contract_type.standard_debt_threshold):
-            return False
-        
-        if (self.contract_type.standard_overdue_threshold_1 is not None and 
-            self.overdue_threshold_1 != self.contract_type.standard_overdue_threshold_1):
-            return False
-        
-        if (self.contract_type.standard_overdue_threshold_2 is not None and 
-            self.overdue_threshold_2 != self.contract_type.standard_overdue_threshold_2):
-            return False
-        
-        if (self.contract_type.standard_overdue_threshold_3 is not None and 
-            self.overdue_threshold_3 != self.contract_type.standard_overdue_threshold_3):
-            return False
-        
-        # Проверяем соответствие условий оплаты
-        if (self.contract_type.standard_payment_terms_days is not None and 
-            self.payment_deferral_days != self.contract_type.standard_payment_terms_days):
-            return False
-        
-        # Проверяем соответствие текста условий
-        if (self.contract_type.standard_conditions_text and 
-            self.terms.strip() != self.contract_type.standard_conditions_text.strip()):
-            return False
-        
-        return True
-    
-    def can_manager_activate(self) -> bool:
-        """
-        Проверяет, может ли менеджер активировать контракт.
-        
-        Returns:
-            bool: True если менеджер может активировать, False если нужна согласование админа
-        """
-        return self.status == 'draft' and self.is_standard_conditions()
 
 
-class ContractApprovalHistory(models.Model):
-    """
-    История согласований контрактов.
-    
-    Особенности:
-    - Отслеживание всех действий с контрактом
-    - Логирование изменений и причин
-    - Поддержка аудита и compliance
-    """
-    APPROVAL_ACTIONS = [
-        ('created', _('Created')),
-        ('submitted', _('Submitted for approval')),
-        ('approved', _('Approved')),
-        ('rejected', _('Rejected')),
-        ('activated', _('Activated')),
-    ]
-    
-    contract = models.ForeignKey(
-        Contract,
-        on_delete=models.CASCADE,
-        verbose_name=_('Contract'),
-        related_name='approval_history'
-    )
-    action = models.CharField(
-        _('Action'),
-        max_length=20,
-        choices=APPROVAL_ACTIONS,
-        help_text=_('Type of action performed')
-    )
-    user = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        verbose_name=_('User'),
-        help_text=_('User who performed the action')
-    )
-    timestamp = models.DateTimeField(
-        _('Timestamp'),
-        auto_now_add=True,
-        help_text=_('When the action was performed')
-    )
-    reason = models.TextField(
-        _('Reason'),
-        blank=True,
-        help_text=_('Reason for the action')
-    )
-    changes_summary = models.JSONField(
-        _('Changes Summary'),
-        default=dict,
-        help_text=_('Summary of changes made')
-    )
-    
-    class Meta:
-        verbose_name = _('Contract Approval History')
-        verbose_name_plural = _('Contract Approval Histories')
-        ordering = ['-timestamp']
-        indexes = [
-            models.Index(fields=['contract', 'action']),
-            models.Index(fields=['user', 'timestamp']),
-        ]
-    
-    def __str__(self):
-        return f"{self.contract.number} - {self.get_action_display()} by {self.user.username}"
+# Модели Contract, ContractType, ContractCommission, ContractDiscount, ContractApprovalHistory удалены
+# Используется LegalDocument и DocumentAcceptance из приложения legal
 
-
-class ContractCommission(models.Model):
-    """
-    Модель для работы с комиссиями по договорам.
-    
-    Особенности:
-    - Процентные и фиксированные комиссии
-    - Привязка к услугам
-    - Периодичность начисления
-    - Срок действия
-    """
-    PERIOD_CHOICES = [
-        ('day', _('Day')),
-        ('week', _('Week')),
-        ('month', _('Month')),
-        ('year', _('Year')),
-    ]
-
-    contract = models.ForeignKey(
-        Contract,
-        on_delete=models.CASCADE,
-        verbose_name=_('Contract'),
-        related_name='commissions'
-    )
-    service = models.ForeignKey(
-        Service,
-        on_delete=models.CASCADE,
-        verbose_name=_('Service'),
-        related_name='contract_commissions',
-        null=True,
-        blank=True
-    )
-    rate = models.DecimalField(
-        _('Rate'),
-        max_digits=5,
-        decimal_places=2,
-        help_text=_('Commission rate in percent')
-    )
-    fixed_amount = models.DecimalField(
-        _('Fixed Amount'),
-        max_digits=10,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text=_('Fixed commission amount')
-    )
-    period = models.CharField(
-        _('Period'),
-        max_length=10,
-        choices=PERIOD_CHOICES,
-        null=True,
-        blank=True,
-        help_text=_('Period for fixed commission')
-    )
-    start_date = models.DateField(_('Start Date'))
-    end_date = models.DateField(_('End Date'), null=True, blank=True)
-    is_active = models.BooleanField(_('Is Active'), default=True)
-    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
-    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
-
-    class Meta:
-        verbose_name = _('Contract Commission')
-        verbose_name_plural = _('Contract Commissions')
-        ordering = ['-start_date']
-
-    def __str__(self):
-        return f"{self.contract.number} - {self.service.name if self.service else 'All Services'}"
-
-    def calculate_commission(self, booking_amount, booking_currency):
-        """
-        Рассчитывает комиссию для указанной суммы.
-        
-        Параметры:
-        - booking_amount: сумма бронирования
-        - booking_currency: валюта бронирования
-        """
-        if self.fixed_amount:
-            # Для фиксированной комиссии конвертируем в валюту договора
-            if booking_currency != self.contract.currency:
-                return booking_currency.convert_amount(
-                    self.fixed_amount,
-                    self.contract.currency
-                )
-            return self.fixed_amount
-        else:
-            # Для процентной комиссии конвертируем сумму в валюту договора
-            if booking_currency != self.contract.currency:
-                booking_amount = booking_currency.convert_amount(
-                    booking_amount,
-                    self.contract.currency
-                )
-            return booking_amount * (self.rate / 100)
-
-
-class ContractDiscount(models.Model):
-    """
-    Модель для работы со скидками по договорам.
-    
-    Особенности:
-    - Процентные и фиксированные скидки
-    - Привязка к услугам
-    - Срок действия
-    - Отслеживание активности
-    """
-    contract = models.ForeignKey(
-        Contract,
-        on_delete=models.CASCADE,
-        verbose_name=_('Contract'),
-        related_name='discounts'
-    )
-    service = models.ForeignKey(
-        Service,
-        on_delete=models.CASCADE,
-        verbose_name=_('Service'),
-        related_name='contract_discounts',
-        null=True,
-        blank=True
-    )
-    rate = models.DecimalField(
-        _('Rate'),
-        max_digits=5,
-        decimal_places=2,
-        help_text=_('Discount rate in percent')
-    )
-    fixed_amount = models.DecimalField(
-        _('Fixed Amount'),
-        max_digits=10,
-        decimal_places=2,
-        null=True,
-        blank=True,
-        help_text=_('Fixed discount amount')
-    )
-    start_date = models.DateField(_('Start Date'))
-    end_date = models.DateField(_('End Date'), null=True, blank=True)
-    is_active = models.BooleanField(_('Is Active'), default=True)
-    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
-    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
-
-    class Meta:
-        verbose_name = _('Contract Discount')
-        verbose_name_plural = _('Contract Discounts')
-        ordering = ['-start_date']
-
-    def __str__(self):
-        return f"{self.contract.number} - {self.service.name if self.service else 'All Services'}"
+# Все классы контрактов (Contract, ContractApprovalHistory, ContractCommission, ContractDiscount) удалены
+# Используется LegalDocument и DocumentAcceptance из приложения legal
 
 
 class Payment(models.Model):
@@ -1108,12 +234,18 @@ class Payment(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.booking} - {self.amount} {self.booking.currency.code}"
+        return f"{self.booking} - {self.amount}"
 
 
 def get_default_currency():
     from billing.models import Currency
-    return Currency.objects.get(code='EUR').id
+    from django.conf import settings
+    if not settings.configured:
+        return 1  # Возвращаем дефолтное значение
+    try:
+        return Currency.objects.get(code='EUR').id
+    except Currency.DoesNotExist:
+        return 1  # Возвращаем дефолтное значение
 
 
 class Invoice(models.Model):
@@ -1180,8 +312,12 @@ class Invoice(models.Model):
     def save(self, *args, **kwargs):
         if not self.number:
             # Генерация номера: IN-ГОД-МЕСЯЦ-ID
-            last_id = Invoice.objects.all().order_by('-id').first()
-            next_id = (last_id.id + 1) if last_id else 1
+            from django.conf import settings
+            if settings.configured:
+                last_id = Invoice.objects.all().order_by('-id').first()
+                next_id = (last_id.id + 1) if last_id else 1
+            else:
+                next_id = 1  # Дефолтное значение при инициализации
             self.number = f"IN-{timezone.now().year}-{timezone.now().month:02d}-{next_id}"
         super().save(*args, **kwargs)
 
@@ -1221,6 +357,29 @@ class InvoiceLine(models.Model):
         'Currency',
         on_delete=models.PROTECT,
         verbose_name=_('Currency')
+    )
+    # Поля для НДС
+    vat_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        verbose_name=_('VAT Rate'),
+        help_text=_('VAT rate percentage (e.g., 20.00 for 20%)')
+    )
+    vat_amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name=_('VAT Amount'),
+        help_text=_('VAT amount added to commission')
+    )
+    total_with_vat = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        verbose_name=_('Total with VAT'),
+        help_text=_('Commission amount including VAT')
     )
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
@@ -1286,18 +445,20 @@ class Refund(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.payment} - {self.amount} {self.payment.booking.currency.code}"
+        return f"{self.payment} - {self.amount}"
 
 
 class PaymentHistory(models.Model):
     """
-    Модель для работы с историей платежей по договорам.
+    Модель для работы с историей платежей провайдеров.
     
     Особенности:
     - Отслеживание статуса платежей
     - Даты оплаты и сроки
     - Мультивалютность
     - Подробное описание
+    - Связь с Provider (вместо Contract)
+    - Опциональная связь с Invoice и DocumentAcceptance
     """
     STATUS_CHOICES = [
         ('pending', _('Pending')),
@@ -1305,12 +466,34 @@ class PaymentHistory(models.Model):
         ('overdue', _('Overdue')),
     ]
 
-    contract = models.ForeignKey(
-        Contract,
+    provider = models.ForeignKey(
+        Provider,
         on_delete=models.CASCADE,
         related_name='payment_history',
-        verbose_name=_('Contract')
+        verbose_name=_('Provider'),
+        help_text=_('Provider for this payment')
     )
+    # Опциональная связь с Invoice (для истории)
+    invoice = models.ForeignKey(
+        'Invoice',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='payment_history',
+        verbose_name=_('Invoice'),
+        help_text=_('Invoice this payment is for (optional)')
+    )
+    # Опциональная связь с DocumentAcceptance (для истории)
+    offer_acceptance = models.ForeignKey(
+        'legal.DocumentAcceptance',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='payment_history',
+        verbose_name=_('Offer Acceptance'),
+        help_text=_('Document acceptance this payment is related to (optional)')
+    )
+    # Поле contract удалено - используется provider, invoice и offer_acceptance
     amount = models.DecimalField(
         _('Amount'),
         max_digits=10,
@@ -1348,7 +531,15 @@ class PaymentHistory(models.Model):
         ordering = ['-due_date']
 
     def __str__(self):
-        return f"{self.contract.number} - {self.amount} {self.currency.code}"
+        # Используем invoice.number или offer.version или provider.name
+        if self.invoice:
+            return f"{self.invoice.number} - {self.amount} {self.currency.code}"
+        elif self.offer_acceptance:
+            if self.offer_acceptance.document:
+                return f"{self.provider.name} - Offer {self.offer_acceptance.document.version} - {self.amount} {self.currency.code}"
+            return f"{self.provider.name} - Offer Acceptance - {self.amount} {self.currency.code}"
+        else:
+            return f"{self.provider.name} - {self.amount} {self.currency.code}"
 
     def save(self, *args, **kwargs):
         """Обновляет статус при сохранении"""
@@ -2002,11 +1193,15 @@ class BlockingRule(models.Model):
         providers = Provider.objects.filter(is_active=True)
         
         if self.regions:
-            providers = providers.filter(region_id__in=self.regions)
+            providers = providers.filter(
+                structured_address__region__in=self.regions
+            )
         
         if self.service_types:
             # Фильтр по типам услуг, которые предоставляет провайдер
-            providers = providers.filter(services__service_type_id__in=self.service_types).distinct()
+            providers = providers.filter(
+                locations__available_services__id__in=self.service_types
+            ).distinct()
         
         return providers
 
@@ -2392,7 +1587,11 @@ class BlockingTemplate(models.Model):
             BlockingTemplate или None
         """
         # Сначала ищем по точной локации
-        if provider.point:
+        provider_point = None
+        if provider.structured_address and provider.structured_address.point:
+            provider_point = provider.structured_address.point
+        
+        if provider_point:
             from django.contrib.gis.db.models.functions import Distance
             
             # Ищем шаблоны с привязкой к локации
@@ -2401,7 +1600,7 @@ class BlockingTemplate(models.Model):
                 location__isnull=False,
                 location__point__isnull=False
             ).annotate(
-                distance=Distance('location__point', provider.point)
+                distance=Distance('location__point', provider_point)
             ).filter(
                 distance__lte=models.F('radius_km') * 1000  # Convert km to meters
             ).order_by('distance')
@@ -2410,8 +1609,12 @@ class BlockingTemplate(models.Model):
                 return location_templates.first()
         
         # Затем ищем по иерархии (город -> регион -> страна)
-        if provider.address:
-            address_lower = provider.address.lower()
+        full_address = ''
+        if provider.structured_address:
+            full_address = provider.structured_address.formatted_address or str(provider.structured_address)
+        
+        if full_address:
+            address_lower = full_address.lower()
             
             # Ищем по городу
             city_templates = cls.objects.filter(
@@ -2450,19 +1653,7 @@ class BlockingTemplate(models.Model):
             city=''
         ).first()
 
-    def apply_to_contract(self, contract):
-        """
-        Применяет шаблон к договору.
-        
-        Args:
-            contract: Объект Contract
-        """
-        contract.debt_threshold = self.debt_threshold
-        contract.overdue_threshold_1 = self.threshold1_days
-        contract.overdue_threshold_2 = self.threshold2_days
-        contract.overdue_threshold_3 = self.threshold3_days
-        contract.payment_deferral_days = self.payment_delay_days
-        contract.save()
+    # Метод apply_to_contract удален - используется ProviderSpecialTerms и LegalDocument вместо Contract
 
 
 class BlockingTemplateHistory(models.Model):
@@ -2962,3 +2153,74 @@ class BlockingSchedule(models.Model):
         elif self.frequency == 'custom':
             return {'schedule': self.custom_interval_hours * 3600.0}
         return {'schedule': 86400.0}  # По умолчанию ежедневно
+
+
+# ============================================================================
+# МОДЕЛИ ДЛЯ ПУБЛИЧНОЙ ОФЕРТЫ
+# ============================================================================
+# УДАЛЕНО: RegionalAddendum и PublicOffer заменены на LegalDocument в приложении legal
+# Модели полностью удалены, так как база данных пуста и обратная совместимость не требуется
+# Используйте LegalDocument, DocumentTranslation, CountryLegalConfig из приложения legal
+
+
+class BillingConfig(models.Model):
+    """
+    Конфигурация биллинга для глобальной оферты.
+    Хранит финансовые параметры, которые подставляются в текст оферты через переменные.
+    """
+    name = models.CharField(
+        max_length=200,
+        verbose_name=_('Name'),
+        help_text=_('Name of this billing configuration')
+    )
+    description = models.TextField(
+        blank=True,
+        verbose_name=_('Description'),
+        help_text=_('Description of this billing configuration')
+    )
+    
+    # Базовые условия комиссии (подставляются в текст через {{commission_percent}})
+    commission_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal('5.00'),
+        verbose_name=_('Commission Percentage'),
+        help_text=_('Commission percentage (e.g., 5.00 for 5%). This value is substituted into offer text as {{commission_percent}}.')
+    )
+    payment_deferral_days = models.PositiveIntegerField(
+        default=5,
+        verbose_name=_('Payment Deferral Days'),
+        help_text=_('Payment deferral days after service completion. Used in offer text as {{payment_deferral_days}}')
+    )
+    invoice_period_days = models.PositiveIntegerField(
+        default=3,
+        verbose_name=_('Invoice Period Days'),
+        help_text=_('Days to generate invoice after period end. Used in offer text as {{invoice_period_days}}')
+    )
+    
+    is_active = models.BooleanField(
+        default=True,
+        verbose_name=_('Is Active'),
+        help_text=_('Whether this billing configuration is currently active')
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_('Created At'))
+    updated_at = models.DateTimeField(auto_now=True, verbose_name=_('Updated At'))
+    
+    class Meta:
+        verbose_name = _('Billing Config')
+        verbose_name_plural = _('Billing Configs')
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.name} ({self.commission_percent}%)"
+
+
+# УДАЛЕНО: PublicOffer модель полностью удалена
+# Заменена на LegalDocument в приложении legal
+
+
+# ProviderOfferAcceptance удален - используйте DocumentAcceptance из приложения legal
+
+# УДАЛЕНО: ProviderSpecialTerms и SideLetter
+# Модели удалены - используйте LegalDocument с типом side_letter в приложении legal
+# Все функциональность (финансовые условия, modified_clauses, document_file) перенесена в LegalDocument

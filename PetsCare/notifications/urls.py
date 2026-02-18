@@ -33,74 +33,73 @@ app_name = 'notifications'
 
 urlpatterns = [
     # API маршруты
-    path('api/', include(router.urls)),
+    path('', include(router.urls)),
     
     # Дополнительные API endpoints
-    path('api/notifications/unread-count/', 
+    path('notifications/unread-count/', 
          api_views.NotificationViewSet.as_view({'get': 'unread_count'}),
          name='notification-unread-count'),
     
-    path('api/notifications/<int:pk>/mark-as-read/',
+    path('notifications/<int:pk>/mark-as-read/',
          api_views.NotificationViewSet.as_view({'post': 'mark_as_read'}),
          name='notification-mark-as-read'),
     
-    path('api/notifications/mark-all-as-read/',
+    path('notifications/mark-all-as-read/',
          api_views.NotificationViewSet.as_view({'post': 'mark_all_as_read'}),
          name='notification-mark-all-as-read'),
     
-    path('api/notifications/statistics/',
+    path('notifications/statistics/',
          api_views.NotificationViewSet.as_view({'get': 'statistics'}),
          name='notification-statistics'),
     
-    path('api/notifications/test/',
+    path('notifications/test/',
          api_views.NotificationViewSet.as_view({'post': 'test_notification'}),
          name='notification-test'),
     
-    path('api/preferences/all/',
+    path('preferences/all/',
          api_views.NotificationPreferenceViewSet.as_view({'get': 'all_preferences'}),
          name='preferences-all'),
     
-    path('api/preferences/reset/',
+    path('preferences/reset/',
          api_views.NotificationPreferenceViewSet.as_view({'post': 'reset_to_defaults'}),
          name='preferences-reset'),
     
-    path('api/settings/bulk-update/',
+    path('settings/bulk-update/',
          api_views.UserNotificationSettingsViewSet.as_view({'post': 'bulk_update'}),
          name='settings-bulk-update'),
     
-    path('api/settings/available-options/',
+    path('settings/available-options/',
          api_views.UserNotificationSettingsViewSet.as_view({'get': 'available_options'}),
          name='settings-available-options'),
     
     # API endpoints для настроек напоминаний
-    path('api/reminder-settings/current/',
+    path('reminder-settings/current/',
          api_views.ReminderSettingsViewSet.as_view({'get': 'current'}),
          name='reminder-settings-current'),
     
-    path('api/reminder-settings/reset/',
+    path('reminder-settings/reset/',
          api_views.ReminderSettingsViewSet.as_view({'post': 'reset_to_defaults'}),
          name='reminder-settings-reset'),
     
-    path('api/reminder-settings/test/',
+    path('reminder-settings/test/',
          api_views.ReminderSettingsViewSet.as_view({'post': 'test'}),
          name='reminder-settings-test'),
     
-    path('api/reminder-settings/preview/',
+    path('reminder-settings/preview/',
          api_views.ReminderSettingsViewSet.as_view({'get': 'preview'}),
          name='reminder-settings-preview'),
     
     # API endpoints для уведомлений - восстановлены
-    path('api/notifications/<int:notification_id>/read/', api_views.mark_notification_as_read, name='api_mark_read'),
-    path('api/notifications/read-all/', api_views.mark_all_notifications_as_read, name='api_mark_all_read'),
-    path('api/notifications/<int:notification_id>/delete/', api_views.delete_notification, name='api_delete_notification'),
-    path('api/notifications/delete-all/', api_views.delete_all_notifications, name='api_delete_all_notifications'),
-    path('api/notifications/stats/', api_views.get_notification_stats, name='api_notification_stats'),
-    path('api/notifications/preferences/', api_views.update_notification_preferences, name='api_update_preferences'),
-    path('api/notifications/templates/', api_views.get_notification_templates, name='api_notification_templates'),
-    path('api/notifications/test/', api_views.test_notification, name='api_test_notification'),
-    path('api/notifications/history/', api_views.get_notification_history, name='api_notification_history'),
+    path('notifications/<int:notification_id>/read/', api_views.mark_notification_as_read, name='api_mark_read'),
+    path('notifications/read-all/', api_views.mark_all_notifications_as_read, name='api_mark_all_read'),
+    path('notifications/<int:notification_id>/delete/', api_views.delete_notification, name='api_delete_notification'),
+    path('notifications/delete-all/', api_views.delete_all_notifications, name='api_delete_all_notifications'),
+    path('notifications/stats/', api_views.get_notification_stats, name='api_notification_stats'),
+    path('notifications/preferences/', api_views.update_notification_preferences, name='api_update_preferences'),
+    path('notifications/templates/', api_views.get_notification_templates, name='api_notification_templates'),
+    path('notifications/history/', api_views.get_notification_history, name='api_notification_history'),
     
     # Webhook для push-уведомлений - восстановлен
-    path('api/notifications/push-token/', api_views.UpdatePushTokenAPIView.as_view(), name='api_update_push_token'),
+    path('notifications/push-token/', api_views.UpdatePushTokenAPIView.as_view(), name='api_update_push_token'),
     
 ] 

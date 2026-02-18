@@ -8,63 +8,40 @@ API views for the billing module.
 4. Управления типами контрактов
 """
 
-from rest_framework import viewsets, permissions, status
+from rest_framework import viewsets, permissions, status, serializers
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
-from .models import Payment, Invoice, Refund, ContractType, BillingManagerProvider, BillingManagerEvent, Contract, BlockingRule, ProviderBlocking, BlockingNotification, ContractApprovalHistory
+from .models import Payment, Invoice, Refund, BillingManagerProvider, BillingManagerEvent, BlockingRule, ProviderBlocking, BlockingNotification, Currency
 from .serializers import (
     PaymentSerializer,
     InvoiceSerializer,
     RefundSerializer,
     PaymentCreateSerializer,
     RefundCreateSerializer,
-    ContractTypeSerializer,
-    ContractSerializer,
-    ContractCreateSerializer,
     BillingManagerProviderSerializer,
     BillingManagerProviderCreateSerializer,
     BillingManagerEventSerializer,
     BlockingRuleSerializer, 
     ProviderBlockingSerializer, 
-    BlockingNotificationSerializer
+    BlockingNotificationSerializer,
+    CurrencySerializer
 )
+
+# Пустой сериализатор для Swagger (когда view не использует сериализатор)
+class EmptySerializer(serializers.Serializer):
+    """Пустой сериализатор для Swagger схемы"""
+    pass
 from django.utils.translation import gettext_lazy as _
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import generics
 from django.shortcuts import get_object_or_404
+from django.db import transaction
 from providers.models import Provider
 
 
-class ContractTypeViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet для управления типами контрактов.
-    
-    Используется для CRUD операций с типами контрактов.
-    Поддерживает фильтрацию по статусу активности и поиск по названию и коду.
-    """
-    queryset = ContractType.objects.all()
-    serializer_class = ContractTypeSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['is_active']
-    search_fields = ['name', 'code']
-    ordering_fields = ['name', 'code']
-
-    def get_queryset(self):
-        """
-        Возвращает отфильтрованный список типов контрактов.
-        
-        Для обычных пользователей возвращает только активные типы контрактов.
-        """
-        queryset = ContractType.objects.all()
-        
-        # Для обычных пользователей - только активные типы
-        if not self.request.user.is_staff:
-            queryset = queryset.filter(is_active=True)
-            
-        return queryset
+# ContractTypeViewSet удален - используется LegalDocument и DocumentAcceptance
 
 
 class PaymentViewSet(viewsets.ModelViewSet):
@@ -115,11 +92,15 @@ class PaymentViewSet(viewsets.ModelViewSet):
         Returns:
             Response: Результат подтверждения платежа
         """
-        payment = self.get_object()
+        # Получаем объект до транзакции для проверки существования
+        # Используем get_object_or_404 для явной обработки случая, когда объект не найден
+        queryset = self.get_queryset()
+        payment_obj = get_object_or_404(queryset, pk=pk)
+        payment_id = payment_obj.id
         
         # Используем select_for_update для предотвращения гонки
         with transaction.atomic():
-            payment = Payment.objects.select_for_update().get(id=payment.id)
+            payment = Payment.objects.select_for_update().get(id=payment_id)
             
             if payment.status != 'pending':
                 return Response(
@@ -131,11 +112,23 @@ class PaymentViewSet(viewsets.ModelViewSet):
             payment.save()
         
         # Создаем счет
+        booking = payment.booking
+        provider = None
+        if booking:
+            provider = booking.provider
+            if not provider and booking.provider_location:
+                provider = booking.provider_location.provider
+        
+        start_date = booking.start_time.date() if booking and booking.start_time else None
+        end_date = booking.end_time.date() if booking and booking.end_time else None
+        
         Invoice.objects.create(
-            booking=payment.booking,
+            provider=provider,
+            start_date=start_date,
+            end_date=end_date,
             amount=payment.amount,
             status='paid',
-            due_date=payment.created_at.date()
+            currency=None
         )
         
         return Response({'status': _('payment confirmed')})
@@ -162,6 +155,9 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
         Для обычных пользователей возвращает только их счета.
         Для менеджеров по биллингу - счета их провайдеров.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return Invoice.objects.none()
+        
         queryset = Invoice.objects.all()
         user = self.request.user
         
@@ -176,9 +172,13 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                 status__in=['active', 'temporary']
             ).values_list('provider', flat=True)
             queryset = queryset.filter(provider__in=managed_providers)
-        # Для обычных пользователей - только их счета
+        # Для обычных пользователей счета недоступны
         elif not user.is_staff:
-            queryset = queryset.filter(booking__user=user)
+            if hasattr(user, 'has_role') and user.has_role('provider_admin'):
+                managed_providers = user.get_managed_providers()
+                queryset = queryset.filter(provider__in=managed_providers)
+            else:
+                return queryset.none()
             
         return queryset
 
@@ -302,6 +302,9 @@ class BillingManagerProviderViewSet(viewsets.ModelViewSet):
         """
         Фильтрация по ролям: менеджер видит только свои связи, админ — все.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return BillingManagerProvider.objects.none()
+        
         qs = super().get_queryset()
         user = self.request.user
         
@@ -334,6 +337,9 @@ class BillingManagerEventViewSet(viewsets.ReadOnlyModelViewSet):
         """
         Менеджер по биллингу видит только свои события, админ — все.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return BillingManagerEvent.objects.none()
+        
         qs = super().get_queryset()
         user = self.request.user
         
@@ -346,72 +352,7 @@ class BillingManagerEventViewSet(viewsets.ReadOnlyModelViewSet):
         return qs
 
 
-class ContractViewSet(viewsets.ModelViewSet):
-    """
-    ViewSet для управления контрактами.
-    
-    Используется для CRUD операций с контрактами.
-    Поддерживает фильтрацию по статусу, провайдеру и типу контракта.
-    Для менеджеров по биллингу - только контракты их провайдеров.
-    """
-    queryset = Contract.objects.all()
-    serializer_class = ContractSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['status', 'provider', 'contract_type']
-    search_fields = ['number', 'provider__name', 'contract_type__name']
-    ordering_fields = ['start_date', 'end_date', 'created_at']
-
-    def get_serializer_class(self):
-        """
-        Возвращает соответствующий сериализатор в зависимости от действия.
-        """
-        if self.action == 'create':
-            return ContractCreateSerializer
-        return ContractSerializer
-
-    def get_queryset(self):
-        """
-        Возвращает отфильтрованный список контрактов.
-        
-        Для менеджеров по биллингу - только контракты их провайдеров.
-        Для провайдеров - только их контракты.
-        Для администраторов - все контракты.
-        """
-        if getattr(self, 'swagger_fake_view', False):
-            return Contract.objects.none()
-        
-        queryset = Contract.objects.all()
-        user = self.request.user
-        
-        # Проверяем, что пользователь аутентифицирован (для Swagger)
-        if not user.is_authenticated:
-            return queryset.none()
-        
-        # Для менеджеров по биллингу - контракты их провайдеров
-        if hasattr(user, 'has_role') and user.has_role('billing_manager'):
-            managed_providers = BillingManagerProvider.objects.filter(
-                billing_manager=user,
-                status__in=['active', 'temporary']
-            ).values_list('provider', flat=True)
-            queryset = queryset.filter(provider__in=managed_providers)
-        # Для администраторов учреждений - только их контракты
-        elif hasattr(user, 'has_role') and user.has_role('provider_admin'):
-            # Получаем учреждения, которыми управляет пользователь
-            managed_providers = user.get_managed_providers()
-            queryset = queryset.filter(provider__in=managed_providers)
-        # Для обычных пользователей - только их контракты (если есть)
-        elif not user.is_staff:
-            # Обычные пользователи не имеют прямого доступа к контрактам
-            queryset = Contract.objects.none()
-            
-        return queryset
-
-    def perform_create(self, serializer):
-        """
-        Сохраняет создателя контракта при создании.
-        """
-        serializer.save(created_by=self.request.user)
+# ContractViewSet удален - используется LegalDocument и DocumentAcceptance
 
 
 class BlockingRuleListCreateAPIView(generics.ListCreateAPIView):
@@ -605,14 +546,17 @@ class BlockingNotificationRetryAPIView(generics.GenericAPIView):
     permission_classes = [permissions.IsAuthenticated]
     
     def get_serializer_class(self):
-        """Возвращает None, так как этот View не использует сериализатор"""
+        """Возвращает сериализатор для Swagger или None для реальных запросов"""
+        if getattr(self, 'swagger_fake_view', False):
+            # Для Swagger возвращаем пустой сериализатор
+            return EmptySerializer
         return None
     
     def get_serializer(self, *args, **kwargs):
-        """Переопределяем для Swagger - возвращаем None"""
+        """Переопределяем для Swagger"""
         if getattr(self, 'swagger_fake_view', False):
-            return None
-        return super().get_serializer(*args, **kwargs)
+            return super().get_serializer(*args, **kwargs)
+        return None
 
     def post(self, request, notification_id):
         """
@@ -642,243 +586,22 @@ class BlockingNotificationRetryAPIView(generics.GenericAPIView):
         }) 
 
 
-# Workflow согласования контрактов
-from rest_framework.decorators import api_view, permission_classes
-from django.utils import timezone
-from django.db import transaction
-
-
-@api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
-def submit_contract_for_approval(request, contract_id):
+class CurrencyListAPIView(generics.ListAPIView):
     """
-    Отправляет контракт на согласование админу.
+    API для получения списка активных валют.
     
     Права доступа:
     - Требуется аутентификация
-    - Только менеджеры по биллингу или создатели контракта
     """
-    try:
-        with transaction.atomic():
-            contract = get_object_or_404(Contract, id=contract_id)
-            
-            # Проверяем права доступа
-            if not (request.user.is_staff or 
-                   contract.created_by == request.user or
-                   BillingManagerProvider.objects.filter(
-                       billing_manager=request.user,
-                       provider=contract.provider,
-                       status='active'
-                   ).exists()):
-                return Response({
-                    'error': _('You do not have permission to submit this contract for approval')
-                }, status=status.HTTP_403_FORBIDDEN)
-            
-            # Проверяем, что контракт в статусе черновика
-            if contract.status != 'draft':
-                return Response({
-                    'error': _('Contract must be in draft status to submit for approval')
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Обновляем статус контракта
-            contract.status = 'pending_approval'
-            contract.submitted_for_approval_at = timezone.now()
-            contract.save()
-            
-            # Создаем запись в истории
-            ContractApprovalHistory.objects.create(
-                contract=contract,
-                action='submitted',
-                user=request.user,
-                reason=request.data.get('reason', '')
-            )
-            
-            # Отправляем уведомления админам
-            from .services import notify_admins_contract_approval_needed
-            notify_admins_contract_approval_needed(contract)
-            
-            return Response({
-                'message': _('Contract submitted for approval successfully'),
-                'contract_id': contract.id,
-                'status': contract.status
-            })
-            
-    except Exception as e:
-        return Response({
-            'error': _('Failed to submit contract for approval'),
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['POST'])
-@permission_classes([permissions.IsAdminUser])
-def approve_contract(request, contract_id):
-    """
-    Одобряет контракт админом.
+    queryset = Currency.objects.filter(is_active=True)
+    serializer_class = CurrencySerializer
+    permission_classes = [permissions.IsAuthenticated]
     
-    Права доступа:
-    - Требуется аутентификация
-    - Только админы
-    """
-    try:
-        with transaction.atomic():
-            contract = get_object_or_404(Contract.objects.select_for_update(), id=contract_id)
-            
-            # Проверяем, что контракт ожидает согласования
-            if contract.status != 'pending_approval':
-                return Response({
-                    'error': _('Contract must be pending approval to approve')
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Обновляем статус контракта
-            contract.status = 'active'
-            contract.approved_by = request.user
-            contract.approved_at = timezone.now()
-            contract.save()
-            
-            # Создаем запись в истории
-            ContractApprovalHistory.objects.create(
-                contract=contract,
-                action='approved',
-                user=request.user,
-                reason=request.data.get('reason', '')
-            )
-            
-            # Отправляем уведомление менеджеру
-            from .services import notify_manager_contract_approved
-            notify_manager_contract_approved(contract)
-            
-            return Response({
-                'message': _('Contract approved successfully'),
-                'contract_id': contract.id,
-                'status': contract.status
-            })
-            
-    except Exception as e:
-        return Response({
-            'error': _('Failed to approve contract'),
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    def get_queryset(self):
+        """
+        Возвращает список активных валют, отсортированных по коду.
+        """
+        return Currency.objects.filter(is_active=True).order_by('code')
 
 
-@api_view(['POST'])
-@permission_classes([permissions.IsAdminUser])
-def reject_contract(request, contract_id):
-    """
-    Отклоняет контракт админом.
-    
-    Права доступа:
-    - Требуется аутентификация
-    - Только админы
-    """
-    try:
-        with transaction.atomic():
-            contract = get_object_or_404(Contract.objects.select_for_update(), id=contract_id)
-            
-            # Проверяем, что контракт ожидает согласования
-            if contract.status != 'pending_approval':
-                return Response({
-                    'error': _('Contract must be pending approval to reject')
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            rejection_reason = request.data.get('reason', '')
-            if not rejection_reason:
-                return Response({
-                    'error': _('Rejection reason is required')
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Обновляем статус контракта
-            contract.status = 'rejected'
-            contract.rejection_reason = rejection_reason
-            contract.save()
-            
-            # Создаем запись в истории
-            ContractApprovalHistory.objects.create(
-                contract=contract,
-                action='rejected',
-                user=request.user,
-                reason=rejection_reason
-            )
-            
-            # Отправляем уведомление менеджеру
-            from .services import notify_manager_contract_rejected
-            notify_manager_contract_rejected(contract, rejection_reason)
-            
-            return Response({
-                'message': _('Contract rejected successfully'),
-                'contract_id': contract.id,
-                'status': contract.status
-            })
-            
-    except Exception as e:
-        return Response({
-            'error': _('Failed to reject contract'),
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['POST'])
-@permission_classes([permissions.IsAuthenticated])
-def activate_contract(request, contract_id):
-    """
-    Активирует контракт менеджером (если стандартные условия) или админом.
-    
-    Права доступа:
-    - Требуется аутентификация
-    - Менеджеры могут активировать только стандартные контракты
-    - Админы могут активировать любые контракты
-    """
-    try:
-        with transaction.atomic():
-            contract = get_object_or_404(Contract.objects.select_for_update(), id=contract_id)
-            
-            # Проверяем права доступа
-            if not request.user.is_staff:
-                # Для менеджеров проверяем, что контракт стандартный
-                if not contract.can_manager_activate():
-                    return Response({
-                        'error': _('You can only activate contracts with standard conditions')
-                    }, status=status.HTTP_403_FORBIDDEN)
-                
-                # Проверяем, что менеджер связан с провайдером
-                if not BillingManagerProvider.objects.filter(
-                    billing_manager=request.user,
-                    provider=contract.provider,
-                    status='active'
-                ).exists():
-                    return Response({
-                        'error': _('You do not have permission to activate this contract')
-                    }, status=status.HTTP_403_FORBIDDEN)
-            
-            # Проверяем, что контракт в статусе черновика или одобрен
-            if contract.status not in ['draft', 'active']:
-                return Response({
-                    'error': _('Contract must be in draft or approved status to activate')
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Обновляем статус контракта
-            contract.status = 'active'
-            if not request.user.is_staff:
-                contract.approved_by = request.user
-                contract.approved_at = timezone.now()
-            contract.save()
-            
-            # Создаем запись в истории
-            ContractApprovalHistory.objects.create(
-                contract=contract,
-                action='activated',
-                user=request.user,
-                reason=request.data.get('reason', '')
-            )
-            
-            return Response({
-                'message': _('Contract activated successfully'),
-                'contract_id': contract.id,
-                'status': contract.status
-            })
-            
-    except Exception as e:
-        return Response({
-            'error': _('Failed to activate contract'),
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 
+# Workflow согласования контрактов удален - используется LegalDocument и DocumentAcceptance 

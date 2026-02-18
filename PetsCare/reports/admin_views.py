@@ -181,7 +181,10 @@ class ReportsAdminView:
                 return redirect('admin:reports-dashboard')
                 
         except Exception as e:
-            messages.error(request, f'Error generating report: {str(e)}')
+            messages.error(
+                request,
+                _('Error generating report: {error}').format(error=str(e))
+            )
             return redirect('admin:reports-generate')
     
     def _get_date_range(self, date_range: str) -> tuple:
@@ -271,7 +274,10 @@ class ReportsAdminView:
             return redirect('admin:reports-templates')
             
         except Exception as e:
-            messages.error(request, f'Error creating template: {str(e)}')
+            messages.error(
+                request,
+                _('Error creating template: {error}').format(error=str(e))
+            )
             return redirect('admin:reports-templates')
     
     @method_decorator(login_required)
@@ -313,7 +319,10 @@ class ReportsAdminView:
             return redirect('admin:reports-schedule')
             
         except Exception as e:
-            messages.error(request, f'Error creating schedule: {str(e)}')
+            messages.error(
+                request,
+                _('Error creating schedule: {error}').format(error=str(e))
+            )
             return redirect('admin:reports-schedule')
 
 

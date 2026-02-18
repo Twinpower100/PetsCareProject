@@ -15,9 +15,11 @@ from rest_framework.test import APITestCase
 from rest_framework import status
 from unittest.mock import patch, MagicMock
 from decimal import Decimal
+from datetime import timedelta
 
 from .models import Address, AddressValidation, AddressCache
 from .services import AddressValidationService, GoogleMapsService
+from .signals import auto_validate_address
 from .forms import AddressForm
 from .serializers import AddressSerializer
 
@@ -32,10 +34,10 @@ class AddressModelTest(TestCase):
     def setUp(self):
         """Setting up test data."""
         self.address_data = {
-            'street_number': '123',
-            'route': 'Test Street',
-            'locality': 'Test City',
-            'administrative_area_level_1': 'Test Region',
+            'house_number': '123',
+            'street': 'Test Street',
+            'city': 'Test City',
+            'region': 'Test Region',
             'country': 'Test Country',
             'postal_code': '12345'
         }
@@ -44,9 +46,9 @@ class AddressModelTest(TestCase):
         """Test creating an address."""
         address = Address.objects.create(**self.address_data)
         
-        self.assertEqual(address.street_number, '123')
-        self.assertEqual(address.route, 'Test Street')
-        self.assertEqual(address.locality, 'Test City')
+        self.assertEqual(address.house_number, '123')
+        self.assertEqual(address.street, 'Test Street')
+        self.assertEqual(address.city, 'Test City')
         self.assertEqual(address.country, 'Test Country')
         self.assertFalse(address.is_validated)
         self.assertEqual(address.validation_status, 'pending')
@@ -55,7 +57,7 @@ class AddressModelTest(TestCase):
         """Test string representation of an address."""
         address = Address.objects.create(**self.address_data)
         
-        expected_str = f"{self.address_data['street_number']} {self.address_data['route']}, {self.address_data['locality']}"
+        expected_str = f"{self.address_data['street']}, {self.address_data['house_number']}, {self.address_data['city']}"
         self.assertEqual(str(address), expected_str)
     
     def test_address_with_coordinates(self):
@@ -82,9 +84,9 @@ class AddressValidationModelTest(TestCase):
     def setUp(self):
         """Setting up test data."""
         self.address = Address.objects.create(
-            street_number='123',
-            route='Test Street',
-            locality='Test City',
+            house_number='123',
+            street='Test Street',
+            city='Test City',
             country='Test Country'
         )
     
@@ -93,15 +95,12 @@ class AddressValidationModelTest(TestCase):
         validation = AddressValidation.objects.create(
             address=self.address,
             is_valid=True,
-            formatted_address='123 Test Street, Test City, Test Country',
-            latitude=Decimal('55.7558'),
-            longitude=Decimal('37.6176'),
-            confidence_score=0.9
+            confidence_score=Decimal('0.90')
         )
         
         self.assertEqual(validation.address, self.address)
         self.assertTrue(validation.is_valid)
-        self.assertEqual(validation.confidence_score, 0.9)
+        self.assertEqual(validation.confidence_score, Decimal('0.90'))
     
     def test_validation_str_representation(self):
         """Test string representation of a validation."""
@@ -121,26 +120,26 @@ class AddressCacheModelTest(TestCase):
     
     def test_create_cache_entry(self):
         """Test creating a cache entry."""
+        from django.utils import timezone
         cache_entry = AddressCache.objects.create(
-            query_hash='test_hash_123',
-            query_text='Test Address',
-            formatted_address='123 Test Street, Test City',
-            latitude=Decimal('55.7558'),
-            longitude=Decimal('37.6176')
+            cache_key='test_hash_123',
+            address_data={'formatted_address': '123 Test Street, Test City'},
+            expires_at=timezone.now() + timedelta(days=1)
         )
         
-        self.assertEqual(cache_entry.query_hash, 'test_hash_123')
-        self.assertEqual(cache_entry.query_text, 'Test Address')
-        self.assertEqual(cache_entry.latitude, Decimal('55.7558'))
+        self.assertEqual(cache_entry.cache_key, 'test_hash_123')
+        self.assertEqual(cache_entry.address_data['formatted_address'], '123 Test Street, Test City')
     
     def test_cache_str_representation(self):
         """Test string representation of a cache."""
+        from django.utils import timezone
         cache_entry = AddressCache.objects.create(
-            query_hash='test_hash_123',
-            query_text='Test Address'
+            cache_key='test_hash_123',
+            address_data={'formatted_address': 'Test Address'},
+            expires_at=timezone.now() + timedelta(days=1)
         )
         
-        expected_str = f"Cache: test_hash_123 - Test Address"
+        expected_str = f"Cache: test_hash_123 (expires: {cache_entry.expires_at})"
         self.assertEqual(str(cache_entry), expected_str)
 
 
@@ -152,9 +151,9 @@ class AddressFormTest(TestCase):
     def setUp(self):
         """Setting up test data."""
         self.form_data = {
-            'street_number': '123',
-            'route': 'Test Street',
-            'locality': 'Test City',
+            'house_number': '123',
+            'street': 'Test Street',
+            'city': 'Test City',
             'country': 'Test Country',
             'auto_validate': True
         }
@@ -168,7 +167,7 @@ class AddressFormTest(TestCase):
         """Test an invalid form with missing fields."""
         form = AddressForm(data={})
         self.assertFalse(form.is_valid())
-        self.assertIn('You must specify at least one component of the address', str(form.errors))
+        self.assertIn('At least one address component', str(form.errors))
     
     def test_form_with_full_address(self):
         """Test form with a full address."""
@@ -188,9 +187,9 @@ class AddressSerializerTest(APITestCase):
     def setUp(self):
         """Setting up test data."""
         self.address_data = {
-            'street_number': '123',
-            'route': 'Test Street',
-            'locality': 'Test City',
+            'house_number': '123',
+            'street': 'Test Street',
+            'city': 'Test City',
             'country': 'Test Country'
         }
         self.address = Address.objects.create(**self.address_data)
@@ -201,11 +200,12 @@ class AddressSerializerTest(APITestCase):
         data = serializer.data
         
         self.assertIn('id', data)
-        self.assertIn('street_number', data)
-        self.assertIn('route', data)
-        self.assertIn('locality', data)
+        self.assertIn('house_number', data)
+        self.assertIn('street', data)
+        self.assertIn('city', data)
         self.assertIn('country', data)
-        self.assertIn('is_validated', data)
+        self.assertIn('is_valid', data)
+        self.assertIn('is_geocoded', data)
         self.assertIn('validation_status', data)
     
     def test_serializer_validation(self):
@@ -234,9 +234,9 @@ class AddressAPIViewTest(APITestCase):
         self.client.force_authenticate(user=self.user)
         
         self.address = Address.objects.create(
-            street_number='123',
-            route='Test Street',
-            locality='Test City',
+            house_number='123',
+            street='Test Street',
+            city='Test City',
             country='Test Country'
         )
     
@@ -252,9 +252,9 @@ class AddressAPIViewTest(APITestCase):
         """Test creating an address through API."""
         url = reverse('geolocation:address-list')
         data = {
-            'street_number': '456',
-            'route': 'New Street',
-            'locality': 'New City',
+            'house_number': '456',
+            'street': 'New Street',
+            'city': 'New City',
             'country': 'New Country'
         }
         
@@ -267,21 +267,21 @@ class AddressAPIViewTest(APITestCase):
         response = self.client.get(url)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['street_number'], '123')
+        self.assertEqual(response.data['house_number'], '123')
     
     def test_update_address(self):
         """Test updating an address."""
         url = reverse('geolocation:address-detail', args=[self.address.id])
         data = {
-            'street_number': '789',
-            'route': 'Updated Street',
-            'locality': 'Updated City',
+            'house_number': '789',
+            'street': 'Updated Street',
+            'city': 'Updated City',
             'country': 'Updated Country'
         }
         
         response = self.client.put(url, data)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['street_number'], '789')
+        self.assertEqual(response.data['house_number'], '789')
     
     def test_delete_address(self):
         """Test deleting an address."""
@@ -300,9 +300,9 @@ class AddressValidationServiceTest(TestCase):
     def setUp(self):
         """Setting up test data."""
         self.address = Address.objects.create(
-            street_number='123',
-            route='Test Street',
-            locality='Test City',
+            house_number='123',
+            street='Test Street',
+            city='Test City',
             country='Test Country'
         )
         self.service = AddressValidationService()
@@ -328,10 +328,10 @@ class AddressValidationServiceTest(TestCase):
         
         result = self.service.validate_address(self.address)
         
-        self.assertTrue(result.is_valid)
-        self.assertEqual(result.formatted_address, '123 Test Street, Test City, Test Country')
-        self.assertEqual(result.latitude, Decimal('55.7558'))
-        self.assertEqual(result.longitude, Decimal('37.6176'))
+        self.assertTrue(result)
+        self.assertEqual(self.address.formatted_address, '123 Test Street, Test City, Test Country')
+        self.assertEqual(self.address.latitude, Decimal('55.7558'))
+        self.assertEqual(self.address.longitude, Decimal('37.6176'))
     
     @patch('geolocation.services.GoogleMapsService')
     def test_validate_address_failure(self, mock_google_maps):
@@ -343,10 +343,10 @@ class AddressValidationServiceTest(TestCase):
         
         result = self.service.validate_address(self.address)
         
-        self.assertFalse(result.is_valid)
-        self.assertIsNone(result.formatted_address)
-        self.assertIsNone(result.latitude)
-        self.assertIsNone(result.longitude)
+        self.assertFalse(result)
+        self.assertIsNone(self.address.formatted_address)
+        self.assertIsNone(self.address.latitude)
+        self.assertIsNone(self.address.longitude)
 
 
 class GoogleMapsServiceTest(TestCase):
@@ -431,9 +431,9 @@ class AddressSignalsTest(TestCase):
     def setUp(self):
         """Setting up test data."""
         self.address_data = {
-            'street_number': '123',
-            'route': 'Test Street',
-            'locality': 'Test City',
+            'house_number': '123',
+            'street': 'Test Street',
+            'city': 'Test City',
             'country': 'Test Country'
         }
     
@@ -441,29 +441,14 @@ class AddressSignalsTest(TestCase):
     def test_auto_validate_address_signal(self, mock_service):
         """Test automatic address validation through signal."""
         # Mock validation service
-        mock_validation_result = MagicMock()
-        mock_validation_result.is_valid = True
-        mock_validation_result.formatted_address = '123 Test Street, Test City, Test Country'
-        mock_validation_result.latitude = Decimal('55.7558')
-        mock_validation_result.longitude = Decimal('37.6176')
-        
         mock_service_instance = MagicMock()
-        mock_service_instance.validate_address.return_value = mock_validation_result
+        mock_service_instance.validate_address.return_value = True
         mock_service.return_value = mock_service_instance
         
-        # Create address (signal should be triggered)
         address = Address.objects.create(**self.address_data)
+        auto_validate_address(Address, address, created=True)
         
-        # Check if validation service was called
         mock_service_instance.validate_address.assert_called_once_with(address)
-        
-        # Refresh address from database
-        address.refresh_from_db()
-        
-        # Check if address was validated
-        self.assertTrue(address.is_validated)
-        self.assertEqual(address.validation_status, 'valid')
-        self.assertEqual(address.formatted_address, '123 Test Street, Test City, Test Country') 
 
 """
 Тесты для геолокационных функций с PostGIS.

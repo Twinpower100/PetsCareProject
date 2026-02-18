@@ -43,27 +43,27 @@ class AddressForm(forms.ModelForm):
     class Meta:
         model = Address
         fields = [
-            'street_number', 'route', 'locality', 'administrative_area_level_1',
-            'administrative_area_level_2', 'country', 'postal_code'
+            'house_number', 'street', 'city', 'region',
+            'district', 'country', 'postal_code'
         ]
         widgets = {
-            'street_number': forms.TextInput(attrs={
+            'house_number': forms.TextInput(attrs={
                 'class': 'form-control',
                 'placeholder': _('House number')
             }),
-            'route': forms.TextInput(attrs={
+            'street': forms.TextInput(attrs={
                 'class': 'form-control',
                 'placeholder': _('Street')
             }),
-            'locality': forms.TextInput(attrs={
+            'city': forms.TextInput(attrs={
                 'class': 'form-control',
                 'placeholder': _('City')
             }),
-            'administrative_area_level_1': forms.TextInput(attrs={
+            'region': forms.TextInput(attrs={
                 'class': 'form-control',
                 'placeholder': _('Region/State')
             }),
-            'administrative_area_level_2': forms.TextInput(attrs={
+            'district': forms.TextInput(attrs={
                 'class': 'form-control',
                 'placeholder': _('District')
             }),
@@ -90,7 +90,7 @@ class AddressForm(forms.ModelForm):
         cleaned_data = super().clean()
         
         # Check if at least one address component is specified
-        required_fields = ['street_number', 'route', 'locality', 'country']
+        required_fields = ['house_number', 'street', 'city', 'country']
         if not any(cleaned_data.get(field) for field in required_fields):
             if not cleaned_data.get('full_address'):
                 raise forms.ValidationError(
@@ -104,26 +104,29 @@ class AddressForm(forms.ModelForm):
                 validation_service = AddressValidationService()
                 # Create a temporary address for geocoding
                 temp_address = Address(
-                    street_number=cleaned_data.get('street_number', ''),
-                    route=cleaned_data.get('route', ''),
-                    locality=cleaned_data.get('locality', ''),
-                    administrative_area_level_1=cleaned_data.get('administrative_area_level_1', ''),
-                    administrative_area_level_2=cleaned_data.get('administrative_area_level_2', ''),
+                    house_number=cleaned_data.get('house_number', ''),
+                    street=cleaned_data.get('street', ''),
+                    city=cleaned_data.get('city', ''),
+                    region=cleaned_data.get('region', ''),
+                    district=cleaned_data.get('district', ''),
                     country=cleaned_data.get('country', ''),
                     postal_code=cleaned_data.get('postal_code', '')
                 )
                 
                 # Perform geocoding
-                validation_result = validation_service.validate_address(temp_address)
+                is_valid = validation_service.validate_address(temp_address)
                 
-                if validation_result.is_valid:
-                    # Update data from geocoding result
-                    cleaned_data['formatted_address'] = validation_result.formatted_address
-                    cleaned_data['latitude'] = validation_result.latitude
-                    cleaned_data['longitude'] = validation_result.longitude
+                if is_valid:
+                    cleaned_data['formatted_address'] = temp_address.formatted_address
+                    cleaned_data['latitude'] = temp_address.latitude
+                    cleaned_data['longitude'] = temp_address.longitude
+                    cleaned_data['is_valid'] = True
+                    cleaned_data['is_geocoded'] = bool(temp_address.point)
                     cleaned_data['is_validated'] = True
                     cleaned_data['validation_status'] = 'valid'
                 else:
+                    cleaned_data['is_valid'] = False
+                    cleaned_data['is_validated'] = True
                     cleaned_data['validation_status'] = 'invalid'
                     
             except Exception as e:
@@ -149,16 +152,7 @@ class AddressForm(forms.ModelForm):
         if self.cleaned_data.get('auto_validate') and not instance.is_validated:
             try:
                 validation_service = AddressValidationService()
-                validation_result = validation_service.validate_address(instance)
-                
-                if validation_result.is_valid:
-                    instance.formatted_address = validation_result.formatted_address
-                    instance.latitude = validation_result.latitude
-                    instance.longitude = validation_result.longitude
-                    instance.is_validated = True
-                    instance.validation_status = 'valid'
-                else:
-                    instance.validation_status = 'invalid'
+                validation_service.validate_address(instance)
                     
             except Exception:
                 # If validation fails, save without validation

@@ -50,11 +50,11 @@ class Command(BaseCommand):
             
             # Фильтруем по типу пользователя
             if user_type == 'owners':
-                users = users.filter(user_type='owner')
+                users = users.filter(user_types__name='pet_owner')
             elif user_type == 'providers':
-                users = users.filter(user_type='provider')
+                users = users.filter(user_types__name='provider_admin')
             elif user_type == 'sitters':
-                users = users.filter(user_type='sitter')
+                users = users.filter(user_types__name='sitter')
         
         self.stdout.write(
             self.style.SUCCESS(
