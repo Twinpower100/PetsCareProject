@@ -107,21 +107,32 @@ class GmailAPIBackend(BaseEmailBackend):
             
             # Отправляем через Gmail API
             if self.use_gmail_api:
-                success = send_email_via_gmail_api(
-                    subject=subject,
-                    message=body,
-                    from_email=from_email,
-                    recipient_list=to_emails,
-                    html_message=html_message,
-                    attachments=attachments,
-                    fail_silently=self.fail_silently
-                )
-                
-                if success:
-                    logger.info(f"Email sent successfully via Gmail API to {to_emails}")
-                    return True
-                else:
-                    logger.warning(f"Failed to send email via Gmail API to {to_emails}")
+                try:
+                    success = send_email_via_gmail_api(
+                        subject=subject,
+                        message=body,
+                        from_email=from_email,
+                        recipient_list=to_emails,
+                        html_message=html_message,
+                        attachments=attachments,
+                        fail_silently=self.fail_silently
+                    )
+                    
+                    if success:
+                        logger.info(f"Email sent successfully via Gmail API to {to_emails}")
+                        return True
+                    else:
+                        logger.warning(f"Failed to send email via Gmail API to {to_emails}")
+                        # Fallback на SMTP если включен
+                        if self.fallback_to_smtp:
+                            logger.info("Attempting SMTP fallback after Gmail API failure")
+                            return self._send_via_smtp_fallback(message)
+                except Exception as e:
+                    logger.error(f"Error sending email via Gmail API: {str(e)}")
+                    # Fallback на SMTP если включен
+                    if self.fallback_to_smtp:
+                        logger.info("Attempting SMTP fallback after Gmail API error")
+                        return self._send_via_smtp_fallback(message)
             
             # Fallback на SMTP
             if self.fallback_to_smtp and not self.use_gmail_api:

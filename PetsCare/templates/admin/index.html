@@ -13,13 +13,9 @@
 
 {% block content %}
 <div id="content-main">
-  {% include "admin/app_list.html" with app_list=app_list show_changelinks=True %}
   <div class="module">
-    <h2>{% trans "Reports" %}</h2>
-    <ul>
-      <li><a href="{% url 'admin:provider_reports' %}">{% trans "Provider Reports" %}</a></li>
-      <li><a href="{% url 'admin:billing_reports' %}">{% trans "Billing Reports" %}</a></li>
-    </ul>
+    <h2>{% trans "Welcome to PetsCare Administration" %}</h2>
+    <p>{% trans "Use the navigation panel on the left to access different sections of the administration interface." %}</p>
   </div>
 </div>
 {% endblock %}

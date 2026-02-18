@@ -1,4 +1,4 @@
-Django>=5.0.3
+Django>=5.0.3,<6.0  # Зафиксировано до версии 6.0 для стабильности
 djangorestframework==3.14.0
 django-cors-headers==4.3.1
 psycopg2-binary==2.9.10
@@ -7,6 +7,7 @@ django-filter==23.5
 django-allauth==0.58.2
 django-phonenumber-field==7.2.0
 phonenumbers==8.13.25
+django-countries==8.2.0
 django-modeltranslation==0.18.11
 Pillow==11.3.0
 celery==5.3.6
@@ -18,24 +19,40 @@ django-push-notifications==3.0.0
 pywebpush==1.14.0
 djangorestframework-simplejwt==5.3.1
 drf-yasg==1.21.10
-django-filter==23.5
 django-cacheops==7.1
 
-# PostGIS dependencies for spatial operations
-# Note: GDAL, GEOS, PROJ are usually installed with PostGIS
-# If needed, install them separately:
-# pip install GDAL
-# pip install geos
-# pip install proj
+# Зависимости PostGIS для пространственных операций
+# GDAL, GEOS, PROJ установлены через OSGeo4W (системные библиотеки)
+# Пути настроены в settings.py:
+#   - GDAL_LIBRARY_PATH
+#   - GEOS_LIBRARY_PATH
+#   - PROJ_LIB
+#   - GDAL_DATA
+#
+# Если нужен Python-пакет GDAL (для расширенных функций):
+# На Windows используйте готовый wheel с:
+#   https://www.lfd.uci.edu/~gohlke/pythonlibs/#gdal
+# Или установите через conda:
+#   conda install -c conda-forge gdal
+# Примечание: pip install GDAL не работает на Windows без компилятора и заголовочных файлов
 
 # External APIs
 firebase-admin==6.2.0
 python-dotenv==1.0.0
 
+# Public holidays by country (for location schedule)
+holidays>=0.50
+# Production calendar: working days, transfers (RU, DE, FR, US, etc.)
+workalendar>=17.0
+
 # Additional dependencies
 requests==2.31.0
+urllib3>=2.6.3  # Security fix for CWE-409 (decompression bomb vulnerability)
+python-stdnum>=1.19  # Для валидации формата VAT ID, IBAN и других стандартных номеров
 django-celery-results==2.5.1
 openpyxl>=3.1.2
+mammoth==1.11.0
+django-ckeditor-5==0.2.19
 
 # Google API dependencies
 google-api-python-client==2.108.0

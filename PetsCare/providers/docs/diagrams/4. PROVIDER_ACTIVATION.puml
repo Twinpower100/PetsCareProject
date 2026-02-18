@@ -1,0 +1,81 @@
+@startuml sequence_provider_activation
+title Диаграмма последовательности: Активация провайдера системным администратором
+
+actor "System Admin" as SystemAdmin
+participant "Django Admin UI" as AdminUI
+participant "Django ORM" as ORM
+database "Database" as DB
+
+== Поиск провайдеров, готовых к активации ==
+SystemAdmin -> AdminUI: Открыть список провайдеров\nсо статусом 'activation_required'
+activate AdminUI
+AdminUI -> ORM: Provider.objects.filter(\n  activation_status='activation_required'\n)
+activate ORM
+ORM -> DB: SELECT * FROM providers_provider\nWHERE activation_status = 'activation_required'
+activate DB
+DB --> ORM: Список провайдеров
+deactivate DB
+ORM --> AdminUI: QuerySet провайдеров
+deactivate ORM
+AdminUI --> SystemAdmin: Отображение списка провайдеров\n(с заполненными реквизитами)
+deactivate AdminUI
+
+== Активация провайдера ==
+SystemAdmin -> AdminUI: Выбрать провайдера и открыть для редактирования
+activate AdminUI
+AdminUI -> ORM: Provider.objects.get(id=provider_id)
+activate ORM
+ORM -> DB: SELECT * FROM providers_provider WHERE id = ?
+activate DB
+DB --> ORM: Данные провайдера
+deactivate DB
+ORM --> AdminUI: Provider объект
+deactivate ORM
+
+note right of AdminUI
+    Проверка перед активацией:
+    - tax_id заполнен
+    - registration_number заполнен
+    - activation_status = 'activation_required'
+end note
+
+AdminUI --> SystemAdmin: Форма редактирования провайдера\n(доступно изменение activation_status)
+
+SystemAdmin -> AdminUI: Изменить activation_status = 'active'\nи сохранить
+activate AdminUI
+AdminUI -> ORM: provider.activation_status = 'active'
+AdminUI -> ORM: provider.is_active = True
+AdminUI -> ORM: provider.save()
+activate ORM
+
+ORM -> DB: UPDATE providers_provider\nSET activation_status = 'active',\n    is_active = True\nWHERE id = ?
+activate DB
+DB --> ORM: Успех
+deactivate DB
+
+ORM --> AdminUI: Провайдер активирован
+deactivate ORM
+AdminUI --> SystemAdmin: Сообщение об успехе
+deactivate AdminUI
+
+== Результат активации ==
+note over SystemAdmin
+    После активации провайдера:
+    
+    ✅ Админ провайдера МОЖЕТ:
+    - Создавать и редактировать точки (ProviderLocation)
+    - Создавать и редактировать услуги с ценами 
+      (ProviderLocationService) для каждой точки
+    - Услуги выбираются из глобального справочника (catalog.Service)
+      но только из категорий уровня 0, установленных в 
+      provider.available_category_levels
+    
+    ❌ Админ провайдера НЕ МОЖЕТ (требуется активный контракт):
+    - Создавать и редактировать работников (Employee)
+    - Создавать и редактировать расписания (LocationSchedule)
+    
+    ⚠️ Услуги НЕ отображаются на фронтенде до подписания контракта
+end note
+
+@enduml
+

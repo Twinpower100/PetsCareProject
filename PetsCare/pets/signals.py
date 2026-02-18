@@ -12,6 +12,11 @@ def assign_pet_owner_role_on_pet_creation(sender, instance, created, **kwargs):
     """
     Автоматически присваивает роль 'pet_owner' пользователю при создании питомца.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     if created:
         from users.models import UserType
         

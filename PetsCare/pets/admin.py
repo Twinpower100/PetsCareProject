@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
-from .models import PetType, Breed, Pet, MedicalRecord, PetRecord, PetRecordFile, User, DocumentType
+from .models import PetType, Breed, SizeRule, Pet, MedicalRecord, PetRecord, PetRecordFile, User, DocumentType
 from custom_admin import custom_admin_site
 from django import forms
 import json
@@ -15,6 +15,14 @@ class BreedAdmin(admin.ModelAdmin):
     list_display = ('name', 'code', 'pet_type', 'description')
     list_filter = ('pet_type',)
     search_fields = ('name', 'pet_type__name')
+
+
+class SizeRuleAdmin(admin.ModelAdmin):
+    """Правила весовых диапазонов по типу питомца (S/M/L/XL) для ценообразования."""
+    list_display = ('pet_type', 'size_code', 'min_weight_kg', 'max_weight_kg')
+    list_filter = ('pet_type', 'size_code')
+    search_fields = ('pet_type__code', 'pet_type__name')
+    ordering = ('pet_type', 'min_weight_kg')
 
 
 class MedicalRecordInline(admin.StackedInline):
@@ -212,6 +220,7 @@ class PetRecordFileAdmin(admin.ModelAdmin):
 
 custom_admin_site.register(PetType, PetTypeAdmin)
 custom_admin_site.register(Breed, BreedAdmin)
+custom_admin_site.register(SizeRule, SizeRuleAdmin)
 custom_admin_site.register(Pet, PetAdmin)
 custom_admin_site.register(MedicalRecord, MedicalRecordAdmin)
 custom_admin_site.register(PetRecordFile, PetRecordFileAdmin)

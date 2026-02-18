@@ -6,92 +6,6 @@ from math import radians, cos, sin, asin, sqrt
 from django.contrib.gis.db import models as gis_models
 from django.contrib.gis.geos import Point
 
-class Location(models.Model):
-    """
-    Модель для хранения данных о местоположении.
-    
-    Содержит информацию о географических координатах и адресе пользователя.
-    Поддерживает валидацию координат и автоматическое добавление даты создания.
-    """
-    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'), related_name='locations', null=True, blank=True)
-    point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
-    address = models.CharField(max_length=255, verbose_name=_('Address'))
-    city = models.CharField(max_length=100, verbose_name=_('City'), blank=True)
-    country = models.CharField(max_length=100, verbose_name=_('Country'), blank=True)
-    postal_code = models.CharField(max_length=20, verbose_name=_('Postal Code'), blank=True)
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_('Created At'))
-
-    class Meta:
-        verbose_name = _('Location')
-        verbose_name_plural = _('Locations')
-        ordering = ['-created_at']
-        indexes = [
-            gis_models.Index(fields=['point'], name='idx_location_point'),
-        ]
-
-    def __str__(self):
-        return f"{self.user} - {self.address}"
-
-    @property
-    def coordinates(self):
-        """Возвращает координаты в формате (latitude, longitude)"""
-        if self.point:
-            return self.point.coords
-        return None
-
-class SearchRadius(models.Model):
-    """
-    Модель для определения радиуса поиска для поставщиков услуг.
-    
-    Позволяет настраивать радиус поиска для каждого пользователя,
-    с возможностью активации/деактивации.
-    """
-    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'), related_name='search_radius', null=True, blank=True)
-    name = models.CharField(_('Name'), max_length=100)
-    radius = models.PositiveIntegerField(_('Radius In Meters'))
-    is_active = models.BooleanField(_('Is Active'), default=True)
-
-    class Meta:
-        verbose_name = _('Search Radius')
-        verbose_name_plural = _('Search Radii')
-        ordering = ['radius']
-
-    def __str__(self):
-        return f"{self.name} ({self.radius}m)"
-
-class LocationHistory(models.Model):
-    """
-    Модель для отслеживания истории местоположений.
-    
-    Хранит историю всех местоположений пользователя с временными метками.
-    Используется для анализа перемещений и поиска ближайших поставщиков услуг.
-    """
-    user = models.ForeignKey('users.User', on_delete=models.CASCADE, verbose_name=_('User'), related_name='location_history', null=True, blank=True)
-    point = gis_models.PointField(srid=4326, verbose_name=_('Point'))
-    address = models.CharField(max_length=255, verbose_name=_('Address'))
-    city = models.CharField(max_length=100, verbose_name=_('City'), blank=True)
-    country = models.CharField(max_length=100, verbose_name=_('Country'), blank=True)
-    postal_code = models.CharField(max_length=20, verbose_name=_('Postal Code'), blank=True)
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_('Created At'))
-
-    class Meta:
-        verbose_name = _('Location History')
-        verbose_name_plural = _('Location History')
-        ordering = ['-created_at']
-        indexes = [
-            gis_models.Index(fields=['point'], name='idx_location_history_point'),
-            models.Index(fields=['created_at'], name='idx_location_history_created'),
-        ]
-
-    def __str__(self):
-        return f"{self.user} - {self.address} ({self.created_at})"
-
-    @property
-    def coordinates(self):
-        """Возвращает координаты в формате (latitude, longitude)"""
-        if self.point:
-            return self.point.coords
-        return None
 
 class Address(models.Model):
     """
@@ -134,9 +48,7 @@ class Address(models.Model):
         default='pending'
     )
     
-    # Флаги состояния
-    is_valid = models.BooleanField(_('Is Valid'), default=False)
-    is_validated = models.BooleanField(_('Is Validated'), default=False, help_text=_('Legacy field for backward compatibility'))
+    # Флаг геокодирования (единственный; состояние валидации — только validation_status)
     is_geocoded = models.BooleanField(_('Is Geocoded'), default=False)
     
     # Точность геокодирования
@@ -194,6 +106,24 @@ class Address(models.Model):
         if self.postal_code:
             parts.append(self.postal_code)
         return ", ".join(parts)
+
+    def save(self, *args, **kwargs):
+        """
+        Синхронизация point и is_geocoded при сохранении.
+        При наличии latitude/longitude заполняем point; is_geocoded = (point не null).
+        Состояние валидации — только validation_status (каноническое поле).
+        """
+        if self.latitude is not None and self.longitude is not None:
+            try:
+                lon = float(self.longitude)
+                lat = float(self.latitude)
+                self.point = Point(lon, lat, srid=4326)
+            except (TypeError, ValueError):
+                self.point = None
+        else:
+            self.point = None
+        self.is_geocoded = bool(self.point)
+        super().save(*args, **kwargs)
 
     def distance_to(self, lat: float, lon: float) -> float:
         """Вычисляет расстояние до указанной точки в километрах"""

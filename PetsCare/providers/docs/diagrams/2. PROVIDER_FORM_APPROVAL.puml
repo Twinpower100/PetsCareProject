@@ -1,0 +1,139 @@
+@startuml sequence_provider_approval
+title Диаграмма последовательности: Одобрение заявки и назначение биллинг-менеджера
+
+actor "System Admin" as SystemAdmin
+participant "Django Admin UI" as AdminUI
+participant "Django ORM" as ORM
+participant "Signal Handler\n(post_save)" as SignalHandler
+database "Database" as DB
+
+== Поиск заявок ==
+SystemAdmin -> AdminUI: Открыть список заявок
+activate AdminUI
+AdminUI -> ORM: ProviderForm.objects.filter(status='pending')
+activate ORM
+ORM -> DB: SELECT * FROM users_providerform WHERE status='pending'
+activate DB
+DB --> ORM: Список заявок
+deactivate DB
+ORM --> AdminUI: QuerySet заявок
+deactivate ORM
+AdminUI --> SystemAdmin: Отображение списка заявок
+deactivate AdminUI
+
+== Выбор заявки и назначение биллинг-менеджера ==
+SystemAdmin -> AdminUI: Выбрать заявку и нажать "Approve"
+activate AdminUI
+AdminUI -> ORM: Получить список биллинг-менеджеров
+activate ORM
+ORM -> DB: SELECT * FROM users_usertype WHERE name='billing_manager'
+activate DB
+DB --> ORM: UserType объект
+deactivate DB
+ORM -> DB: SELECT * FROM users_user\nWHERE id IN (\n  SELECT user_id FROM users_user_user_types\n  WHERE usertype_id = ?\n) AND is_active = True
+activate DB
+DB --> ORM: Список биллинг-менеджеров
+deactivate DB
+ORM --> AdminUI: QuerySet биллинг-менеджеров
+deactivate ORM
+AdminUI -> AdminUI: Показать форму выбора биллинг-менеджера
+AdminUI --> SystemAdmin: Форма выбора биллинг-менеджера
+
+SystemAdmin -> AdminUI: Выбрать биллинг-менеджера и подтвердить
+activate AdminUI
+AdminUI -> ORM: form_instance.status = 'approved'
+AdminUI -> ORM: form_instance.approved_by = request.user
+AdminUI -> ORM: form_instance._selected_billing_manager = billing_manager
+AdminUI -> ORM: form_instance.save()
+activate ORM
+
+ORM -> DB: UPDATE users_providerform SET status='approved', ...
+activate DB
+DB --> ORM: Успех
+deactivate DB
+
+note right of ORM
+    При сохранении ProviderForm
+    Django автоматически вызывает
+    post_save сигнал
+end note
+
+ORM -> SignalHandler: post_save сигнал (status='approved')
+activate SignalHandler
+
+== Создание Provider и назначение биллинг-менеджера (через сигнал) ==
+note right of SignalHandler
+    Сигнал выполняет:
+    1. Создание Address (геокодирование)
+    2. Создание Provider (activation_status='pending')
+    3. Установка категорий услуг уровня 0
+       (из ProviderForm.selected_categories 
+       в Provider.available_category_levels)
+    4. Создание ProviderAdmin
+    5. Назначение роли provider_admin
+    6. Установка is_staff=True
+    7. Создание BillingManagerProvider (назначение биллинг-менеджера)
+end note
+
+SignalHandler -> ORM: Создать Address, Provider, связи
+activate ORM
+ORM -> DB: INSERT INTO geolocation_address ...
+ORM -> DB: INSERT INTO providers_provider\n(activation_status='pending', is_active=False)
+ORM -> DB: SELECT * FROM users_providerform_selected_categories\nWHERE providerform_id = ?
+ORM -> DB: INSERT INTO providers_provider_available_category_levels\n(категории уровня 0 из заявки)
+ORM -> DB: INSERT INTO users_provideradmin ...
+ORM -> DB: UPDATE users_user SET is_staff=True
+ORM -> DB: INSERT INTO users_user_user_types ...
+ORM -> DB: INSERT INTO billing_billingmanagerprovider\n(назначение биллинг-менеджера)
+activate DB
+DB --> ORM: Все объекты созданы
+deactivate DB
+ORM --> SignalHandler: Успех
+deactivate ORM
+
+== Отправка писем (через сигнал) ==
+SignalHandler -> ORM: Отправить письмо админу провайдера\n(created_by.email)
+activate ORM
+note right of ORM
+    Письмо с приветствием и\nинформацией о доступе к админке
+    Язык: из ProviderForm.language
+end note
+ORM -> ORM: EmailService.send_welcome_email(\n  to=instance.created_by.email,\n  provider=provider,\n  language=instance.language\n)
+ORM --> SignalHandler: Письмо админу отправлено
+deactivate ORM
+
+SignalHandler -> ORM: Отправить письмо провайдеру\n(provider.email)
+activate ORM
+note right of ORM
+    Письмо на email провайдера\n(может отличаться от email админа)
+    Язык: из ProviderForm.language
+end note
+ORM -> ORM: EmailService.send_provider_activation_email(\n  to=provider.email,\n  provider=provider,\n  language=instance.language\n)
+ORM --> SignalHandler: Письмо провайдеру отправлено
+deactivate ORM
+
+SignalHandler --> ORM: Сигнал завершен
+deactivate SignalHandler
+
+ORM --> AdminUI: Заявка одобрена, биллинг-менеджер назначен
+deactivate ORM
+AdminUI --> SystemAdmin: Сообщение об успехе
+deactivate AdminUI
+
+== Следующие шаги ==
+note over SystemAdmin
+    После одобрения заявки:
+    
+    1. Создан Provider с activation_status='pending'
+    2. Назначен биллинг-менеджер (BillingManagerProvider)
+    3. Админ провайдера получил технический доступ к админке
+       (is_staff=True, роль provider_admin)
+       ⚠️ Но функциональные возможности ограничены до активации провайдера
+    
+    Следующие процессы:
+    - Заполнение реквизитов: PROVIDER_REQUISITES_FILLING.puml
+    - Активация провайдера: PROVIDER_ACTIVATION.puml
+      (после активации админ сможет создавать точки и услуги)
+end note
+
+@enduml

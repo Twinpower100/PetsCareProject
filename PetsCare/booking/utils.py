@@ -1,6 +1,8 @@
 from django.utils.translation import gettext_lazy as _
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Optional, Tuple
+
 from .models import Booking, BookingStatus
 
 def check_booking_availability(provider, employee, start_time, end_time, exclude_booking_id=None):
@@ -42,26 +44,60 @@ def check_booking_availability(provider, employee, start_time, end_time, exclude
     # Если есть пересекающиеся бронирования, слот занят
     return not overlapping_bookings.exists()
 
+def get_effective_price_for_pet(provider_location, service, pet):
+    """
+    Возвращает эффективную цену и длительность услуги для питомца (тип + вес → размер S/M/L/XL).
+
+    Ищется запись ProviderLocationService по (локация, услуга, тип питомца, размер).
+    Размер берётся из pet.get_current_size_category(); при отсутствии варианта — None.
+
+    Args:
+        provider_location: Локация провайдера (ProviderLocation) или None.
+        service: Услуга (catalog.Service).
+        pet: Питомец (pets.Pet) с обязательными weight и pet_type.
+
+    Returns:
+        Tuple[Optional[Decimal], Optional[int]]: (цена, длительность_в_минутах) или (None, None).
+    """
+    if not provider_location:
+        return (None, None)
+    from providers.models import ProviderLocationService
+
+    size_code = pet.get_current_size_category()
+    qs = ProviderLocationService.objects.filter(
+        location=provider_location,
+        service=service,
+        pet_type=pet.pet_type,
+        is_active=True,
+    ).select_related('location', 'service', 'pet_type')
+    if size_code:
+        qs = qs.filter(size_code=size_code)
+    pls = qs.first()
+    if pls:
+        return (pls.price, pls.duration_minutes)
+    return (None, None)
+
+
 def calculate_booking_price(service, start_time, end_time):
     """
     Рассчитывает стоимость бронирования.
-    
+
+    Устаревший вариант: ожидает объект с атрибутом price (например ProviderLocationService).
+    Для расчёта по питомцу и размеру используйте get_effective_price_for_pet.
+
     Args:
-        service: Услуга
+        service: Услуга (с атрибутом price) или catalog.Service
         start_time: Время начала
         end_time: Время окончания
-    
+
     Returns:
         Decimal: Стоимость бронирования
     """
-    # Рассчитываем продолжительность в часах
     duration = (end_time - start_time).total_seconds() / 3600
-    
-    # Рассчитываем стоимость
     service_price = getattr(service, 'price', None)
     if service_price is None:
         return Decimal('0.00')
-    return service_price * Decimal(str(duration))
+    return Decimal(str(service_price)) * Decimal(str(duration))
 
 def update_booking_status(booking, new_status_name):
     """

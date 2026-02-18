@@ -120,13 +120,9 @@ class AddressForm(forms.ModelForm):
                     cleaned_data['formatted_address'] = temp_address.formatted_address
                     cleaned_data['latitude'] = temp_address.latitude
                     cleaned_data['longitude'] = temp_address.longitude
-                    cleaned_data['is_valid'] = True
                     cleaned_data['is_geocoded'] = bool(temp_address.point)
-                    cleaned_data['is_validated'] = True
                     cleaned_data['validation_status'] = 'valid'
                 else:
-                    cleaned_data['is_valid'] = False
-                    cleaned_data['is_validated'] = True
                     cleaned_data['validation_status'] = 'invalid'
                     
             except Exception as e:
@@ -149,7 +145,7 @@ class AddressForm(forms.ModelForm):
         instance = super().save(commit=False)
         
         # If automatic validation is enabled and the address is not validated
-        if self.cleaned_data.get('auto_validate') and not instance.is_validated:
+        if self.cleaned_data.get('auto_validate') and instance.validation_status == 'pending':
             try:
                 validation_service = AddressValidationService()
                 validation_service.validate_address(instance)

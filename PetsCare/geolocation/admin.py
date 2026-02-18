@@ -1,33 +1,15 @@
 from django.contrib import admin
+from django.contrib.admin.utils import flatten_fieldsets
 from custom_admin import custom_admin_site
 from django.utils.translation import gettext_lazy as _
-from .models import Location, SearchRadius, LocationHistory, Address, AddressValidation, AddressCache
+from .models import Address, AddressValidation, AddressCache
 
-@admin.register(Location, site=custom_admin_site)
-class LocationAdmin(admin.ModelAdmin):
-    list_display = ('user', 'address', 'city', 'country', 'postal_code', 'created_at')
-    search_fields = ('user__email', 'address', 'city', 'country', 'postal_code')
-    list_filter = ('created_at', 'country', 'city')
-    readonly_fields = ('created_at',)
-
-@admin.register(SearchRadius, site=custom_admin_site)
-class SearchRadiusAdmin(admin.ModelAdmin):
-    list_display = ('user', 'name', 'radius', 'is_active')
-    search_fields = ('user__email', 'name')
-    list_filter = ('is_active', 'radius')
-
-@admin.register(LocationHistory, site=custom_admin_site)
-class LocationHistoryAdmin(admin.ModelAdmin):
-    list_display = ('user', 'address', 'city', 'country', 'postal_code', 'created_at')
-    search_fields = ('user__email', 'address', 'city', 'country', 'postal_code')
-    list_filter = ('created_at', 'country', 'city')
-    readonly_fields = ('created_at',)
 
 @admin.register(Address, site=custom_admin_site)
 class AddressAdmin(admin.ModelAdmin):
     """Админ-панель для управления структурированными адресами"""
     list_display = (
-        'id', 'street', 'house_number', 'city', 'country', 
+        'id', 'street', 'house_number', 'city', 'country',
         'validation_status', 'is_geocoded', 'created_at'
     )
     list_filter = (
@@ -39,8 +21,8 @@ class AddressAdmin(admin.ModelAdmin):
         'formatted_address', 'postal_code'
     )
     readonly_fields = (
-        'created_at', 'updated_at', 'validated_at', 'coordinates', 
-        'is_valid', 'is_geocoded'
+        'created_at', 'updated_at', 'validated_at', 'coordinates',
+        'is_geocoded'
     )
     fieldsets = (
         (_('Basic Information'), {
@@ -56,58 +38,37 @@ class AddressAdmin(admin.ModelAdmin):
             'fields': ('latitude', 'longitude', 'geocoding_accuracy')
         }),
         (_('Status'), {
-            'fields': ('validation_status', 'is_valid', 'is_geocoded')
+            'fields': ('validation_status', 'is_geocoded')
         }),
         (_('Metadata'), {
             'fields': ('created_at', 'updated_at', 'validated_at'),
             'classes': ('collapse',)
         }),
     )
-    actions = ['validate_addresses', 'clear_validation_status']
+    # В целевой картине адреса создаются из фронта и админки провайдеров;
+    # ручная валидация и сброс в pending не предусмотрены.
+    actions = []
 
-    def validate_addresses(self, request, queryset):
-        """Действие для валидации выбранных адресов"""
-        from .services import AddressValidationService
-        
-        validated_count = 0
-        for address in queryset:
-            try:
-                service = AddressValidationService()
-                result = service.validate_address(address)
-                if result:
-                    validated_count += 1
-            except Exception as e:
-                self.message_user(
-                    request, 
-                    _("Address validation error %(address_id)s: %(error)s") % {
-                        'address_id': address.id,
-                        'error': str(e)
-                    }, 
-                    level='ERROR'
-                )
-        
-        self.message_user(
-            request, 
-            _("Validated %(validated)d out of %(total)d addresses") % {
-                'validated': validated_count,
-                'total': queryset.count()
-            }
-        )
-    validate_addresses.short_description = _("Validate selected addresses")
+    def get_readonly_fields(self, request, obj=None):
+        """В режиме просмотра (нет права change или ?_view=1 из кнопки «Просмотреть») все поля только для чтения."""
+        if not self.has_change_permission(request, obj) or request.GET.get('_view'):
+            # Не вызываем get_form() — возможна рекурсия при построении формы
+            editable = list(flatten_fieldsets(self.fieldsets))
+            extra = [f for f in self.readonly_fields if f not in editable]
+            return editable + extra
+        return self.readonly_fields
 
-    def clear_validation_status(self, request, queryset):
-        """Действие для сброса статуса валидации"""
-        updated = queryset.update(
-            validation_status='pending',
-            validated_at=None,
-            geocoding_accuracy=''
-        )
-        self.message_user(
-            request, 
-            _("Validation status cleared for %(count)d addresses") % {'count': updated}
-        )
-    clear_validation_status.short_description = _("Clear validation status")
-
+    def change_view(self, request, object_id, form_url='', extra_context=None):
+        """При ?_view=1 скрываем кнопки Сохранить и Удалить (режим только просмотр)."""
+        if request.GET.get('_view'):
+            extra_context = dict(extra_context or {})
+            extra_context.update({
+                'show_save': False,
+                'show_save_and_add_another': False,
+                'show_save_and_continue': False,
+                'show_delete': False,
+            })
+        return super().change_view(request, object_id, form_url, extra_context)
 
 @admin.register(AddressValidation, site=custom_admin_site)
 class AddressValidationAdmin(admin.ModelAdmin):

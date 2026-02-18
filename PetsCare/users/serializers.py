@@ -1,6 +1,12 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import User, UserType, ProviderForm, EmployeeSpecialization, RoleInvite
+from .requisite_normalize import (
+    normalize_tax_id,
+    normalize_registration_number,
+    normalize_vat_number,
+    normalize_iban,
+)
 from django.utils.translation import gettext_lazy as _
 from providers.models import Provider  # noqa: F401
 from django.utils import timezone
@@ -366,7 +372,7 @@ class ProviderFormSerializer(serializers.ModelSerializer):
         model = ProviderForm
         fields = [
             'id', 'provider_name', 'provider_address',
-            'provider_phone', 'provider_email', 'documents', 'status',
+            'provider_phone', 'provider_email', 'admin_email', 'documents', 'status',
             'selected_categories', 'created_at', 'updated_at', 'approved_at',
             'country', 'organization_type', 'director_name',
             'registration_number', 'tax_id', 'kpp',
@@ -789,3 +795,491 @@ class AccountDeactivationSerializer(serializers.Serializer):
                 _('You must confirm account deactivation')
             )
         return value
+
+
+# ============================================================================
+# Сериализаторы для мастера регистрации провайдера (пошаговые)
+# ============================================================================
+
+class ProviderRegistrationStep1Serializer(serializers.Serializer):
+    """
+    Шаг 1: Выбор страны регистрации
+    """
+    country = serializers.CharField(
+        max_length=2,
+        required=True,
+        help_text=_('Country code (ISO 3166-1 alpha-2)')
+    )
+    
+    def validate_country(self, value):
+        """Проверяет наличие VATRate для страны"""
+        from billing.models import VATRate
+        if not VATRate.objects.filter(country=value, is_active=True).exists():
+            raise serializers.ValidationError(
+                _('We do not currently work in this country. Please contact support to request adding your country.')
+            )
+        return value
+
+
+class ProviderRegistrationStep2Serializer(serializers.Serializer):
+    """
+    Шаг 2: Заполнение базовых данных организации
+    """
+    provider_name = serializers.CharField(max_length=100, required=True)
+    provider_address = serializers.CharField(max_length=200, required=True)
+    provider_phone = serializers.CharField(required=True)
+    provider_email = serializers.EmailField(required=True)
+    admin_email = serializers.EmailField(required=True)
+    selected_categories = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=True,
+        min_length=1
+    )
+    documents = serializers.ListField(
+        child=serializers.FileField(allow_empty_file=False),
+        required=False,
+        allow_empty=True,
+    )
+    # Компоненты адреса из Google Places Autocomplete (опционально)
+    address_components = serializers.JSONField(required=False, allow_null=True)
+
+    def validate_provider_name(self, value):
+        """Проверка уникальности названия организации (таблица валидаций: onblur, Далее, Завершение)"""
+        from providers.models import Provider
+        name_clean = (value or '').strip()
+        if not name_clean:
+            return value
+        if Provider.objects.filter(name__iexact=name_clean).exists():
+            raise serializers.ValidationError(_('An organization with this name already exists.'))
+        if ProviderForm.objects.filter(provider_name__iexact=name_clean, status__in=['pending', 'approved']).exists():
+            raise serializers.ValidationError(_('An organization with this name already exists.'))
+        return value
+
+    def validate_provider_email(self, value):
+        """Проверка уникальности email организации"""
+        from providers.models import Provider
+        if Provider.objects.filter(email=value).exists():
+            raise serializers.ValidationError(_('Provider with this email already exists'))
+        if ProviderForm.objects.filter(provider_email=value, status__in=['pending', 'approved']).exists():
+            raise serializers.ValidationError(_('Provider form with this email already exists'))
+        return value
+    
+    def validate_provider_phone(self, value):
+        """Проверка уникальности телефона организации"""
+        from providers.models import Provider
+        if Provider.objects.filter(phone_number=value).exists():
+            raise serializers.ValidationError(_('Provider with this phone already exists'))
+        if ProviderForm.objects.filter(provider_phone=value, status__in=['pending', 'approved']).exists():
+            raise serializers.ValidationError(_('Provider form with this phone already exists'))
+        return value
+    
+    def validate_admin_email(self, value):
+        """Проверка существования пользователя-администратора"""
+        # Если admin_email указан, проверяем существование пользователя
+        if value:
+            if not User.objects.filter(email=value, is_active=True).exists():
+                raise serializers.ValidationError(
+                    _('User with this email is not registered in the system. Please specify an existing user email or ask the user to register.')
+                )
+        # Если не указан, будет использован email создателя заявки (в модели save())
+        return value
+    
+    def validate_selected_categories(self, value):
+        """Проверка категорий услуг уровня 0"""
+        from catalog.models import Service
+        categories = Service.objects.filter(id__in=value, level=0)
+        if categories.count() != len(value):
+            raise serializers.ValidationError(_('All categories must be level 0'))
+        if categories.count() < 1:
+            raise serializers.ValidationError(_('At least one category is required'))
+        return value
+
+
+class ProviderRegistrationStep3Serializer(serializers.Serializer):
+    """
+    Шаг 3: Заполнение юридических реквизитов
+    """
+    tax_id = serializers.CharField(max_length=50, required=True)
+    registration_number = serializers.CharField(max_length=100, required=True)
+    invoice_currency = serializers.IntegerField(required=True)
+    organization_type = serializers.CharField(max_length=50, required=True, allow_blank=False)
+    is_vat_payer = serializers.BooleanField(required=True)
+    vat_number = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    kpp = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    iban = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    swift_bic = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    bank_name = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    director_name = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    
+    def validate_invoice_currency(self, value):
+        """Проверка существования валюты"""
+        from billing.models import Currency
+        if not Currency.objects.filter(id=value, is_active=True).exists():
+            raise serializers.ValidationError(_('Invalid currency'))
+        return value
+
+
+class ProviderRegistrationStep4Serializer(serializers.Serializer):
+    """
+    Шаг 4: Принятие юридических документов
+    """
+    offer_accepted = serializers.BooleanField(required=True)
+    offer_accepted_ip = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    offer_accepted_user_agent = serializers.CharField(required=False, allow_blank=True)
+    scroll_position = serializers.FloatField(required=False)
+    reading_time_seconds = serializers.IntegerField(required=False)
+    
+    def validate_offer_accepted(self, value):
+        """Проверка, что оферта принята"""
+        if not value:
+            raise serializers.ValidationError(_('You must accept the offer to continue'))
+        return value
+
+
+class ProviderRegistrationWizardSerializer(serializers.Serializer):
+    """
+    Полный сериализатор для всех шагов мастера регистрации
+    Объединяет все шаги для финального сохранения
+    """
+    # Шаг 1
+    country = serializers.CharField(max_length=2, required=True)
+    language = serializers.CharField(max_length=10, required=False, default='en', allow_blank=True)
+
+    # Шаг 2
+    provider_name = serializers.CharField(max_length=100, required=True)
+    provider_address = serializers.CharField(max_length=200, required=True)
+    provider_phone = serializers.CharField(required=True)
+    provider_email = serializers.EmailField(required=True)
+    admin_email = serializers.EmailField(required=False, allow_blank=True)
+    selected_categories = serializers.ListField(
+        child=serializers.IntegerField(),
+        required=True,
+        min_length=1
+    )
+    documents = serializers.ListField(
+        child=serializers.FileField(allow_empty_file=False),
+        required=False,
+        allow_empty=True,
+    )
+    address_components = serializers.JSONField(required=False, allow_null=True)
+
+    # Шаг 3
+    tax_id = serializers.CharField(max_length=50, required=True)
+    registration_number = serializers.CharField(max_length=100, required=True)
+    invoice_currency = serializers.IntegerField(required=True)
+    organization_type = serializers.CharField(max_length=50, required=True, allow_blank=False)
+    is_vat_payer = serializers.BooleanField(required=True)
+    vat_number = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    kpp = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    iban = serializers.CharField(max_length=34, required=False, allow_blank=True)
+    swift_bic = serializers.CharField(max_length=11, required=False, allow_blank=True)
+    bank_name = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    director_name = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    
+    # Шаг 4
+    offer_accepted = serializers.BooleanField(required=True)
+    offer_accepted_ip = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    offer_accepted_user_agent = serializers.CharField(required=False, allow_blank=True)
+
+    # Нормализация selected_categories для multipart выполняется во view (ProviderRegistrationWizardAPIView._normalize_wizard_data),
+    # чтобы сериализатор всегда получал обычный dict и не требовалось менять to_internal_value (избегаем "expected dictionary" и порчи полей).
+
+    def validate_documents(self, value):
+        """Проверка типов загруженных файлов (те же расширения, что в ProviderForm.clean_documents)."""
+        if not value:
+            return value
+        allowed_extensions = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png']
+        import os
+        for f in value:
+            ext = os.path.splitext(getattr(f, 'name', '') or '')[1].lower()
+            if ext not in allowed_extensions:
+                raise serializers.ValidationError(
+                    _('File type not supported. Allowed: %(allowed)s') % {'allowed': ', '.join(allowed_extensions)}
+                )
+        return value
+
+    def validate_tax_id(self, value):
+        """Валидация Tax ID по формату для выбранной страны"""
+        country = self.initial_data.get('country')
+        if not country:
+            return value
+        
+        from providers.validation_rules import validate_requisite_field
+        
+        is_vat_payer = self.initial_data.get('is_vat_payer', False)
+        organization_type = self.initial_data.get('organization_type', '')
+        
+        is_valid, error_message = validate_requisite_field(
+            'tax_id',
+            value,
+            country,
+            is_vat_payer=is_vat_payer,
+            organization_type=organization_type
+        )
+        
+        if not is_valid:
+            raise serializers.ValidationError(error_message)
+        
+        return normalize_tax_id(value)
+    
+    def validate_vat_number(self, value):
+        """Валидация VAT Number по формату и через VIES API"""
+        country = self.initial_data.get('country')
+        is_vat_payer = self.initial_data.get('is_vat_payer', False)
+        
+        # Если неплательщик НДС, VAT Number не требуется
+        if not is_vat_payer:
+            return value
+        
+        # Если плательщик НДС, но VAT Number не указан
+        if not value or not value.strip():
+            # Проверяем, требуется ли VAT Number для этой страны
+            from providers.validation_rules import get_validation_rules
+            rules = get_validation_rules(country)
+            if rules.get('vat_number', {}).get('required', False):
+                raise serializers.ValidationError(_('VAT Number is required for VAT payers'))
+            return value
+        
+        # Проверка формата
+        from providers.validation_rules import validate_requisite_field
+        
+        is_valid, error_message = validate_requisite_field(
+            'vat_number',
+            value,
+            country,
+            is_vat_payer=is_vat_payer
+        )
+        
+        if not is_valid:
+            raise serializers.ValidationError(error_message)
+        
+        # Проверка через VIES API (только для стран ЕС)
+        eu_countries = ['AT', 'BE', 'BG', 'CY', 'CZ', 'DE', 'DK', 'EE', 'ES', 'FI', 'FR', 'GR', 'HR', 'HU', 'IE', 'IT', 'LT', 'LU', 'LV', 'MT', 'NL', 'PL', 'PT', 'RO', 'SE', 'SI', 'SK']
+        if country in eu_countries:
+            from providers.vat_validation_service import validate_vat_id_vies
+            
+            # Извлекаем VAT ID без префикса страны для VIES API
+            vat_clean = value.upper().strip()
+            if vat_clean.startswith(country.upper()):
+                vat_clean = vat_clean[len(country.upper()):]
+            
+            vies_result = validate_vat_id_vies(country, vat_clean)
+            
+            # Сохраняем результат проверки в validated_data для использования в create()
+            self.context['vat_verification_result'] = vies_result
+            
+            # Не блокируем регистрацию при непройденной проверке VIES
+            # Статус проверки сохраняется и может быть проверен вручную через админку позже
+            # if vies_result['is_valid']:
+            #     # VAT ID валидный - все хорошо
+            #     pass
+            # elif vies_result['error'] and 'timeout' not in vies_result['error'].lower() and 'unavailable' not in vies_result['error'].lower():
+            #     # VAT ID невалидный (не найден в реестре) - НЕ блокируем регистрацию
+            #     # Статус будет 'invalid', можно проверить вручную через админку
+            #     pass
+            # else:
+            #     # API недоступен - разрешаем регистрацию, но статус будет 'failed'
+            #     # Это обрабатывается в create() методе
+            #     pass
+        
+        return normalize_vat_number(value) if value and value.strip() else value
+    
+    def validate_iban(self, value):
+        """Валидация IBAN по формату"""
+        country = self.initial_data.get('country')
+        is_vat_payer = self.initial_data.get('is_vat_payer', False)
+        
+        # Если поле пустое, проверяем обязательность
+        if not value or not value.strip():
+            from providers.validation_rules import get_validation_rules
+            rules = get_validation_rules(country)
+            iban_rules = rules.get('iban', {})
+            
+            if iban_rules.get('required', False):
+                conditional = iban_rules.get('conditional', {})
+                if conditional.get('is_vat_payer') == is_vat_payer:
+                    raise serializers.ValidationError(_('IBAN is required'))
+            return value
+        
+        # Проверка формата
+        from providers.validation_rules import validate_requisite_field
+        
+        is_valid, error_message = validate_requisite_field(
+            'iban',
+            value,
+            country,
+            is_vat_payer=is_vat_payer
+        )
+        
+        if not is_valid:
+            raise serializers.ValidationError(error_message)
+        
+        return normalize_iban(value) if value and value.strip() else value
+    
+    def validate_kpp(self, value):
+        """Валидация KPP для России"""
+        country = self.initial_data.get('country')
+        organization_type = self.initial_data.get('organization_type', '')
+        
+        # KPP требуется только для России и только для ООО
+        if country == 'RU' and 'ООО' in organization_type.upper():
+            if not value or not value.strip():
+                raise serializers.ValidationError(_('KPP is required for Russian LLCs'))
+            
+            from providers.validation_rules import validate_requisite_field
+            
+            is_valid, error_message = validate_requisite_field(
+                'kpp',
+                value,
+                country,
+                organization_type=organization_type
+            )
+            
+            if not is_valid:
+                raise serializers.ValidationError(error_message)
+        
+        return value
+    
+    def validate_swift_bic(self, value):
+        """Валидация SWIFT/BIC через python-stdnum (формат 8 или 11 символов)"""
+        if not value or not value.strip():
+            return value
+        from providers.validation_rules import validate_swift_bic as do_validate_swift_bic
+        is_valid, error_message = do_validate_swift_bic(value)
+        if not is_valid:
+            raise serializers.ValidationError(error_message)
+        return (value or '').strip()
+    
+    def validate_registration_number(self, value):
+        """Валидация Registration Number"""
+        country = self.initial_data.get('country')
+        
+        from providers.validation_rules import validate_requisite_field
+        
+        is_valid, error_message = validate_requisite_field(
+            'registration_number',
+            value,
+            country
+        )
+        
+        if not is_valid:
+            raise serializers.ValidationError(error_message)
+        
+        return normalize_registration_number(value)
+    
+    def validate(self, attrs):
+        """Общая валидация всех шагов"""
+        # Валидация из Step1
+        from billing.models import VATRate
+        if not VATRate.objects.filter(country=attrs['country'], is_active=True).exists():
+            raise serializers.ValidationError({
+                'country': _('We do not currently work in this country.')
+            })
+        
+        # Валидация из Step2 (таблица валидаций: уникальность при Завершении мастера)
+        from providers.models import Provider
+        name_clean = (attrs.get('provider_name') or '').strip()
+        if name_clean:
+            if Provider.objects.filter(name__iexact=name_clean).exists():
+                raise serializers.ValidationError({
+                    'provider_name': _('An organization with this name already exists.')
+                })
+            if ProviderForm.objects.filter(provider_name__iexact=name_clean, status__in=['pending', 'approved']).exists():
+                raise serializers.ValidationError({
+                    'provider_name': _('An organization with this name already exists.')
+                })
+        if Provider.objects.filter(email=attrs['provider_email']).exists():
+            raise serializers.ValidationError({
+                'provider_email': _('Provider with this email already exists')
+            })
+        if ProviderForm.objects.filter(provider_email=attrs['provider_email'], status__in=['pending', 'approved']).exists():
+            raise serializers.ValidationError({
+                'provider_email': _('Provider form with this email already exists')
+            })
+        phone_raw = (attrs.get('provider_phone') or '').strip()
+        if phone_raw:
+            if Provider.objects.filter(phone_number=phone_raw).exists():
+                raise serializers.ValidationError({
+                    'provider_phone': _('A provider with this phone number already exists.')
+                })
+            if ProviderForm.objects.filter(provider_phone=phone_raw, status__in=['pending', 'approved']).exists():
+                raise serializers.ValidationError({
+                    'provider_phone': _('An application with this phone number already exists.')
+                })
+        # Адрес должен быть распознан (выбран из подсказок Google): требуем address_components
+        address_raw = (attrs.get('provider_address') or '').strip()
+        address_components = attrs.get('address_components')
+        if address_raw and not address_components:
+            raise serializers.ValidationError({
+                'provider_address': _('Address must be selected from the list. Please choose a suggested address so it can be recognized.')
+            })
+        if address_raw and isinstance(address_components, (list, dict)) and len(address_components) == 0:
+            raise serializers.ValidationError({
+                'provider_address': _('Address must be selected from the list. Please choose a suggested address so it can be recognized.')
+            })
+        # Если admin_email указан, проверяем существование пользователя
+        # Если не указан, будет использован email создателя заявки (в модели save())
+        if attrs.get('admin_email'):
+            if not User.objects.filter(email=attrs['admin_email'], is_active=True).exists():
+                raise serializers.ValidationError({
+                    'admin_email': _('User with this email is not registered in the system.')
+                })
+        
+        # Валидация из Step3
+        from billing.models import Currency
+        if not Currency.objects.filter(id=attrs['invoice_currency'], is_active=True).exists():
+            raise serializers.ValidationError({
+                'invoice_currency': _('Invalid currency')
+            })
+        
+        # Уникальность в рамках страны: (country, tax_id), (country, registration_number), (country, vat_number)
+        country_clean = (attrs.get('country') or '').strip().upper()[:2]
+        tax_id_clean = (attrs.get('tax_id') or '').strip()
+        if country_clean and tax_id_clean:
+            if Provider.objects.filter(country=country_clean, tax_id__iexact=tax_id_clean).exists():
+                raise serializers.ValidationError({
+                    'tax_id': _('A provider with this Tax ID / INN already exists in this country.')
+                })
+            if ProviderForm.objects.filter(country=country_clean, tax_id__iexact=tax_id_clean, status__in=['pending', 'approved']).exists():
+                raise serializers.ValidationError({
+                    'tax_id': _('An application with this Tax ID / INN already exists in this country.')
+                })
+        reg_num_clean = (attrs.get('registration_number') or '').strip()
+        if country_clean and reg_num_clean:
+            if Provider.objects.filter(country=country_clean, registration_number__iexact=reg_num_clean).exists():
+                raise serializers.ValidationError({
+                    'registration_number': _('A provider with this Registration Number already exists in this country.')
+                })
+            if ProviderForm.objects.filter(country=country_clean, registration_number__iexact=reg_num_clean, status__in=['pending', 'approved']).exists():
+                raise serializers.ValidationError({
+                    'registration_number': _('An application with this Registration Number already exists in this country.')
+                })
+        vat_clean = (attrs.get('vat_number') or '').strip()
+        if country_clean and vat_clean:
+            if Provider.objects.filter(country=country_clean, vat_number__iexact=vat_clean).exists():
+                raise serializers.ValidationError({
+                    'vat_number': _('A provider with this VAT Number already exists in this country.')
+                })
+            if ProviderForm.objects.filter(country=country_clean, vat_number__iexact=vat_clean, status__in=['pending', 'approved']).exists():
+                raise serializers.ValidationError({
+                    'vat_number': _('An application with this VAT Number already exists in this country.')
+                })
+        # Уникальность IBAN глобально (один счёт — одно юрлицо)
+        iban_clean = (attrs.get('iban') or '').strip()
+        if iban_clean:
+            if Provider.objects.filter(iban__iexact=iban_clean).exists():
+                raise serializers.ValidationError({
+                    'iban': _('A provider with this IBAN already exists.')
+                })
+            if ProviderForm.objects.filter(iban__iexact=iban_clean, status__in=['pending', 'approved']).exists():
+                raise serializers.ValidationError({
+                    'iban': _('An application with this IBAN already exists.')
+                })
+        
+        # Валидация из Step4
+        if not attrs.get('offer_accepted'):
+            raise serializers.ValidationError({
+                'offer_accepted': _('You must accept the offer to continue')
+            })
+        
+        return attrs

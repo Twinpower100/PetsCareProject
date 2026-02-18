@@ -30,7 +30,12 @@ class GeolocationConfig(AppConfig):
         
         Регистрирует сигналы и выполняет другие операции инициализации.
         """
-        # Импортируем сигналы для их регистрации
+        # Проверяем, что Django полностью инициализирован
+        from django.conf import settings
+        if not settings.configured:
+            return
+            
+        # Импортируем сигналы только после полной инициализации
         import geolocation.signals
         
         # Здесь можно добавить другие операции инициализации

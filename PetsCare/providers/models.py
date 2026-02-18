@@ -22,6 +22,7 @@ Models for the providers module.
 """
 
 from django.db import models
+from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 from django.utils import timezone
@@ -123,10 +124,10 @@ class Provider(models.Model):
     )
     
     # ОБЯЗАТЕЛЬНЫЕ для аппрува (заполняются биллинг-менеджерами)
+    # Уникальность в рамках страны: (country, tax_id), см. Meta.constraints
     tax_id = models.CharField(
         _('Tax ID / INN'),
         max_length=50,
-        unique=True,
         null=True,
         blank=True,
         validators=[
@@ -136,12 +137,12 @@ class Provider(models.Model):
             ),
             MinLengthValidator(3, message=_('Tax ID must be at least 3 characters long.'))
         ],
-        help_text=_('Tax identification number / INN (unique, required for approval). Format: letters, digits, spaces, hyphens. Minimum 3 characters.')
+        help_text=_('Tax identification number / INN (unique per country, required for approval). Format: letters, digits, spaces, hyphens. Minimum 3 characters.')
     )
+    # Уникальность в рамках страны: (country, registration_number), см. Meta.constraints
     registration_number = models.CharField(
         _('Registration Number'),
         max_length=100,
-        unique=True,
         null=True,
         blank=True,
         validators=[
@@ -151,7 +152,7 @@ class Provider(models.Model):
             ),
             MinLengthValidator(3, message=_('Registration number must be at least 3 characters long.'))
         ],
-        help_text=_('Registration number (unique, required for approval). Format: letters, digits, spaces, hyphens. Minimum 3 characters.')
+        help_text=_('Registration number (unique per country, required for approval). Format: letters, digits, spaces, hyphens. Minimum 3 characters.')
     )
     
     # РЕКВИЗИТЫ (расширенные поля для биллинга)
@@ -193,11 +194,12 @@ class Provider(models.Model):
         default=False,
         help_text=_('Whether the organization is a VAT payer')
     )
+    # Уникальность в рамках страны: (country, vat_number), см. Meta.constraints
     vat_number = models.CharField(
         _('VAT Number (EU VAT ID)'),
         max_length=50,
         blank=True,
-        help_text=_('VAT Number (EU VAT ID) - required for EU VAT payers. Format: PL12345678')
+        help_text=_('VAT Number (EU VAT ID) - required for EU VAT payers. Unique per country. Format: PL12345678')
     )
     vat_verified = models.BooleanField(
         _('VAT Verified'),
@@ -211,6 +213,58 @@ class Provider(models.Model):
         help_text=_('Date when VAT number was verified via VIES API')
     )
     
+    # Расширенные поля для валидации VAT ID
+    VAT_VERIFICATION_STATUS_CHOICES = [
+        ('pending', _('Pending Verification')),
+        ('valid', _('Valid')),
+        ('invalid', _('Invalid')),
+        ('failed', _('Verification Failed')),
+    ]
+    
+    vat_verification_status = models.CharField(
+        _('VAT Verification Status'),
+        max_length=20,
+        choices=VAT_VERIFICATION_STATUS_CHOICES,
+        default='pending',
+        help_text=_('Status of VAT ID verification')
+    )
+    
+    vat_verification_result = models.JSONField(
+        _('VAT Verification Result'),
+        null=True,
+        blank=True,
+        help_text=_('Result of VAT ID verification from VIES API (company name, address, etc.)')
+    )
+    
+    vat_verification_manual_override = models.BooleanField(
+        _('VAT ID Manually Confirmed'),
+        default=False,
+        help_text=_('Whether VAT ID was manually confirmed by administrator (checked on VIES website)')
+    )
+    
+    vat_verification_manual_comment = models.TextField(
+        _('Manual Verification Comment'),
+        blank=True,
+        help_text=_('Comment when manually confirming VAT ID (required if manually confirmed)')
+    )
+    
+    vat_verification_manual_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='manually_verified_vat_providers',
+        verbose_name=_('Manually Verified By'),
+        help_text=_('User who manually confirmed VAT ID')
+    )
+    
+    vat_verification_manual_at = models.DateTimeField(
+        _('Manually Verified At'),
+        null=True,
+        blank=True,
+        help_text=_('Date and time when VAT ID was manually confirmed')
+    )
+    
     # Финансовые данные
     invoice_currency = models.ForeignKey(
         'billing.Currency',
@@ -221,11 +275,12 @@ class Provider(models.Model):
         verbose_name=_('Invoice Currency'),
         help_text=_('Currency for provider invoices')
     )
+    # Уникальность: один IBAN = один счёт = одно юрлицо; см. Meta.constraints
     iban = models.CharField(
         _('IBAN'),
         max_length=34,
         blank=True,
-        help_text=_('IBAN - required for EU/UA. For Russia, use "Account Number" field instead')
+        help_text=_('IBAN - required for EU/UA. Unique per system (one account per legal entity). For Russia, use "Account Number" field instead')
     )
     swift_bic = models.CharField(
         _('SWIFT / BIC'),
@@ -290,6 +345,7 @@ class Provider(models.Model):
     )
 
     class Meta:
+        app_label = 'providers'
         verbose_name = _('Provider')
         verbose_name_plural = _('Providers')
         ordering = ['name']
@@ -303,6 +359,30 @@ class Provider(models.Model):
             models.Index(fields=['country', 'is_eu']),
             models.Index(fields=['is_eu']),
             models.Index(fields=['show_services', 'is_active']),
+        ]
+        constraints = [
+            # Уникальность в рамках страны
+            models.UniqueConstraint(
+                fields=['country', 'tax_id'],
+                condition=Q(country__isnull=False) & ~Q(country='') & Q(tax_id__gt=''),
+                name='providers_provider_unique_tax_id_per_country',
+            ),
+            models.UniqueConstraint(
+                fields=['country', 'registration_number'],
+                condition=Q(country__isnull=False) & ~Q(country='') & Q(registration_number__gt=''),
+                name='providers_provider_unique_reg_num_per_country',
+            ),
+            models.UniqueConstraint(
+                fields=['country', 'vat_number'],
+                condition=Q(country__isnull=False) & ~Q(country='') & Q(vat_number__gt=''),
+                name='providers_provider_unique_vat_per_country',
+            ),
+            # Уникальность IBAN глобально (один счёт — одно юрлицо)
+            models.UniqueConstraint(
+                fields=['iban'],
+                condition=Q(iban__gt=''),
+                name='providers_provider_unique_iban',
+            ),
         ]
 
     def __str__(self):
@@ -335,7 +415,121 @@ class Provider(models.Model):
                 # Новый объект, не нужно обновлять
                 pass
         
+        # Обновляем vat_verification_manual_at при установке manual_override
+        if self.pk:
+            try:
+                old_instance = Provider.objects.get(pk=self.pk)
+                if not old_instance.vat_verification_manual_override and self.vat_verification_manual_override:
+                    # Чекбокс только что установлен
+                    from django.contrib.auth import get_user_model
+                    User = get_user_model()
+                    # Сохраняем пользователя, который установил чекбокс (если есть в контексте)
+                    # Это будет обработано в админке через save_model
+                    if not self.vat_verification_manual_at:
+                        self.vat_verification_manual_at = timezone.now()
+            except Provider.DoesNotExist:
+                pass
+        
         super().save(*args, **kwargs)
+    
+    def check_vat_id_now(self, user=None):
+        """
+        Проверяет VAT ID через VIES API и обновляет статус проверки.
+        
+        Args:
+            user: Пользователь, выполняющий проверку (для логирования)
+            
+        Returns:
+            dict: Результат проверки:
+                {
+                    'success': bool,
+                    'status': str,  # 'valid', 'invalid', 'failed'
+                    'message': str,
+                    'company_name': str | None,
+                    'address': str | None
+                }
+        """
+        if not self.vat_number or not self.country:
+            return {
+                'success': False,
+                'status': 'failed',
+                'message': _('VAT number or country is not specified'),
+                'company_name': None,
+                'address': None
+            }
+        
+        # Проверяем, что страна в ЕС
+        from utils.countries import is_eu_country
+        # CountryField хранит код страны как строку (ISO 3166-1 alpha-2)
+        country_code = str(self.country) if self.country else None
+        if not country_code or not is_eu_country(country_code):
+            return {
+                'success': False,
+                'status': 'failed',
+                'message': _('VAT ID verification is only available for EU countries'),
+                'company_name': None,
+                'address': None
+            }
+        
+        from .vat_validation_service import validate_vat_id_vies
+        
+        # Извлекаем VAT ID без префикса страны
+        country_code = self.country.code if hasattr(self.country, 'code') else str(self.country)
+        vat_clean = self.vat_number.upper().strip()
+        if vat_clean.startswith(country_code.upper()):
+            vat_clean = vat_clean[len(country_code.upper()):]
+        
+        # Проверяем через VIES API
+        result = validate_vat_id_vies(country_code, vat_clean)
+        
+        # Обновляем поля провайдера
+        if result['is_valid']:
+            self.vat_verification_status = 'valid'
+            self.vat_verified = True
+            self.vat_verification_result = {
+                'company_name': result.get('company_name'),
+                'address': result.get('address'),
+                'request_date': result.get('request_date'),
+                'verified_by': user.email if user else None,
+                'verified_at': timezone.now().isoformat()
+            }
+            self.vat_verification_date = timezone.now()
+            message = _('VAT ID is valid')
+        elif result.get('error') and ('timeout' in result['error'].lower() or 'unavailable' in result['error'].lower()):
+            self.vat_verification_status = 'failed'
+            self.vat_verified = False
+            self.vat_verification_result = {
+                'error': result.get('error'),
+                'request_date': result.get('request_date'),
+                'verified_by': user.email if user else None,
+                'verified_at': timezone.now().isoformat()
+            }
+            message = _('VIES API is unavailable. Please try again later or verify manually.')
+        else:
+            self.vat_verification_status = 'invalid'
+            self.vat_verified = False
+            self.vat_verification_result = {
+                'error': result.get('error'),
+                'request_date': result.get('request_date'),
+                'verified_by': user.email if user else None,
+                'verified_at': timezone.now().isoformat()
+            }
+            message = _('VAT ID not found in EU registry')
+        
+        self.save(update_fields=[
+            'vat_verification_status',
+            'vat_verified',
+            'vat_verification_result',
+            'vat_verification_date'
+        ])
+        
+        return {
+            'success': result['is_valid'],
+            'status': self.vat_verification_status,
+            'message': message,
+            'company_name': result.get('company_name'),
+            'address': result.get('address')
+        }
     
     def clean(self):
         """
@@ -361,6 +555,17 @@ class Provider(models.Model):
                 raise ValidationError({
                     'registration_number': _('Registration number is required for providers with status "activation_required" or "active".')
                 })
+            
+            # Проверка VAT ID для стран ЕС (если провайдер - плательщик НДС)
+            if self.is_vat_payer and self.country:
+                from utils.countries import is_eu_country
+                country_code = str(self.country) if self.country else None
+                if is_eu_country(country_code):
+                    # Для ЕС стран и плательщиков НДС требуется подтверждение VAT ID
+                    if not (self.vat_verification_status == 'valid' or self.vat_verification_manual_override):
+                        raise ValidationError({
+                            'vat_number': _('VAT ID must be verified or manually confirmed before activation.')
+                        })
 
     def get_locations(self):
         """
@@ -806,28 +1011,6 @@ class Employee(models.Model):
         verbose_name=_('Locations'),
         help_text=_('Locations where this employee works')
     )
-    position = models.CharField(
-        _('Position'),
-        max_length=100,
-        help_text=_('Employee position')
-    )
-    bio = models.TextField(
-        _('Bio'),
-        blank=True,
-        help_text=_('Employee biography')
-    )
-    photo = models.ImageField(
-        _('Photo'),
-        upload_to='employees/photos/%Y/%m/%d/',
-        blank=True,
-        null=True,
-        help_text=_('Employee photo')
-    )
-    services = models.ManyToManyField(
-        Service,
-        verbose_name=_('Services'),
-        help_text=_('Services this employee can provide')
-    )
     is_active = models.BooleanField(
         _('Is Active'),
         default=True,
@@ -847,7 +1030,6 @@ class Employee(models.Model):
         verbose_name_plural = _('Employees')
         ordering = ['user__last_name', 'user__first_name']
         indexes = [
-            models.Index(fields=['position']),
             models.Index(fields=['is_active']),
         ]
 
@@ -943,6 +1125,108 @@ class Employee(models.Model):
         
         self.is_active = False
         self.save()
+
+
+class EmployeeLocationService(models.Model):
+    """
+    Услуги, которые сотрудник оказывает в конкретной локации (филиале).
+
+    Связь «персонал — локация — услуга»: один и тот же сотрудник может оказывать
+    разные наборы услуг в разных филиалах и у разных провайдеров. Слоты для записи
+    считаются по графикам сотрудника в локации и уже существующим бронированиям.
+    """
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='location_services',
+        verbose_name=_('Employee'),
+    )
+    provider_location = models.ForeignKey(
+        'ProviderLocation',
+        on_delete=models.CASCADE,
+        related_name='employee_services',
+        verbose_name=_('Location'),
+    )
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.CASCADE,
+        verbose_name=_('Service'),
+    )
+
+    class Meta:
+        verbose_name = _('Employee location service')
+        verbose_name_plural = _('Employee location services')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['employee', 'provider_location', 'service'],
+                name='providers_employeelocationservice_employee_location_service_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['provider_location', 'service'], name='prov_emplocsvc_loc_svc_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.employee} @ {self.provider_location}: {self.service}"
+
+
+class EmployeeLocationRole(models.Model):
+    """
+    Роль сотрудника в филиале (локации).
+
+    - location_manager: руководитель филиала, один на филиал. Может увольнять 5, 6 в своём филиале.
+    - service_worker: оказывает услуги клиентам. Доступ только к своему расписанию и визитам.
+    - technical_worker: техработник (клинер и т.п.). Доступ только к своему расписанию.
+    """
+    ROLE_LOCATION_MANAGER = 'location_manager'
+    ROLE_SERVICE_WORKER = 'service_worker'
+    ROLE_TECHNICAL_WORKER = 'technical_worker'
+    ROLE_CHOICES = [
+        (ROLE_LOCATION_MANAGER, _('Location manager')),
+        (ROLE_SERVICE_WORKER, _('Service worker')),
+        (ROLE_TECHNICAL_WORKER, _('Technical worker')),
+    ]
+
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='location_roles',
+        verbose_name=_('Employee'),
+    )
+    provider_location = models.ForeignKey(
+        'ProviderLocation',
+        on_delete=models.CASCADE,
+        related_name='employee_roles',
+        verbose_name=_('Location'),
+    )
+    role = models.CharField(
+        _('Role'),
+        max_length=20,
+        choices=ROLE_CHOICES,
+        help_text=_('Staff role at this location. Only one location_manager per location.'),
+    )
+
+    class Meta:
+        verbose_name = _('Employee location role')
+        verbose_name_plural = _('Employee location roles')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['employee', 'provider_location'],
+                name='providers_employeelocationrole_employee_location_uniq',
+            ),
+            # В одном филиале только один руководитель.
+            models.UniqueConstraint(
+                fields=['provider_location'],
+                condition=models.Q(role='location_manager'),
+                name='providers_employeelocationrole_one_manager_per_location',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['provider_location', 'role'], name='prov_emplocrole_loc_role_idx'),
+        ]
+
+    def __str__(self):
+        return f"{self.employee} @ {self.provider_location}: {self.get_role_display()}"
 
 
 class EmployeeJoinRequest(models.Model):
@@ -1493,6 +1777,83 @@ class LocationSchedule(models.Model):
         return f"{self.provider_location} - {self.get_weekday_display()}"
 
 
+class HolidayShift(models.Model):
+    """
+    Смена в праздничный день: явное решение работать в дату, объявленную праздником в глобальном календаре.
+    Для обычных дней используется стандартное LocationSchedule по дню недели.
+    """
+    provider_location = models.ForeignKey(
+        'ProviderLocation',
+        on_delete=models.CASCADE,
+        related_name='holiday_shifts',
+        verbose_name=_('Provider Location'),
+    )
+    date = models.DateField(_('Date'), db_index=True)
+    start_time = models.TimeField(_('Start time'))
+    end_time = models.TimeField(_('End time'))
+
+    class Meta:
+        verbose_name = _('Holiday shift')
+        verbose_name_plural = _('Holiday shifts')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['provider_location', 'date'],
+                name='providers_holidayshift_location_date_uniq',
+            ),
+        ]
+        ordering = ['date', 'provider_location']
+
+    def __str__(self):
+        return f"{self.provider_location} — {self.date} {self.start_time}-{self.end_time}"
+
+    def clean(self):
+        from production_calendar.models import ProductionCalendar, DAY_TYPE_HOLIDAY
+        super().clean()
+        if self.start_time and self.end_time and self.start_time >= self.end_time:
+            raise ValidationError(
+                _('Start time must be earlier than end time.')
+            )
+        if not self.provider_location_id or not self.date:
+            return
+        country = _get_location_country_code(self.provider_location)
+        if not country:
+            raise ValidationError(
+                _('Location must have a country (2-letter code) in its address to use holiday shifts.')
+            )
+        cal = ProductionCalendar.objects.filter(
+            date=self.date,
+            country=country,
+        ).first()
+        if not cal or cal.day_type != DAY_TYPE_HOLIDAY:
+            raise ValidationError(
+                _('You can only set Holiday Shifts for dates marked as Holidays in the Global Calendar. '
+                  'For regular days, use the standard Weekly Schedule.')
+            )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+def _get_location_country_code(location):
+    """Возвращает ISO 3166-1 alpha-2 код страны локации из адреса или None."""
+    if not location or not getattr(location, 'structured_address', None):
+        return None
+    addr = location.structured_address
+    c = (getattr(addr, 'country', None) or '').strip().upper()
+    if len(c) == 2:
+        return c
+    name_to_code = {
+        'RUSSIA': 'RU', 'RUSSIAN FEDERATION': 'RU',
+        'GERMANY': 'DE', 'DEUTSCHLAND': 'DE',
+        'UNITED STATES': 'US', 'UNITED STATES OF AMERICA': 'US', 'USA': 'US',
+        'FRANCE': 'FR', 'UNITED KINGDOM': 'GB', 'UK': 'GB', 'GREAT BRITAIN': 'GB',
+        'AUSTRIA': 'AT', 'SWITZERLAND': 'CH', 'BELARUS': 'BY', 'UKRAINE': 'UA',
+        'KAZAKHSTAN': 'KZ', 'SERBIA': 'RS', 'MONTENEGRO': 'ME',
+    }
+    return name_to_code.get(c)
+
+
 class EmployeeWorkSlot(models.Model):
     """
     Employee work slot model.
@@ -1877,22 +2238,13 @@ class ManagerTransferInvite(models.Model):
 
 class ProviderLocationService(models.Model):
     """
-    Промежуточная модель для связи локации с услугами.
-    
-    Основные характеристики:
-    - Связь с локацией и услугой
-    - Цена услуги в конкретной локации
-    - Длительность услуги
-    - Статус активности
-    
-    Технические особенности:
-    - Уникальная связь по локации и услуге
-    - Автоматическое отслеживание времени создания и обновления
-    - Управление статусом активности
-    
-    Примечание:
-    Услуги должны быть из категорий уровня 0 организации (provider.available_category_levels).
+    Цена и длительность услуги в локации для одной комбинации (тип животного, размер).
+
+    Одна запись = локация + услуга + тип животного + размер (S/M/L/XL) с ценой и длительностью.
+    Уникальность: (location, service, pet_type, size_code).
     """
+    SIZE_CHOICES = [('S', 'S'), ('M', 'M'), ('L', 'L'), ('XL', 'XL')]
+
     location = models.ForeignKey(
         'ProviderLocation',
         on_delete=models.CASCADE,
@@ -1907,11 +2259,24 @@ class ProviderLocationService(models.Model):
         related_name='location_services',
         help_text=_('Service being offered at this location')
     )
+    pet_type = models.ForeignKey(
+        'pets.PetType',
+        on_delete=models.CASCADE,
+        verbose_name=_('Pet Type'),
+        related_name='location_services',
+        help_text=_('Pet type (dog, cat, etc.) for this price row')
+    )
+    size_code = models.CharField(
+        _('Size Code'),
+        max_length=10,
+        choices=SIZE_CHOICES,
+        help_text=_('Size category: S, M, L, XL (must match SizeRule)')
+    )
     price = models.DecimalField(
         _('Price'),
         max_digits=10,
         decimal_places=2,
-        help_text=_('Price of the service at this location')
+        help_text=_('Price of the service at this location for this pet type and size')
     )
     duration_minutes = models.PositiveIntegerField(
         _('Duration In Minutes'),
@@ -1939,26 +2304,20 @@ class ProviderLocationService(models.Model):
     class Meta:
         verbose_name = _('Provider Location Service')
         verbose_name_plural = _('Provider Location Services')
-        ordering = ['location', 'service']
-        unique_together = ['location', 'service']
+        ordering = ['location', 'service', 'pet_type', 'size_code']
+        unique_together = [['location', 'service', 'pet_type', 'size_code']]
         indexes = [
             models.Index(fields=['location', 'service']),
             models.Index(fields=['is_active']),
         ]
 
     def __str__(self):
-        """
-        Возвращает строковое представление связи.
-        
-        Returns:
-            str: Строковое представление связи
-        """
-        return f"{self.location} - {self.service}"
+        return f"{self.location} - {self.service} ({self.pet_type.code}/{self.size_code})"
 
 
 class ProviderLocation(models.Model):
     """
-    Локация (точка предоставления услуг) организации.
+    Локация (филиал организации по предоставлению услуг).
     
     Каждая организация (Provider) может иметь множество локаций.
     Локация - это физическое место, где предоставляются услуги.
@@ -1990,15 +2349,15 @@ class ProviderLocation(models.Model):
         help_text=_('Name of this location (e.g., "Branch on Timiryazevskaya")')
     )
     
-    # Адрес и координаты
+    # Адрес и координаты (обязательно для точки предоставления услуг)
     structured_address = models.ForeignKey(
         'geolocation.Address',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
+        on_delete=models.PROTECT,
+        null=False,
+        blank=False,
         related_name='provider_locations',
         verbose_name=_('Structured Address'),
-        help_text=_('Structured address with validation and coordinates')
+        help_text=_('Structured address with validation and coordinates (required for service location)')
     )
     
     # Контактная информация локации (НЕ уникальные)
@@ -2012,6 +2371,15 @@ class ProviderLocation(models.Model):
         help_text=_('Contact email for this location (not unique)')
     )
     
+    # Типы животных, которых обслуживает филиал (обязательно для открытия вкладки «Услуги и цены»)
+    served_pet_types = models.ManyToManyField(
+        'pets.PetType',
+        related_name='provider_locations_served',
+        verbose_name=_('Served pet types'),
+        help_text=_('Pet types (e.g. dog, cat) that this location serves. Required before adding services and prices.'),
+        blank=True,
+    )
+
     # Услуги, доступные в этой локации
     # ВАЖНО: Услуги должны быть из категорий уровня 0 организации (provider.available_category_levels)
     # Локация может выбирать конкретные услуги из этих категорий
@@ -2022,12 +2390,23 @@ class ProviderLocation(models.Model):
         verbose_name=_('Available Services'),
         help_text=_('Services available at this location. Must be from provider\'s level 0 categories.')
     )
-    
+
     # Статус активности
     is_active = models.BooleanField(
         _('Is Active'),
         default=True,
         help_text=_('Whether this location is currently active')
+    )
+
+    # Руководитель филиала (назначается после принятия инвайта по email)
+    manager = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='managed_provider_locations',
+        verbose_name=_('Location manager'),
+        help_text=_('User who accepted the manager invite for this location (for support/escalation only)')
     )
     
     # Временные метки
@@ -2068,6 +2447,29 @@ class ProviderLocation(models.Model):
         if self.structured_address:
             return self.structured_address.formatted_address or str(self.structured_address)
         return ''
+
+    def clean(self):
+        """
+        Валидация формата телефона и email локации.
+        Телефон и email могут совпадать с реквизитами организации (предзаполнение).
+        """
+        from .contact_validators import validate_phone_contact, validate_email_contact
+        if self.phone_number:
+            ok, err = validate_phone_contact(self.phone_number)
+            if not ok:
+                raise ValidationError({'phone_number': err})
+        if self.email:
+            ok, err = validate_email_contact(self.email)
+            if not ok:
+                raise ValidationError({'email': err})
+        if self.structured_address_id and self.pk:
+            # При редактировании: при необходимости проверять open_time < close_time у LocationSchedule
+            pass
+
+    def save(self, *args, **kwargs):
+        """Сохранение с полной валидацией (в т.ч. телефон и email)."""
+        self.full_clean()
+        super().save(*args, **kwargs)
     
     @property
     def point(self):
@@ -2080,3 +2482,131 @@ class ProviderLocation(models.Model):
         if self.structured_address and self.structured_address.point:
             return self.structured_address.point
         return None
+
+
+class LocationManagerInvite(models.Model):
+    """
+    Приглашение пользователя стать руководителем филиала (локации).
+    Админ вводит email; система находит пользователя и отправляет письмо с 6-значным кодом.
+    После ввода кода на странице приёма инвайта пользователь назначается manager локации.
+    """
+    provider_location = models.ForeignKey(
+        ProviderLocation,
+        on_delete=models.CASCADE,
+        related_name='manager_invites',
+        verbose_name=_('Provider location'),
+    )
+    email = models.EmailField(_('Email'), help_text=_('Email of the user to invite (must exist in the system)'))
+    token = models.CharField(_('Token'), max_length=6, unique=True, help_text=_('6-digit activation code'))
+    expires_at = models.DateTimeField(_('Expires at'))
+    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Location manager invite')
+        verbose_name_plural = _('Location manager invites')
+        ordering = ['-created_at']
+        indexes = [models.Index(fields=['token']), models.Index(fields=['expires_at'])]
+
+    def __str__(self):
+        return f"{self.provider_location.name} → {self.email}"
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+
+class ProviderOwnerManagerInvite(models.Model):
+    """
+    Приглашение пользователя стать владельцем или менеджером организации (как LocationManagerInvite).
+    Админ вводит email; система отправляет письмо с 6-значным кодом. После ввода кода на странице
+    приёма инвайта: снимаются права предыдущего владельца/менеджера, назначается приглашённый.
+    """
+    ROLE_OWNER = 'owner'
+    ROLE_PROVIDER_MANAGER = 'provider_manager'
+    ROLE_CHOICES = [
+        (ROLE_OWNER, _('Owner')),
+        (ROLE_PROVIDER_MANAGER, _('Manager')),
+    ]
+    provider = models.ForeignKey(
+        Provider,
+        on_delete=models.CASCADE,
+        related_name='owner_manager_invites',
+        verbose_name=_('Provider'),
+    )
+    email = models.EmailField(
+        _('Email'),
+        help_text=_('Email of the user to invite (must exist in the system)'),
+    )
+    role = models.CharField(
+        _('Role'),
+        max_length=20,
+        choices=ROLE_CHOICES,
+        help_text=_('Owner or manager of the organization'),
+    )
+    token = models.CharField(
+        _('Token'),
+        max_length=6,
+        unique=True,
+        help_text=_('6-digit activation code'),
+    )
+    expires_at = models.DateTimeField(_('Expires at'))
+    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Provider owner/manager invite')
+        verbose_name_plural = _('Provider owner/manager invites')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token']),
+            models.Index(fields=['expires_at']),
+            models.Index(fields=['provider', 'role']),
+        ]
+
+    def __str__(self):
+        return f"{self.provider.name} → {self.email} ({self.role})"
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at
+
+
+class LocationStaffInvite(models.Model):
+    """
+    Приглашение пользователя в персонал филиала (локации).
+    Админ вводит email; система находит пользователя и отправляет письмо с 6-значным кодом.
+    После ввода кода на странице приёма инвайта пользователь привязывается как сотрудник к провайдеру и локации.
+    """
+    provider_location = models.ForeignKey(
+        ProviderLocation,
+        on_delete=models.CASCADE,
+        related_name='staff_invites',
+        verbose_name=_('Provider location'),
+    )
+    email = models.EmailField(
+        _('Email'),
+        help_text=_('Email of the user to invite (must exist in the system)'),
+    )
+    token = models.CharField(
+        _('Token'),
+        max_length=6,
+        unique=True,
+        help_text=_('6-digit activation code'),
+    )
+    expires_at = models.DateTimeField(_('Expires at'))
+    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Location staff invite')
+        verbose_name_plural = _('Location staff invites')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token']),
+            models.Index(fields=['expires_at']),
+            models.Index(fields=['provider_location', 'email']),
+        ]
+        # Один активный инвайт на пару (локация, email)
+        unique_together = [['provider_location', 'email']]
+
+    def __str__(self):
+        return f"{self.provider_location.name} → {self.email} (staff)"
+
+    def is_expired(self):
+        return timezone.now() >= self.expires_at

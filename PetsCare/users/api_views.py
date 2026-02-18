@@ -17,7 +17,12 @@ from .serializers import (
     ProviderAdminRegistrationSerializer,
     ForgotPasswordSerializer,
     ResetPasswordSerializer,
-    AccountDeactivationSerializer
+    AccountDeactivationSerializer,
+    ProviderRegistrationStep1Serializer,
+    ProviderRegistrationStep2Serializer,
+    ProviderRegistrationStep3Serializer,
+    ProviderRegistrationStep4Serializer,
+    ProviderRegistrationWizardSerializer
 )
 from google.oauth2 import id_token
 from google.auth.transport import requests
@@ -42,7 +47,8 @@ from .serializers import (
     RoleTerminationSerializer
 )
 from rest_framework.serializers import ValidationError
-from django.db.models import Q
+from django.db.models import Q, Count, F, Value
+from django.db.models.functions import Coalesce
 from geolocation.utils import filter_by_distance, validate_coordinates
 import logging
 logger = logging.getLogger(__name__)
@@ -209,12 +215,12 @@ class UserRoleAssignmentAPIView(APIView):
             return Response({'status': 'success'})
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-class ProviderFormListCreateAPIView(generics.ListCreateAPIView):
+class ProviderFormListAPIView(generics.ListAPIView):
     """
-    API для просмотра и создания заявок учреждений.
+    API для просмотра заявок учреждений (только чтение).
+    Создание заявок теперь через мастер регистрации: /api/v1/users/provider-registration/wizard/
 
     - GET: Возвращает список заявок. Системный администратор видит все заявки, обычный пользователь — только свои.
-    - POST: Создаёт новую заявку учреждения от текущего пользователя.
     """
     serializer_class = ProviderFormSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -230,12 +236,6 @@ class ProviderFormListCreateAPIView(generics.ListCreateAPIView):
         if self.request.user.is_system_admin():
             return ProviderForm.objects.all()
         return ProviderForm.objects.filter(created_by=self.request.user)
-    
-    def perform_create(self, serializer):
-        """
-        Сохраняет заявку учреждения с указанием текущего пользователя как создателя.
-        """
-        serializer.save(created_by=self.request.user)
 
 class ProviderFormApprovalAPIView(APIView):
     """
@@ -1186,10 +1186,12 @@ class CheckProviderNameAPIView(APIView):
         exists_in_forms = ProviderForm.objects.filter(provider_name__iexact=provider_name.strip()).exists()
         exists_in_providers = Provider.objects.filter(name__iexact=provider_name.strip()).exists()
         exists = exists_in_forms or exists_in_providers
+        error = _('An organization with this name already exists.') if exists else None
         
         return Response({
             'provider_name': provider_name,
-            'exists': exists
+            'exists': exists,
+            'error': error,
         })
 
 
@@ -1943,3 +1945,599 @@ class RemoveUserRoleView(APIView):
                 logger.error('pet_owner role not found')
             except Exception as e:
                 logger.error(f'Error removing pet_owner role from user {co_owner.id}: {e}')
+
+
+# ============================================================================
+# API эндпоинты для мастера регистрации провайдера
+# ============================================================================
+
+class ProviderRegistrationStep2HintsAPIView(APIView):
+    """
+    Подсказки и плейсхолдеры для полей шага 2 мастера регистрации.
+    Зависят от страны (шаг 1) и языка. Без авторизации.
+    GET /api/v1/provider-registration/step2-hints/?country=DE&lang=de
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        country = request.query_params.get('country', '')
+        lang = request.query_params.get('lang') or request.META.get('HTTP_ACCEPT_LANGUAGE', '')[:2]
+        from .provider_registration_hints import get_step2_hints
+        hints = get_step2_hints(country, lang)
+        return Response(hints)
+
+
+class ProviderRegistrationStep3HintsAPIView(APIView):
+    """
+    Подсказки и плейсхолдеры для полей шага 3 (реквизиты).
+    GET /api/v1/provider-registration/step3-hints/?country=DE&lang=de
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        country = request.query_params.get('country', '')
+        lang = request.query_params.get('lang') or request.META.get('HTTP_ACCEPT_LANGUAGE', '')[:2]
+        from .provider_registration_hints import get_step3_hints
+        hints = get_step3_hints(country, lang)
+        return Response(hints)
+
+
+# Максимальные длины полей шага 3 (как в моделях Provider / ProviderForm)
+STEP3_FIELD_MAX_LENGTHS = {
+    'tax_id': 50,
+    'registration_number': 100,
+    'vat_number': 50,
+    'kpp': 20,
+    'iban': 34,
+    'swift_bic': 11,
+    'director_name': 200,
+    'bank_name': 200,
+    'organization_type': 50,
+}
+
+
+class ProviderRegistrationStep3ValidateAPIView(APIView):
+    """
+    Валидация полей шага 3 (форматы по стране + уникальность tax_id и registration_number).
+    Вызывается с фронта при переходе с шага 3 и при финальной отправке (дублирует проверки).
+    POST /api/v1/provider-registration/step3-validate/
+    Body: country, tax_id, registration_number, vat_number?, iban?, kpp?, is_vat_payer, organization_type?, director_name?, bank_name?, swift_bic?
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        from providers.models import Provider
+        from providers.validation_rules import validate_requisite_field, validate_swift_bic
+        from .models import ProviderForm
+
+        data = request.data
+        country = (data.get('country') or '').strip().upper()[:2]
+        errors = {}
+        error_keys = {}  # ключи для перевода на фронте (формат и уникальность)
+
+        if not country:
+            errors['country'] = _('Country is required.')
+            return Response({'valid': False, 'errors': errors}, status=status.HTTP_400_BAD_REQUEST)
+
+        is_vat_payer = data.get('is_vat_payer', False)
+        organization_type = (data.get('organization_type') or '').strip()
+
+        # Проверка максимальных длин
+        for field_name, max_len in STEP3_FIELD_MAX_LENGTHS.items():
+            value = data.get(field_name)
+            if value is not None and isinstance(value, str) and len(value) > max_len:
+                errors[field_name] = _('Maximum length is %(max)s characters.') % {'max': max_len}
+
+        # Обязательные поля и минимальная длина (сырые значения для валидации формата)
+        tax_id_raw = (data.get('tax_id') or '').strip()
+        if not tax_id_raw:
+            errors['tax_id'] = _('Tax ID / INN is required.')
+        elif len(tax_id_raw) < 3:
+            errors['tax_id'] = _('Tax ID must be at least 3 characters.')
+
+        registration_number_raw = (data.get('registration_number') or '').strip()
+        if not registration_number_raw:
+            errors['registration_number'] = _('Registration number is required.')
+
+        # Валидация форматов по стране (для DE, RU, UA, ME — без проверки длины 3–50)
+        error_keys = {}  # ключи для перевода на фронте (язык пользователя)
+        if 'tax_id' not in errors and tax_id_raw:
+            is_valid, msg = validate_requisite_field(
+                'tax_id', tax_id_raw, country,
+                is_vat_payer=is_vat_payer, organization_type=organization_type
+            )
+            if not is_valid:
+                errors['tax_id'] = msg
+                error_keys['tax_id'] = 'taxIdInvalid'
+        if 'registration_number' not in errors and registration_number_raw:
+            is_valid, msg = validate_requisite_field(
+                'registration_number', registration_number_raw, country
+            )
+            if not is_valid:
+                errors['registration_number'] = msg
+                error_keys['registration_number'] = 'registrationNumberInvalid'
+
+        vat_number_raw = (data.get('vat_number') or '').strip()
+        if vat_number_raw and 'vat_number' not in errors:
+            is_valid, msg = validate_requisite_field(
+                'vat_number', vat_number_raw, country, is_vat_payer=is_vat_payer
+            )
+            if not is_valid:
+                errors['vat_number'] = msg
+                error_keys['vat_number'] = 'vatNumberInvalid'
+
+        iban_raw = (data.get('iban') or '').strip()
+        if iban_raw and 'iban' not in errors:
+            is_valid, msg = validate_requisite_field(
+                'iban', iban_raw, country, is_vat_payer=is_vat_payer
+            )
+            if not is_valid:
+                errors['iban'] = msg
+                error_keys['iban'] = 'ibanInvalid'
+
+        kpp = (data.get('kpp') or '').strip()
+        if kpp and 'kpp' not in errors:
+            is_valid, msg = validate_requisite_field(
+                'kpp', kpp, country, organization_type=organization_type
+            )
+            if not is_valid:
+                errors['kpp'] = msg
+                error_keys['kpp'] = 'kppInvalid'
+
+        swift_bic_raw = (data.get('swift_bic') or '').strip()
+        if swift_bic_raw:
+            is_valid, msg = validate_swift_bic(swift_bic_raw)
+            if not is_valid:
+                errors['swift_bic'] = msg
+                error_keys['swift_bic'] = 'swiftBicInvalid'
+
+        # Уникальность по нормализованным значениям (FunctionalDesign: проверка без лишних пробелов)
+        tax_id = normalize_tax_id(data.get('tax_id') or '')
+        registration_number = normalize_registration_number(data.get('registration_number') or '')
+        vat_number_val = normalize_vat_number(data.get('vat_number') or '')
+        iban_val = normalize_iban(data.get('iban') or '')
+
+        if country and tax_id and 'tax_id' not in errors:
+            if Provider.objects.filter(country=country, tax_id__iexact=tax_id).exists():
+                errors['tax_id'] = _('A provider with this Tax ID / INN already exists in this country.')
+                error_keys['tax_id'] = 'taxIdExists'
+            elif ProviderForm.objects.filter(country=country, tax_id__iexact=tax_id, status__in=['pending', 'approved']).exists():
+                errors['tax_id'] = _('An application with this Tax ID / INN already exists in this country.')
+                error_keys['tax_id'] = 'taxIdExists'
+        if country and registration_number and 'registration_number' not in errors:
+            if Provider.objects.filter(country=country, registration_number__iexact=registration_number).exists():
+                errors['registration_number'] = _('A provider with this Registration Number already exists in this country.')
+                error_keys['registration_number'] = 'registrationNumberExists'
+            elif ProviderForm.objects.filter(country=country, registration_number__iexact=registration_number, status__in=['pending', 'approved']).exists():
+                errors['registration_number'] = _('An application with this Registration Number already exists in this country.')
+                error_keys['registration_number'] = 'registrationNumberExists'
+        if country and vat_number_val and 'vat_number' not in errors:
+            if Provider.objects.filter(country=country, vat_number__iexact=vat_number_val).exists():
+                errors['vat_number'] = _('A provider with this VAT Number already exists in this country.')
+                error_keys['vat_number'] = 'vatNumberExists'
+            elif ProviderForm.objects.filter(country=country, vat_number__iexact=vat_number_val, status__in=['pending', 'approved']).exists():
+                errors['vat_number'] = _('An application with this VAT Number already exists in this country.')
+                error_keys['vat_number'] = 'vatNumberExists'
+        if iban_val and 'iban' not in errors:
+            if Provider.objects.filter(iban__iexact=iban_val).exists():
+                errors['iban'] = _('A provider with this IBAN already exists.')
+                error_keys['iban'] = 'ibanExists'
+            elif ProviderForm.objects.filter(iban__iexact=iban_val, status__in=['pending', 'approved']).exists():
+                errors['iban'] = _('An application with this IBAN already exists.')
+                error_keys['iban'] = 'ibanExists'
+
+        if errors:
+            return Response({'valid': False, 'errors': errors, 'error_keys': error_keys}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'valid': True})
+    
+
+from .requisite_normalize import (
+    normalize_tax_id,
+    normalize_registration_number,
+    normalize_vat_number,
+    normalize_iban,
+)
+
+
+class CheckIbanAPIView(APIView):
+    """
+    Проверка формата (stdnum) и уникальности IBAN при уходе с поля (on blur).
+    GET ?iban=...&country=... — сначала валидация формата через stdnum.iban, затем уникальность.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from providers.validation_rules import validate_iban
+        iban = normalize_iban(request.query_params.get('iban') or '')
+        if not iban:
+            return Response({'exists': False, 'valid': False, 'error': _('IBAN is required.')}, status=status.HTTP_400_BAD_REQUEST)
+        country = (request.query_params.get('country') or '').strip().upper()[:2]
+        # Проверка формата через stdnum (контрольная сумма и префикс страны при указании country)
+        format_valid, format_error = validate_iban(iban, country if country else None)
+        if not format_valid:
+            return Response({
+                'iban': iban,
+                'exists': False,
+                'valid': False,
+                'error': format_error or _('Invalid IBAN format'),
+                'error_key': 'ibanInvalid',
+            }, status=status.HTTP_400_BAD_REQUEST)
+        exists_provider = Provider.objects.filter(iban__iexact=iban).exists()
+        exists_form = ProviderForm.objects.filter(iban__iexact=iban, status__in=['pending', 'approved']).exists()
+        exists = exists_provider or exists_form
+        message = _('A provider or application with this IBAN already exists.') if exists else None
+        error_key = 'ibanExists' if exists else None
+        return Response({'iban': iban, 'exists': exists, 'valid': True, 'error': message, 'error_key': error_key})
+
+
+class CheckTaxIdAPIView(APIView):
+    """
+    Проверка уникальности Tax ID / ИНН при уходе с поля (on blur).
+    GET ?country=...&tax_id=... — уникальность по связке (страна + tax_id).
+    Нормализация: удаление всех пробелов (FunctionalDesign).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        country = (request.query_params.get('country') or '').strip().upper()[:2]
+        tax_id = normalize_tax_id(request.query_params.get('tax_id') or '')
+        if not country:
+            return Response({'exists': False, 'valid': False, 'error': _('Country is required.')}, status=status.HTTP_400_BAD_REQUEST)
+        if not tax_id:
+            return Response({'exists': False, 'valid': False, 'error': _('Tax ID is required.')}, status=status.HTTP_400_BAD_REQUEST)
+        exists_provider = Provider.objects.filter(country=country, tax_id__iexact=tax_id).exists()
+        exists_form = ProviderForm.objects.filter(country=country, tax_id__iexact=tax_id, status__in=['pending', 'approved']).exists()
+        exists = exists_provider or exists_form
+        valid = len(tax_id) >= 3
+        message = _('A provider or application with this Tax ID / INN already exists in this country.') if exists else None
+        error_key = 'taxIdExists' if exists else None
+        return Response({'country': country, 'tax_id': tax_id, 'exists': exists, 'valid': valid, 'error': message, 'error_key': error_key})
+
+
+class CheckRegistrationNumberAPIView(APIView):
+    """
+    Проверка формата (stdnum по стране) и уникальности Registration Number при уходе с поля (on blur).
+    GET ?country=...&registration_number=... — сначала валидация формата (например Handelsregisternummer для DE), затем уникальность.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from providers.validation_rules import validate_requisite_field
+        country = (request.query_params.get('country') or '').strip().upper()[:2]
+        registration_number = normalize_registration_number(request.query_params.get('registration_number') or '')
+        if not country:
+            return Response({'exists': False, 'valid': False, 'error': _('Country is required.')}, status=status.HTTP_400_BAD_REQUEST)
+        if not registration_number:
+            return Response({'exists': False, 'valid': False, 'error': _('Registration number is required.')}, status=status.HTTP_400_BAD_REQUEST)
+        # Проверка формата через stdnum (например stdnum.de.handelsregisternummer для DE)
+        format_valid, format_error = validate_requisite_field('registration_number', registration_number, country)
+        if not format_valid:
+            return Response({
+                'country': country,
+                'registration_number': registration_number,
+                'exists': False,
+                'valid': False,
+                'error': format_error or _('Invalid registration number format'),
+                'error_key': 'registrationNumberInvalid',
+            }, status=status.HTTP_400_BAD_REQUEST)
+        exists_provider = Provider.objects.filter(country=country, registration_number__iexact=registration_number).exists()
+        exists_form = ProviderForm.objects.filter(country=country, registration_number__iexact=registration_number, status__in=['pending', 'approved']).exists()
+        exists = exists_provider or exists_form
+        message = _('A provider or application with this Registration Number already exists in this country.') if exists else None
+        error_key = 'registrationNumberExists' if exists else None
+        return Response({'country': country, 'registration_number': registration_number, 'exists': exists, 'valid': True, 'error': message, 'error_key': error_key})
+
+
+class CheckVatNumberAPIView(APIView):
+    """
+    Проверка формата (stdnum.eu.vat для ЕС) и уникальности VAT Number при уходе с поля (on blur).
+    GET ?country=...&vat_number=... — сначала валидация формата (например DE + 9 цифр с контрольной суммой), затем уникальность.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from providers.validation_rules import validate_vat_id_eu
+        country = (request.query_params.get('country') or '').strip().upper()[:2]
+        vat_number = normalize_vat_number(request.query_params.get('vat_number') or '')
+        if not country:
+            return Response({'exists': False, 'valid': False, 'error': _('Country is required.')}, status=status.HTTP_400_BAD_REQUEST)
+        if not vat_number:
+            return Response({'exists': False, 'valid': True, 'error': None})  # пустой VAT — не ошибка
+        # Проверка формата через stdnum (EU VAT с контрольной суммой для DE и др. стран ЕС)
+        format_valid, format_error = validate_vat_id_eu(vat_number, country)
+        if not format_valid:
+            return Response({
+                'country': country,
+                'vat_number': vat_number,
+                'exists': False,
+                'valid': False,
+                'error': format_error or _('Invalid VAT number format'),
+                'error_key': 'vatNumberInvalid',
+            }, status=status.HTTP_400_BAD_REQUEST)
+        exists_provider = Provider.objects.filter(country=country, vat_number__iexact=vat_number).exists()
+        exists_form = ProviderForm.objects.filter(country=country, vat_number__iexact=vat_number, status__in=['pending', 'approved']).exists()
+        exists = exists_provider or exists_form
+        message = _('A provider or application with this VAT Number already exists in this country.') if exists else None
+        error_key = 'vatNumberExists' if exists else None
+        return Response({'country': country, 'vat_number': vat_number, 'exists': exists, 'valid': True, 'error': message, 'error_key': error_key})
+
+
+class CheckAdminEmailAPIView(APIView):
+    """
+    Проверка существования пользователя-администратора по email
+    Используется для валидации на фронтенде с debounce
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def post(self, request):
+        """
+        Проверяет, существует ли пользователь с указанным email и активен ли он
+        """
+        email = request.data.get('email')
+        if not email:
+            return Response(
+                {'error': _('Email is required')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Нормализуем email (приводим к нижнему регистру)
+        email = email.strip().lower()
+        
+        # Проверяем формат email
+        from django.core.validators import validate_email
+        from django.core.exceptions import ValidationError
+        try:
+            validate_email(email)
+        except ValidationError:
+            return Response({
+                'exists': False,
+                'message': _('Invalid email format')
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Проверяем существование пользователя
+        from .models import User
+        user_exists = User.objects.filter(email__iexact=email, is_active=True).exists()
+        
+        return Response({
+            'exists': user_exists,
+            'message': _('User with this email is registered') if user_exists 
+                      else _('User with this email is not registered in the system')
+        })
+
+
+class ProviderRegistrationHasApplicationAPIView(APIView):
+    """
+    Проверка: есть ли у текущего пользователя уже отправленные заявки на регистрацию провайдера.
+    Используется на фронте перед открытием мастера — если заявка уже есть, показать предупреждение
+    «Заявка от вас уже отправлена. Вы уверены, что хотите подать ещё заявку?»
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        count = ProviderForm.objects.filter(created_by=request.user).count()
+        return Response({
+            'has_application': count > 0,
+            'count': count,
+        })
+
+
+class ProviderRegistrationWizardAPIView(APIView):
+    """
+    API эндпоинт для финального сохранения всех шагов мастера регистрации
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    @staticmethod
+    def _build_wizard_data_from_post(post, files):
+        """
+        Собираем dict для сериализатора из request.POST и request.FILES.
+        Не делаем data = dict(post): в Django dict(QueryDict) даёт по ключу список (value = getlist(key)),
+        из-за чего wizard_data['country'] становится ['DE'] и сериализатор выдаёт "Not a valid string".
+        Берём по одному значению через post.get(key); только selected_categories — через getlist().
+        """
+        data = {}
+        for key in post.keys():
+            if key == 'selected_categories':
+                continue
+            data[key] = post.get(key)
+        for key in files.keys():
+            if key == 'documents':
+                # Несколько файлов приходят с одним ключом — сохраняем все через getlist
+                data[key] = files.getlist(key)
+            else:
+                data[key] = files.get(key)
+        if 'selected_categories' in post:
+            raw = post.getlist('selected_categories')
+            normalized = []
+            for x in raw:
+                if x in (None, ''):
+                    continue
+                try:
+                    normalized.append(int(x) if not isinstance(x, int) else x)
+                except (ValueError, TypeError):
+                    pass
+            data['selected_categories'] = normalized
+        return data
+
+    @transaction.atomic
+    def post(self, request):
+        """
+        Создает ProviderForm со всеми данными из мастера регистрации
+        """
+        wizard_data = self._build_wizard_data_from_post(request.POST, request.FILES)
+        serializer = ProviderRegistrationWizardSerializer(data=wizard_data, context={'request': request})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        data = serializer.validated_data
+        
+        # Получаем пользователя-администратора
+        # Если admin_email не указан, используем email создателя заявки
+        admin_email = data.get('admin_email') or request.user.email
+        try:
+            admin_user = User.objects.get(email=admin_email, is_active=True)
+        except User.DoesNotExist:
+            return Response(
+                {'admin_email': _('User with this email is not registered in the system.')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Получаем валюту
+        from billing.models import Currency
+        try:
+            currency = Currency.objects.get(id=data['invoice_currency'], is_active=True)
+        except Currency.DoesNotExist:
+            return Response(
+                {'invoice_currency': _('Invalid currency')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Получаем категории услуг
+        from catalog.models import Service
+        categories = Service.objects.filter(id__in=data['selected_categories'], level=0)
+        if categories.count() != len(data['selected_categories']):
+            return Response(
+                {'selected_categories': _('All categories must be level 0')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Получаем результат проверки VAT ID из контекста сериализатора
+        vat_verification_result = serializer.context.get('vat_verification_result')
+        
+        # Определяем статус проверки VAT ID
+        vat_verification_status = 'pending'
+        if vat_verification_result:
+            if vat_verification_result.get('is_valid'):
+                vat_verification_status = 'valid'
+            elif vat_verification_result.get('error'):
+                if 'timeout' in vat_verification_result.get('error', '').lower() or 'unavailable' in vat_verification_result.get('error', '').lower():
+                    vat_verification_status = 'failed'  # API недоступен - fallback
+                else:
+                    vat_verification_status = 'invalid'  # VAT ID невалидный
+        
+        # Список загруженных документов (все файлы сохраняем в ProviderFormDocument)
+        doc_list = data.get('documents') or []
+        first_doc = doc_list[0] if doc_list else None
+
+        # Создаем ProviderForm (первый документ в поле documents для обратной совместимости)
+        # Реквизиты приходят нормализованными из сериализатора (requisite_normalize)
+        provider_form = ProviderForm.objects.create(
+            provider_name=data['provider_name'],
+            provider_address=data['provider_address'],
+            address_components=data.get('address_components'),
+            provider_phone=data['provider_phone'],
+            provider_email=data['provider_email'],
+            admin_email=admin_email,  # Используем admin_email или email создателя
+            country=data['country'],
+            language=(data.get('language') or 'en').strip()[:10] or 'en',
+            tax_id=data.get('tax_id', ''),
+            registration_number=data.get('registration_number', ''),
+            invoice_currency=currency,
+            organization_type=data.get('organization_type', ''),
+            is_vat_payer=data['is_vat_payer'],
+            vat_number=data.get('vat_number', ''),
+            kpp=data.get('kpp', ''),
+            iban=data.get('iban', ''),
+            swift_bic=data.get('swift_bic', ''),
+            bank_name=data.get('bank_name', ''),
+            director_name=data.get('director_name', ''),
+            offer_accepted=data['offer_accepted'],
+            offer_accepted_at=timezone.now() if data['offer_accepted'] else None,
+            offer_accepted_ip=data.get('offer_accepted_ip'),
+            offer_accepted_user_agent=data.get('offer_accepted_user_agent', ''),
+            documents=first_doc,
+            created_by=request.user,
+            status='pending',
+            # Сохраняем результаты проверки VAT ID
+            vat_verification_status=vat_verification_status,
+            vat_verification_result=vat_verification_result if vat_verification_result else None,
+            vat_verification_date=timezone.now() if vat_verification_result else None,
+            vat_verification_manual_override=False,
+            vat_verification_manual_comment='',
+            vat_verification_manual_by=None,
+            vat_verification_manual_at=None
+        )
+
+        # Сохраняем все загруженные документы в отдельную модель (включая первый)
+        from users.models import ProviderFormDocument
+        for uploaded_file in doc_list:
+            ProviderFormDocument.objects.create(provider_form=provider_form, file=uploaded_file)
+        
+        # Устанавливаем категории услуг (M2M делаем после create(), иначе в post_save их ещё нет)
+        provider_form.selected_categories.set(categories)
+        # Сигнал post_save срабатывает внутри create() до .set(categories), поэтому провайдеру
+        # категории не проставляются. Дописываем их здесь.
+        from providers.models import Provider
+        provider_after_create = Provider.objects.filter(email=provider_form.provider_email).first()
+        if provider_after_create and categories:
+            provider_after_create.available_category_levels.set(categories)
+
+        # Автоматическое назначение биллинг-менеджера: наименее загруженный (минимальное число активных провайдеров — 0, 1, 2, …)
+        from billing.models import BillingManagerProvider
+        from users.models import UserType
+        try:
+            billing_manager_type = UserType.objects.get(name='billing_manager')
+            billing_managers = (
+                User.objects.filter(
+                    user_types=billing_manager_type,
+                    is_active=True
+                )
+                .annotate(
+                    _active_count=Count(
+                        'managed_providers',
+                        filter=Q(managed_providers__status__in=['active', 'temporary'])
+                    )
+                )
+                .annotate(active_providers_count=Coalesce(F('_active_count'), Value(0)))
+                .order_by('active_providers_count', 'id')
+            )
+            billing_manager = billing_managers.first()
+            if billing_manager:
+                provider_form._selected_billing_manager_id = billing_manager.id
+                provider_form.status = 'approved'
+                provider_form.save()
+                
+                # Сигнал post_save автоматически создаст Provider и назначит биллинг-менеджера
+                logger.info(f'Provider form {provider_form.id} approved automatically with billing manager {billing_manager.id}')
+            else:
+                logger.info(f'Provider form {provider_form.id} created, waiting for manual billing manager assignment')
+        except UserType.DoesNotExist:
+            logger.warning('billing_manager role not found, provider form created without auto-assignment')
+        
+        # Определяем статус провайдера для сообщения
+        from providers.models import Provider
+        provider = Provider.objects.filter(email=provider_form.provider_email).first()
+        
+        # Формируем понятное сообщение на основе статуса
+        if provider and provider.activation_status == 'active' and provider.is_active:
+            # Провайдер активирован (автоаппрув): без фразы «ожидайте письмо» — можно сразу в админку
+            success_message = {
+                'en': 'Your provider registration has been confirmed. You can log in to the admin panel and follow the setup guide.',
+                'ru': 'Ваша регистрация провайдера подтверждена. Вы можете войти в админ-панель и приступить к настройке.',
+                'de': 'Ihre Anbieter-Registrierung wurde bestätigt. Sie können sich im Admin-Panel anmelden und die Anleitung nutzen.',
+                'me': 'Vaša registracija pružaoca usluga je potvrđena. Možete se prijaviti u admin panel i pratiti vodič za podešavanje.'
+            }
+        else:
+            # Провайдер ожидает активации
+            success_message = {
+                'en': 'Your provider registration request has been submitted. We will review it and send you an email with instructions once your provider is activated.',
+                'ru': 'Ваша заявка на регистрацию провайдера зарегистрирована. Мы проверим её и отправим вам письмо с инструкциями после активации провайдера.',
+                'de': 'Ihr Antrag auf Anbieter-Registrierung wurde eingereicht. Wir werden ihn prüfen und Ihnen eine E-Mail mit Anweisungen senden, sobald Ihr Anbieter aktiviert wurde.',
+                'me': 'Vaš zahtev za registraciju pružaoca usluga je poslat. Pregledaćemo ga i poslati vam e-poštu sa uputstvima nakon aktivacije pružaoca usluga.'
+            }
+        
+        # Определяем язык ответа:
+        # - если фронт шлет language в payload — используем его
+        # - иначе берем язык из LocaleMiddleware (Accept-Language / активная локаль)
+        language = (request.POST.get('language') or getattr(request, 'LANGUAGE_CODE', None) or 'en').split('-')[0]
+        if language not in success_message:
+            language = 'en'
+        
+        return Response({
+            'id': provider_form.id,
+            'status': provider_form.status,
+            'provider_status': provider.activation_status if provider else None,
+            'provider_is_active': provider.is_active if provider else False,
+            'language': language,
+            'message': success_message.get(language, success_message['en'])
+        }, status=status.HTTP_201_CREATED)

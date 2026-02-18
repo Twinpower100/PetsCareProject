@@ -13,7 +13,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 from pets.models import Pet
-from providers.models import Employee, ProviderService, Provider
+from providers.models import Employee, Provider
 from django.utils import timezone
 from django.core.validators import MinValueValidator, MaxValueValidator
 from catalog.models import Service
@@ -71,6 +71,7 @@ class BookingStatus(models.Model):
     description = models.TextField(_('Description'), blank=True)
 
     class Meta:
+        app_label = 'booking'
         verbose_name = _('Booking Status')
         verbose_name_plural = _('Booking Statuses')
 
@@ -122,12 +123,24 @@ class TimeSlot(models.Model):
         verbose_name=_('Employee'),
         help_text=_('Employee working in this slot')
     )
+    # ВРЕМЕННО: оставляем для обратной совместимости, будет удалено после миграции данных
     provider = models.ForeignKey(
         Provider,
         on_delete=models.CASCADE,
         related_name='time_slots',
-        verbose_name=_('Provider'),
-        help_text=_('Provider where the employee works')
+        verbose_name=_('Provider (Legacy)'),
+        null=True,
+        blank=True,
+        help_text=_('Legacy field - use provider_location instead')
+    )
+    provider_location = models.ForeignKey(
+        'providers.ProviderLocation',
+        on_delete=models.CASCADE,
+        related_name='time_slots',
+        verbose_name=_('Provider Location'),
+        null=True,
+        blank=True,
+        help_text=_('Location where the employee works')
     )
     is_available = models.BooleanField(
         default=True,
@@ -174,11 +187,24 @@ class Booking(models.Model):
         related_name='bookings',
         verbose_name=_('Pet')
     )
+    # ВРЕМЕННО: оставляем для обратной совместимости, будет удалено после миграции данных
     provider = models.ForeignKey(
         Provider,
         on_delete=models.CASCADE,
         related_name='bookings',
-        verbose_name=_('Provider')
+        verbose_name=_('Provider (Legacy)'),
+        null=True,
+        blank=True,
+        help_text=_('Legacy field - use provider_location instead')
+    )
+    provider_location = models.ForeignKey(
+        'providers.ProviderLocation',
+        on_delete=models.CASCADE,
+        related_name='bookings',
+        verbose_name=_('Provider Location'),
+        null=True,
+        blank=True,
+        help_text=_('Location where the service is provided')
     )
     employee = models.ForeignKey(
         Employee,

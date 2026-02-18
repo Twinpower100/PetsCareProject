@@ -1,0 +1,256 @@
+@startuml sequence_provider_contract_creation
+title Диаграмма последовательности: Создание контракта по оферте
+
+actor "Billing Manager" as BillingManager
+actor "Provider Admin" as ProviderAdmin
+participant "Django Admin UI\nили API" as AdminUI
+participant "Django ORM" as ORM
+participant "Email Service" as Email
+database "Database" as DB
+
+== Создание оферты (контракта) ==
+BillingManager -> AdminUI: Открыть список назначенных провайдеров\n(для создания контракта)
+activate AdminUI
+AdminUI -> ORM: Получить список назначенных провайдеров
+activate ORM
+ORM -> DB: SELECT provider_id FROM billing_billingmanagerprovider\nWHERE billing_manager_id = ? AND status = 'active'
+activate DB
+DB --> ORM: Список ID провайдеров
+deactivate DB
+ORM -> DB: SELECT * FROM providers_provider\nWHERE id IN (...) AND activation_status='active'
+activate DB
+DB --> ORM: Список провайдеров
+deactivate DB
+ORM --> AdminUI: QuerySet провайдеров
+deactivate ORM
+AdminUI --> BillingManager: Отображение списка назначенных провайдеров
+deactivate AdminUI
+
+BillingManager -> AdminUI: Выбрать провайдера и создать контракт (оферту)
+activate AdminUI
+AdminUI -> ORM: Получить список типов контрактов
+activate ORM
+ORM -> DB: SELECT * FROM billing_contracttype
+activate DB
+DB --> ORM: Список типов контрактов
+deactivate DB
+ORM --> AdminUI: QuerySet типов контрактов
+deactivate ORM
+
+AdminUI -> ORM: Получить список валют
+activate ORM
+ORM -> DB: SELECT * FROM billing_currency
+activate DB
+DB --> ORM: Список валют
+deactivate DB
+ORM --> AdminUI: QuerySet валют
+deactivate ORM
+
+AdminUI --> BillingManager: Форма создания контракта (оферты)\n(Провайдер, Тип контракта,\nДаты, Условия оферты, Валюта,\nПороги блокировки)\nНомер генерируется автоматически
+
+== Заполнение данных оферты ==
+BillingManager -> AdminUI: Заполнить данные контракта:\n- provider (выбор из списка)\n- contract_type (выбор типа)\n- start_date, end_date\n- terms (текст оферты/условия договора)\n- currency, base_currency\n- payment_deferral_days\n- debt_threshold, overdue_thresholds\n(если не указаны - наследуются автоматически)
+activate AdminUI
+AdminUI -> ORM: Валидация данных контракта
+activate ORM
+
+ORM -> DB: Проверка валидности данных
+activate DB
+note right of DB
+    Валидация:
+    - provider должен быть активен
+    - start_date <= end_date (если end_date указан)
+    - contract_type должен существовать
+    - currency и base_currency должны существовать
+    - terms (текст оферты) обязателен
+end note
+DB --> ORM: Данные валидны
+deactivate DB
+
+ORM -> DB: Получить последний ID контракта\nдля автогенерации номера
+activate DB
+DB --> ORM: Последний ID (или 1, если нет контрактов)
+deactivate DB
+
+ORM -> ORM: Автогенерация номера контракта:\nCT-ГОД-МЕСЯЦ-ПОСЛЕДНИЙ_ID+1
+activate ORM
+ORM -> DB: INSERT INTO billing_contract\n(provider, contract_type, number=<автогенерированный>,\nstart_date, end_date, terms,\ncurrency, base_currency,\npayment_deferral_days, status='offer_pending')
+activate DB
+DB --> ORM: Контракт (оферта) создан
+deactivate DB
+deactivate ORM
+
+note right of ORM
+    Автоматическое наследование:
+    - Глобальные пороги блокировки
+      (если не указаны)
+    - Стандартные условия из типа контракта
+      (payment_deferral_days, terms,
+      debt_threshold, overdue_thresholds)
+end note
+
+ORM -> DB: UPDATE billing_contract\n(наследование порогов и условий)
+activate ORM
+activate DB
+DB --> ORM: Пороги и условия установлены
+deactivate DB
+deactivate ORM
+
+ORM -> DB: INSERT INTO billing_contractapprovalhistory\n(action='created', user=billing_manager)
+activate ORM
+activate DB
+DB --> ORM: История создана
+deactivate DB
+deactivate ORM
+
+ORM --> AdminUI: Контракт (оферта) создан (status='offer_pending')
+deactivate ORM
+AdminUI --> BillingManager: Оферта создана, готова к отправке провайдеру
+deactivate AdminUI
+
+== Отправка оферты провайдеру ==
+BillingManager -> AdminUI: Отправить оферту админу провайдера
+activate AdminUI
+AdminUI -> ORM: Contract.objects.get(id=contract_id)
+activate ORM
+ORM -> DB: SELECT * FROM billing_contract WHERE id = ?
+activate DB
+DB --> ORM: Данные контракта
+deactivate DB
+ORM --> AdminUI: Contract объект
+deactivate ORM
+
+AdminUI -> ORM: Получить email админа провайдера
+activate ORM
+ORM -> DB: SELECT email FROM users_user\nWHERE id IN (\n  SELECT user_id FROM users_provideradmin\n  WHERE provider_id = ? AND is_active = True\n)
+activate DB
+DB --> ORM: Email админа провайдера
+deactivate DB
+ORM --> AdminUI: Email админа провайдера
+deactivate ORM
+
+AdminUI -> Email: Отправить оферту админу провайдера\nдля акцепта
+activate Email
+note right of Email
+    Письмо содержит:
+    - Номер контракта (оферты)
+    - Ссылку на просмотр оферты в системе
+    - Инструкции по акцепту оферты
+    - Текст оферты (или ссылка на полный текст)
+end note
+Email --> ProviderAdmin: Письмо с офертой для акцепта
+deactivate Email
+
+ORM -> DB: UPDATE billing_contract\nSET status='offer_sent',\n    offer_sent_at = NOW()
+activate ORM
+activate DB
+DB --> ORM: Статус обновлен
+deactivate DB
+deactivate ORM
+
+ORM -> DB: INSERT INTO billing_contractapprovalhistory\n(action='offer_sent', user=billing_manager)
+activate ORM
+activate DB
+DB --> ORM: История создана
+deactivate DB
+deactivate ORM
+
+AdminUI --> BillingManager: Оферта отправлена админу провайдера
+deactivate AdminUI
+
+== Акцепт оферты провайдером ==
+ProviderAdmin -> AdminUI: Открыть ссылку на оферту\n(из письма или в системе)
+activate AdminUI
+AdminUI -> ORM: Contract.objects.get(id=contract_id)
+activate ORM
+ORM -> DB: SELECT * FROM billing_contract WHERE id = ?
+activate DB
+DB --> ORM: Данные контракта (оферты)
+deactivate DB
+ORM --> AdminUI: Contract объект
+deactivate ORM
+
+AdminUI --> ProviderAdmin: Отображение оферты:\n- Номер контракта\n- Условия (terms)\n- Даты, валюта, пороги\n- Чекбокс "Я принимаю условия оферты"
+deactivate AdminUI
+
+ProviderAdmin -> ProviderAdmin: Просмотреть условия оферты
+
+ProviderAdmin -> AdminUI: Принять условия оферты\n(чекбокс + кнопка "Принять")
+activate AdminUI
+AdminUI -> ORM: Валидация акцепта
+activate ORM
+
+note right of ORM
+    Проверка перед акцептом:
+    - Контракт в статусе 'offer_sent'
+    - Провайдер активен
+    - Админ провайдера имеет право акцептовать
+end note
+
+ORM -> DB: Проверка статуса контракта
+activate DB
+DB --> ORM: Статус валиден
+deactivate DB
+
+ORM -> DB: INSERT INTO billing_contractacceptance\n(contract, accepted_by, accepted_at,\n  ip_address, user_agent, offer_version)
+activate ORM
+activate DB
+note right of DB
+    Сохранение данных акцепта:
+    - contract (связь с контрактом)
+    - accepted_by (админ провайдера)
+    - accepted_at (время акцепта)
+    - ip_address (для доказательства)
+    - user_agent (браузер)
+    - offer_version (версия оферты)
+end note
+DB --> ORM: Акцепт сохранен
+deactivate DB
+deactivate ORM
+
+ORM -> DB: UPDATE billing_contract\nSET status='offer_accepted',\n    accepted_at = NOW(),\n    accepted_by = provider_admin
+activate ORM
+activate DB
+DB --> ORM: Статус обновлен
+deactivate DB
+deactivate ORM
+
+ORM -> DB: INSERT INTO billing_contractapprovalhistory\n(action='offer_accepted', user=provider_admin)
+activate ORM
+activate DB
+DB --> ORM: История создана
+deactivate DB
+deactivate ORM
+
+AdminUI -> Email: Отправить уведомление\nбиллинг-менеджеру об акцепте оферты
+activate Email
+note right of Email
+    Уведомление содержит:
+    - Номер контракта
+    - Информацию о провайдере
+    - Время акцепта
+    - Ссылку на контракт
+end note
+Email --> BillingManager: Уведомление об акцепте оферты
+deactivate Email
+
+ORM --> AdminUI: Оферта акцептована
+deactivate ORM
+AdminUI --> ProviderAdmin: Оферта принята успешно\nКонтракт готов к согласованию
+deactivate AdminUI
+
+== Результат ==
+note over BillingManager, ProviderAdmin
+    После акцепта оферты:
+    - status = 'offer_accepted' (оферта акцептована)
+    - Наследованы пороги и условия
+    - Создана запись в истории
+    - Сохранен акцепт оферты (IP, время, версия)
+    - Контракт готов к отправке на согласование системным админом
+    
+    Следующий процесс:
+    - Отправка на согласование и одобрение:
+      PROVIDER_CONTRACT_APPROVAL.puml
+end note
+
+@enduml

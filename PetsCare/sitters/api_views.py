@@ -283,10 +283,13 @@ class PetSittingViewSet(viewsets.ModelViewSet):
     """
     ViewSet для управления процессом передержки (PetSitting).
     Позволяет подтверждать передачу/возврат, отменять, завершать с обязательной оценкой, отправлять напоминания.
+    Фильтр по статусу: ?status=waiting_start|active|waiting_end|completed|cancelled
     """
     queryset = PetSitting.objects.all()
     serializer_class = PetSittingSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = [DjangoFilterBackend]
+    filterset_fields = ['status']
 
     def get_queryset(self):
         """

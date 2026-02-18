@@ -1,0 +1,505 @@
+{
+  "address": "Kraljice Jelene Anzujske, 47, Bar, Montenegro",
+  "geocoding": [
+    {
+      "address_components": [
+        {
+          "long_name": "Bar",
+          "short_name": "Bar",
+          "types": [
+            "locality",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Bar Municipality",
+          "short_name": "Bar Municipality",
+          "types": [
+            "administrative_area_level_1",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Montenegro",
+          "short_name": "ME",
+          "types": [
+            "country",
+            "political"
+          ]
+        }
+      ],
+      "formatted_address": "Bar, Montenegro",
+      "geometry": {
+        "bounds": {
+          "northeast": {
+            "lat": 42.1228481,
+            "lng": 19.1083361
+          },
+          "southwest": {
+            "lat": 42.0814071,
+            "lng": 19.0678884
+          }
+        },
+        "location": {
+          "lat": 42.0912106,
+          "lng": 19.089904
+        },
+        "location_type": "APPROXIMATE",
+        "viewport": {
+          "northeast": {
+            "lat": 42.1228481,
+            "lng": 19.1083361
+          },
+          "southwest": {
+            "lat": 42.0814071,
+            "lng": 19.0678884
+          }
+        }
+      },
+      "partial_match": true,
+      "place_id": "ChIJB7ySse5zThMRRgKxychfZPI",
+      "types": [
+        "locality",
+        "political"
+      ]
+    }
+  ],
+  "reverse_geocoding": [
+    {
+      "address_components": [
+        {
+          "long_name": "33RQ+FXJ",
+          "short_name": "33RQ+FXJ",
+          "types": [
+            "plus_code"
+          ]
+        },
+        {
+          "long_name": "Bar",
+          "short_name": "Bar",
+          "types": [
+            "locality",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Bar Municipality",
+          "short_name": "Bar Municipality",
+          "types": [
+            "administrative_area_level_1",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Montenegro",
+          "short_name": "ME",
+          "types": [
+            "country",
+            "political"
+          ]
+        }
+      ],
+      "formatted_address": "33RQ+FXJ, Bar, Montenegro",
+      "geometry": {
+        "location": {
+          "lat": 42.0912106,
+          "lng": 19.089904
+        },
+        "location_type": "ROOFTOP",
+        "viewport": {
+          "northeast": {
+            "lat": 42.09255958029149,
+            "lng": 19.0912529802915
+          },
+          "southwest": {
+            "lat": 42.0898616197085,
+            "lng": 19.0885550197085
+          }
+        }
+      },
+      "navigation_points": [
+        {
+          "location": {
+            "latitude": 42.0911936,
+            "longitude": 19.0904806
+          }
+        }
+      ],
+      "place_id": "ChIJl4m5RgBxThMR2wZwE0Dhzgk",
+      "types": [
+        "establishment",
+        "point_of_interest"
+      ]
+    },
+    {
+      "address_components": [
+        {
+          "long_name": "33RQ+FX",
+          "short_name": "33RQ+FX",
+          "types": [
+            "plus_code"
+          ]
+        },
+        {
+          "long_name": "Bar",
+          "short_name": "Bar",
+          "types": [
+            "locality",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Bar Municipality",
+          "short_name": "Bar Municipality",
+          "types": [
+            "administrative_area_level_1",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Montenegro",
+          "short_name": "ME",
+          "types": [
+            "country",
+            "political"
+          ]
+        }
+      ],
+      "formatted_address": "33RQ+FX Bar, Montenegro",
+      "geometry": {
+        "bounds": {
+          "northeast": {
+            "lat": 42.09125,
+            "lng": 19.09
+          },
+          "southwest": {
+            "lat": 42.091125,
+            "lng": 19.089875
+          }
+        },
+        "location": {
+          "lat": 42.0912106,
+          "lng": 19.089904
+        },
+        "location_type": "GEOMETRIC_CENTER",
+        "viewport": {
+          "northeast": {
+            "lat": 42.09253648029149,
+            "lng": 19.0912864802915
+          },
+          "southwest": {
+            "lat": 42.0898385197085,
+            "lng": 19.0885885197085
+          }
+        }
+      },
+      "place_id": "GhIJNgb4yawLRUARk8fT8gMXM0A",
+      "plus_code": {
+        "compound_code": "33RQ+FX Bar, Montenegro",
+        "global_code": "8FJX33RQ+FX"
+      },
+      "types": [
+        "plus_code"
+      ]
+    },
+    {
+      "address_components": [
+        {
+          "long_name": "Neimenovani Put",
+          "short_name": "Neimenovani Put",
+          "types": [
+            "route"
+          ]
+        },
+        {
+          "long_name": "Bar",
+          "short_name": "Bar",
+          "types": [
+            "locality",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Opština Bar",
+          "short_name": "Opština Bar",
+          "types": [
+            "administrative_area_level_1",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Montenegro",
+          "short_name": "ME",
+          "types": [
+            "country",
+            "political"
+          ]
+        }
+      ],
+      "formatted_address": "Neimenovani Put, Bar, Montenegro",
+      "geometry": {
+        "bounds": {
+          "northeast": {
+            "lat": 42.0912517,
+            "lng": 19.090968
+          },
+          "southwest": {
+            "lat": 42.0911037,
+            "lng": 19.0905136
+          }
+        },
+        "location": {
+          "lat": 42.0911777,
+          "lng": 19.0907408
+        },
+        "location_type": "GEOMETRIC_CENTER",
+        "viewport": {
+          "northeast": {
+            "lat": 42.0925266802915,
+            "lng": 19.0920897802915
+          },
+          "southwest": {
+            "lat": 42.0898287197085,
+            "lng": 19.0893918197085
+          }
+        }
+      },
+      "place_id": "ChIJfY4MTVZxThMRFkWNBH0yJ6c",
+      "types": [
+        "route"
+      ]
+    },
+    {
+      "address_components": [
+        {
+          "long_name": "Port of Bar",
+          "short_name": "Port of Bar",
+          "types": [
+            "establishment",
+            "point_of_interest",
+            "transit_station"
+          ]
+        },
+        {
+          "long_name": "Bar",
+          "short_name": "Bar",
+          "types": [
+            "locality",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Bar Municipality",
+          "short_name": "Bar Municipality",
+          "types": [
+            "administrative_area_level_1",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Montenegro",
+          "short_name": "ME",
+          "types": [
+            "country",
+            "political"
+          ]
+        }
+      ],
+      "formatted_address": "Port of Bar, Bar, Montenegro",
+      "geometry": {
+        "location": {
+          "lat": 42.0874617,
+          "lng": 19.0839592
+        },
+        "location_type": "GEOMETRIC_CENTER",
+        "viewport": {
+          "northeast": {
+            "lat": 42.08881068029149,
+            "lng": 19.08530818029151
+          },
+          "southwest": {
+            "lat": 42.0861127197085,
+            "lng": 19.0826102197085
+          }
+        }
+      },
+      "navigation_points": [
+        {
+          "location": {
+            "latitude": 42.0863216,
+            "longitude": 19.0862977
+          }
+        }
+      ],
+      "place_id": "ChIJCzlHC1BxThMRf2CO6dsphIs",
+      "plus_code": {
+        "compound_code": "33PM+XH Bar, Montenegro",
+        "global_code": "8FJX33PM+XH"
+      },
+      "types": [
+        "establishment",
+        "point_of_interest",
+        "transit_station"
+      ]
+    },
+    {
+      "address_components": [
+        {
+          "long_name": "Bar",
+          "short_name": "Bar",
+          "types": [
+            "locality",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Bar Municipality",
+          "short_name": "Bar Municipality",
+          "types": [
+            "administrative_area_level_1",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Montenegro",
+          "short_name": "ME",
+          "types": [
+            "country",
+            "political"
+          ]
+        }
+      ],
+      "formatted_address": "Bar, Montenegro",
+      "geometry": {
+        "bounds": {
+          "northeast": {
+            "lat": 42.1228481,
+            "lng": 19.1083361
+          },
+          "southwest": {
+            "lat": 42.0814071,
+            "lng": 19.0678884
+          }
+        },
+        "location": {
+          "lat": 42.0912106,
+          "lng": 19.089904
+        },
+        "location_type": "APPROXIMATE",
+        "viewport": {
+          "northeast": {
+            "lat": 42.1228481,
+            "lng": 19.1083361
+          },
+          "southwest": {
+            "lat": 42.0814071,
+            "lng": 19.0678884
+          }
+        }
+      },
+      "place_id": "ChIJB7ySse5zThMRRgKxychfZPI",
+      "types": [
+        "locality",
+        "political"
+      ]
+    },
+    {
+      "address_components": [
+        {
+          "long_name": "Bar Municipality",
+          "short_name": "Bar Municipality",
+          "types": [
+            "administrative_area_level_1",
+            "political"
+          ]
+        },
+        {
+          "long_name": "Montenegro",
+          "short_name": "ME",
+          "types": [
+            "country",
+            "political"
+          ]
+        }
+      ],
+      "formatted_address": "Bar Municipality, Montenegro",
+      "geometry": {
+        "bounds": {
+          "northeast": {
+            "lat": 42.30042299999999,
+            "lng": 19.403529
+          },
+          "southwest": {
+            "lat": 41.966096,
+            "lng": 18.9362269
+          }
+        },
+        "location": {
+          "lat": 42.1278119,
+          "lng": 19.140438
+        },
+        "location_type": "APPROXIMATE",
+        "viewport": {
+          "northeast": {
+            "lat": 42.30042299999999,
+            "lng": 19.403529
+          },
+          "southwest": {
+            "lat": 41.966096,
+            "lng": 18.9362269
+          }
+        }
+      },
+      "place_id": "ChIJWWCXbIjfTRMRdMGzcZdObxg",
+      "types": [
+        "administrative_area_level_1",
+        "political"
+      ]
+    },
+    {
+      "address_components": [
+        {
+          "long_name": "Montenegro",
+          "short_name": "ME",
+          "types": [
+            "country",
+            "political"
+          ]
+        }
+      ],
+      "formatted_address": "Montenegro",
+      "geometry": {
+        "bounds": {
+          "northeast": {
+            "lat": 43.5582301,
+            "lng": 20.352924
+          },
+          "southwest": {
+            "lat": 41.8297,
+            "lng": 18.4334563
+          }
+        },
+        "location": {
+          "lat": 42.708678,
+          "lng": 19.37439
+        },
+        "location_type": "APPROXIMATE",
+        "viewport": {
+          "northeast": {
+            "lat": 43.5582301,
+            "lng": 20.352924
+          },
+          "southwest": {
+            "lat": 41.8297,
+            "lng": 18.4334563
+          }
+        }
+      },
+      "place_id": "ChIJyx8sJBcyTBMRRtP_boadTDg",
+      "types": [
+        "country",
+        "political"
+      ]
+    }
+  ]
+}

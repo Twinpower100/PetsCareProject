@@ -1,80 +1,16 @@
 """
 Сериализаторы для модуля геолокации.
 
-Этот модуль содержит сериализаторы для:
-1. Местоположений (Location)
-2. Радиусов поиска (SearchRadius)
-3. Истории местоположений (LocationHistory)
-4. Address - структурированная модель адреса
-5. AddressValidation - результаты валидации
-6. AddressCache - кэширование результатов геокодирования
+Содержит сериализаторы для:
+- Address — структурированная модель адреса
+- AddressValidation — результаты валидации
+- AddressCache — кэширование результатов геокодирования
 """
 
 from rest_framework import serializers
-from .models import Location, SearchRadius, LocationHistory, Address, AddressValidation, AddressCache
+from .models import Address, AddressValidation, AddressCache
 from .services import AddressValidationService
 from django.utils.translation import gettext as _
-
-
-class LocationSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для модели Location.
-    Преобразует данные о местоположении в JSON формат.
-    
-    Поля:
-    - id: Уникальный идентификатор
-    - user: Пользователь, которому принадлежит местоположение
-    - address: Адрес местоположения
-    - latitude: Широта
-    - longitude: Долгота
-    - city: Город
-    - country: Страна
-    - postal_code: Почтовый индекс
-    - created_at: Дата создания
-    """
-    class Meta:
-        model = Location
-        fields = [
-            'id', 'user', 'address', 'point',
-            'city', 'country', 'postal_code', 'created_at'
-        ]
-        read_only_fields = ['id', 'user', 'created_at']
-
-
-class SearchRadiusSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для модели SearchRadius.
-    Управляет настройками радиуса поиска для пользователей.
-    
-    Поля:
-    - id: Уникальный идентификатор
-    - user: Пользователь, которому принадлежит радиус
-    - radius: Значение радиуса в метрах
-    - is_active: Флаг активности
-    """
-    class Meta:
-        model = SearchRadius
-        fields = ['id', 'user', 'radius', 'is_active']
-        read_only_fields = ['id', 'user']
-
-
-class LocationHistorySerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для модели LocationHistory.
-    Обрабатывает историю поиска местоположений пользователей.
-    
-    Поля:
-    - id: Уникальный идентификатор
-    - user: Пользователь, выполнивший поиск
-    - location: Найденное местоположение
-    - search_date: Дата поиска
-    """
-    location = LocationSerializer(read_only=True)
-    
-    class Meta:
-        model = LocationHistory
-        fields = ['id', 'user', 'location', 'search_date']
-        read_only_fields = ['id', 'user', 'search_date']
 
 
 class AddressSerializer(serializers.ModelSerializer):
@@ -92,10 +28,10 @@ class AddressSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'country', 'region', 'city', 'district', 'street', 'house_number',
             'building', 'apartment', 'postal_code', 'formatted_address',
-            'point', 'is_valid', 'is_geocoded', 'validation_status', 'created_at', 'updated_at'
+            'latitude', 'longitude',
+            'point', 'is_geocoded', 'validation_status', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'formatted_address', 'point', 
-                           'is_valid', 'is_geocoded', 'validation_status', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'point', 'is_geocoded', 'validation_status', 'created_at', 'updated_at']
 
     def validate(self, attrs):
         """
@@ -110,60 +46,46 @@ class AddressSerializer(serializers.ModelSerializer):
         Raises:
             serializers.ValidationError: При ошибке валидации
         """
-        # Проверяем, что указан хотя бы один компонент адреса
+        # Проверяем, что указан хотя бы один компонент адреса или форматированный адрес (для создания из геокода)
         required_fields = ['house_number', 'street', 'city', 'country']
-        if not any(attrs.get(field) for field in required_fields):
+        has_component = any(attrs.get(field) for field in required_fields)
+        has_formatted = bool(attrs.get('formatted_address', '').strip())
+        if not has_component and not has_formatted:
             raise serializers.ValidationError(
                 _("At least one address component must be specified")
             )
-        
         return attrs
 
     def create(self, validated_data):
         """
-        Создает новый адрес с автоматической валидацией.
-        
-        Args:
-            validated_data (dict): Валидированные данные
-            
-        Returns:
-            Address: Созданный адрес
+        Создаёт адрес и запускает валидацию. Сохраняем только при validation_status == 'valid';
+        иначе удаляем запись и поднимаем ValidationError.
         """
-        # Создаем адрес
         address = Address.objects.create(**validated_data)
-        
-        # Выполняем валидацию через сервис
         validation_service = AddressValidationService()
-        validation_service.validate_address(address)
-        
-        address.save()
+        is_valid = validation_service.validate_address(address)
+        address.refresh_from_db()
+        if address.validation_status != 'valid':
+            address.delete()
+            raise serializers.ValidationError(
+                _('Address could not be validated. Please check the address and try again.')
+            )
         return address
 
     def update(self, instance, validated_data):
         """
-        Обновляет адрес с повторной валидацией.
-        
-        Args:
-            instance (Address): Существующий адрес
-            validated_data (dict): Новые данные
-            
-        Returns:
-            Address: Обновленный адрес
+        Обновляет поля адреса и запускает валидацию. При неуспешной валидации
+        поднимаем ValidationError (изменения уже сохранены сервисом как invalid).
         """
-        # Обновляем поля
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
-        
-        # Сбрасываем статус валидации
-        instance.is_validated = False
-        instance.validation_status = 'pending'
-        instance.save()
-        
-        # Выполняем повторную валидацию
         validation_service = AddressValidationService()
         validation_service.validate_address(instance)
-        
-        instance.save()
+        instance.refresh_from_db()
+        if instance.validation_status != 'valid':
+            raise serializers.ValidationError(
+                _('Address could not be validated. Please check the address and try again.')
+            )
         return instance
 
 
@@ -220,6 +142,17 @@ class AddressAutocompleteSerializer(serializers.Serializer):
         if len(value.strip()) < 2:
             raise serializers.ValidationError(_("Query must contain at least 2 characters"))
         return value.strip()
+
+
+class PlaceDetailsSerializer(serializers.Serializer):
+    """Сериализатор для запроса Place Details по place_id."""
+    place_id = serializers.CharField(max_length=512, help_text=_("Google Place ID from autocomplete prediction"))
+
+    def validate_place_id(self, value):
+        v = (value or "").strip()
+        if not v:
+            raise serializers.ValidationError(_("place_id is required"))
+        return v
 
 
 class AddressGeocodeSerializer(serializers.Serializer):

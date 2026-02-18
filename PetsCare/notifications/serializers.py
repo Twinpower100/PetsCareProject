@@ -11,7 +11,7 @@
 from rest_framework import serializers
 from .models import Notification, Reminder
 from pets.serializers import PetSerializer
-from providers.serializers import ProviderServiceSerializer
+# ProviderServiceSerializer удален - используйте ProviderLocationServiceSerializer
 from django.utils.translation import gettext as _
 from .models import (
     NotificationType, NotificationTemplate, NotificationPreference,

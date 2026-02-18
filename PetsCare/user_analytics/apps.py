@@ -8,4 +8,9 @@ class UserAnalyticsConfig(AppConfig):
     
     def ready(self):
         """Импортируем сигналы при запуске приложения"""
+        # Проверяем, что Django полностью инициализирован
+        from django.conf import settings
+        if not settings.configured:
+            return
+            
         import user_analytics.signals

@@ -17,7 +17,7 @@ from django.db.models import Q, Count, Sum
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from .models import StaffingRequirement
-from providers.models import Provider, Employee, Schedule, ProviderSchedule
+from providers.models import Provider, Employee, Schedule, LocationSchedule, ProviderLocation
 from booking.models import Booking
 from catalog.models import Service
 
@@ -82,8 +82,9 @@ class AdvancedReportGenerator:
         Returns:
             Dict: Отчет по покрытию
         """
+        # Фильтруем через provider_location или provider (legacy)
         requirements = StaffingRequirement.objects.filter(
-            provider=self.provider,
+            Q(provider_location__provider=self.provider) | Q(provider=self.provider),
             is_active=True
         )
         
@@ -203,10 +204,16 @@ class AdvancedReportGenerator:
             for assignment in assignments:
                 service = assignment['service']
                 
-                # Получаем цену услуги
+                # Получаем цену услуги из первой доступной локации
                 try:
-                    provider_service = self.provider.provider_services.get(service=service)
-                    price = provider_service.price
+                    from providers.models import ProviderLocationService
+                    location_service = ProviderLocationService.objects.filter(
+                        location__provider=self.provider,
+                        location__is_active=True,
+                        service=service,
+                        is_active=True
+                    ).first()
+                    price = location_service.price if location_service else 0
                 except:
                     price = 0
                 
@@ -236,9 +243,9 @@ class AdvancedReportGenerator:
         Returns:
             Dict: Отчет по непокрытым бронированиям
         """
-        # Получаем бронирования в периоде
+        # Получаем бронирования в периоде (через provider_location или provider legacy)
         bookings = Booking.objects.filter(
-            provider=self.provider,
+            Q(provider_location__provider=self.provider) | Q(provider=self.provider),
             start_time__date__gte=start_date,
             start_time__date__lte=end_date,
             status__name__in=['active', 'pending_confirmation']
@@ -280,8 +287,9 @@ class AdvancedReportGenerator:
         """
         from .models import Workplace
         
+        # Фильтруем через provider_location или provider (legacy)
         workplaces = Workplace.objects.filter(
-            provider=self.provider,
+            Q(provider_location__provider=self.provider) | Q(provider=self.provider),
             is_active=True
         )
         
@@ -413,6 +421,7 @@ class AdvancedReportGenerator:
     def _get_total_workplace_hours(self, workplace, start_date: date, end_date: date) -> int:
         """
         Получает общее количество часов работы учреждения.
+        Суммирует часы работы всех локаций провайдера.
         
         Args:
             workplace: Рабочее место
@@ -422,26 +431,32 @@ class AdvancedReportGenerator:
         Returns:
             int: Общее количество часов
         """
-        # Получаем расписание учреждения
-        provider_schedules = ProviderSchedule.objects.filter(
-            provider=self.provider
-        )
+        # Получаем все локации провайдера
+        locations = ProviderLocation.objects.filter(provider=self.provider, is_active=True)
+        
+        if not locations.exists():
+            return 0
         
         total_hours = 0
         current_date = start_date
         
         while current_date <= end_date:
             day_of_week = current_date.weekday()
-            try:
-                schedule = provider_schedules.get(weekday=day_of_week)
-                if not schedule.is_closed and schedule.open_time and schedule.close_time:
-                    # Подсчитываем часы работы
-                    open_dt = datetime.combine(current_date, schedule.open_time)
-                    close_dt = datetime.combine(current_date, schedule.close_time)
-                    duration = close_dt - open_dt
-                    total_hours += duration.total_seconds() / 3600
-            except ProviderSchedule.DoesNotExist:
-                pass
+            # Суммируем часы работы всех локаций за этот день
+            for location in locations:
+                try:
+                    schedule = LocationSchedule.objects.get(
+                        provider_location=location,
+                        weekday=day_of_week
+                    )
+                    if not schedule.is_closed and schedule.open_time and schedule.close_time:
+                        # Подсчитываем часы работы
+                        open_dt = datetime.combine(current_date, schedule.open_time)
+                        close_dt = datetime.combine(current_date, schedule.close_time)
+                        duration = close_dt - open_dt
+                        total_hours += duration.total_seconds() / 3600
+                except LocationSchedule.DoesNotExist:
+                    pass
             
             current_date += timedelta(days=1)
         

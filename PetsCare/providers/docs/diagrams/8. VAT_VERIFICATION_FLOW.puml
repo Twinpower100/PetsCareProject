@@ -1,0 +1,165 @@
+@startuml sequence_vat_verification
+title Диаграмма последовательности: Проверка VAT номера через VIES API (ЕС)
+
+actor "Provider Admin" as ProviderAdmin
+participant "Web UI (React)" as UI
+participant "Backend (Django)" as API
+participant "Django ORM" as ORM
+participant "VAT Verification\nService" as VATService
+participant "VIES API\n(Еврокомиссия)" as VIES
+database "Database" as DB
+
+== Выбор страны и настройка НДС ==
+ProviderAdmin -> UI: Заполнение реквизитов провайдера
+activate UI
+UI -> UI: Выбор страны регистрации
+note right of UI
+    При выборе страны:
+    - Если страна в списке ЕС: is_eu = True
+    - Показывается чекбокс "Я плательщик НДС"
+    - Показывается поле "VAT Number" (если is_vat_payer = True)
+end note
+
+ProviderAdmin -> UI: Выбор страны: "Германия"
+UI -> API: POST /api/providers/{id}/update-requisites/\n{country: "DE"}
+activate API
+API -> ORM: Обновление Provider
+activate ORM
+ORM -> DB: UPDATE providers_provider\nSET country = 'DE', is_eu = True\nWHERE id = ?
+activate DB
+DB --> ORM: Обновлено
+deactivate DB
+ORM --> API: Provider обновлен
+deactivate ORM
+API --> UI: Страна установлена (is_eu = True)
+deactivate API
+UI --> ProviderAdmin: Поле "VAT Number" стало видимым
+
+ProviderAdmin -> UI: Чекбокс "Я плательщик НДС" = True
+UI -> API: POST /api/providers/{id}/update-requisites/\n{is_vat_payer: true}
+activate API
+API -> ORM: Обновление Provider
+activate ORM
+ORM -> DB: UPDATE providers_provider\nSET is_vat_payer = True\nWHERE id = ?
+activate DB
+DB --> ORM: Обновлено
+deactivate DB
+ORM --> API: Provider обновлен
+deactivate ORM
+API --> UI: is_vat_payer = True
+deactivate API
+UI --> ProviderAdmin: Поле "VAT Number" стало обязательным
+
+== Ввод и проверка VAT Number ==
+ProviderAdmin -> UI: Ввод VAT Number: "DE123456789"
+UI -> API: POST /api/providers/{id}/verify-vat/\n{vat_number: "DE123456789"}
+activate API
+
+API -> VATService: verify_vat_number(\n  vat_number="DE123456789",\n  country_code="DE"\n)
+activate VATService
+
+note right of VATService
+    Формирование запроса к VIES API:
+    - URL: https://ec.europa.eu/taxation_customs/vies/\n  rest-api/ms/{country_code}/vat/{vat_number}
+    - Метод: GET
+    - Формат ответа: JSON
+end note
+
+VATService -> VIES: GET https://ec.europa.eu/taxation_customs/vies/\nrest-api/ms/DE/vat/DE123456789
+activate VIES
+
+alt VAT Number валиден
+    VIES --> VATService: {\n  "valid": true,\n  "name": "Example Company GmbH",\n  "address": "Musterstraße 1, 12345 Berlin",\n  "requestDate": "2025-12-29",\n  "requestIdentifier": "..."\n}
+    deactivate VIES
+    
+    VATService -> VATService: Обработка ответа
+    VATService --> API: {\n  valid: true,\n  name: "Example Company GmbH",\n  address: "Musterstraße 1, 12345 Berlin",\n  request_date: "2025-12-29"\n}
+    deactivate VATService
+    
+    API -> ORM: Обновление Provider
+    activate ORM
+    ORM -> DB: UPDATE providers_provider\nSET vat_number = 'DE123456789',\n    vat_verified = True,\n    vat_verification_date = NOW(),\n    vat_exempt = True\nWHERE id = ?
+    activate DB
+    DB --> ORM: Обновлено
+    deactivate DB
+    ORM --> API: Provider обновлен
+    deactivate ORM
+    
+    API --> UI: Успех: VAT Number валиден\n(vat_exempt = True, НДС не начисляется)
+    deactivate API
+    UI --> ProviderAdmin: ✅ VAT Number подтвержден\nНДС не будет начислен (Reverse Charge)
+    
+else VAT Number невалиден
+    VIES --> VATService: {\n  "valid": false,\n  "requestDate": "2025-12-29",\n  "requestIdentifier": "...",\n  "error": "INVALID_INPUT" или "SERVICE_UNAVAILABLE"\n}
+    deactivate VIES
+    
+    VATService -> VATService: Обработка ошибки
+    VATService --> API: {\n  valid: false,\n  error: "INVALID_INPUT" или "SERVICE_UNAVAILABLE"\n}
+    deactivate VATService
+    
+    API -> ORM: Обновление Provider (vat_verified = False)
+    activate ORM
+    ORM -> DB: UPDATE providers_provider\nSET vat_number = 'DE123456789',\n    vat_verified = False,\n    vat_exempt = False\nWHERE id = ?
+    activate DB
+    DB --> ORM: Обновлено
+    deactivate DB
+    ORM --> API: Provider обновлен
+    deactivate ORM
+    
+    API --> UI: Ошибка: VAT Number не найден в реестре\n(НДС будет начислен)
+    deactivate API
+    UI --> ProviderAdmin: ⚠️ VAT Number не подтвержден\nНДС будет начислен согласно ставке страны
+end
+
+== Обработка ошибок VIES API ==
+alt VIES API недоступен
+    VIES --> VATService: HTTP 503 Service Unavailable
+    deactivate VIES
+    
+    VATService -> VATService: Обработка ошибки
+    VATService --> API: {\n  valid: null,\n  error: "SERVICE_UNAVAILABLE",\n  message: "VIES API temporarily unavailable"\n}
+    deactivate VATService
+    
+    API -> ORM: Сохранение VAT Number без проверки
+    activate ORM
+    ORM -> DB: UPDATE providers_provider\nSET vat_number = 'DE123456789',\n    vat_verified = False,\n    vat_verification_date = NULL\nWHERE id = ?
+    activate DB
+    DB --> ORM: Обновлено
+    deactivate DB
+    ORM --> API: Provider обновлен
+    deactivate ORM
+    
+    API --> UI: Предупреждение: Проверка VAT временно недоступна.\nНомер сохранен, проверка будет выполнена позже.\n(НДС будет начислен до подтверждения)
+    deactivate API
+    UI --> ProviderAdmin: ⚠️ Проверка VAT временно недоступна\n(можно сохранить и проверить позже)
+end
+
+== Фоновая проверка (опционально) ==
+note over API
+    Если VIES API был недоступен:
+    - Создается фоновая задача (Celery)
+    - Повторная проверка через 1 час
+    - Уведомление провайдера о результате
+end note
+
+== Результат ==
+note over ProviderAdmin
+    После проверки VAT:
+    
+    ✅ Если vat_verified = True:
+    - vat_exempt = True
+    - НДС не начисляется (Reverse Charge)
+    - Провайдер сам начисляет НДС в своей юрисдикции
+    
+    ❌ Если vat_verified = False:
+    - vat_exempt = False
+    - НДС начисляется согласно ставке страны регистрации Сервиса
+    
+    ⚠️ Если проверка не выполнена:
+    - vat_verified = False (по умолчанию)
+    - НДС начисляется до подтверждения
+    - Можно повторить проверку вручную
+end note
+
+@enduml
+

@@ -1,0 +1,15 @@
+{
+  "description": "Лимиты и подсказки для загрузки фото питомца. Для фронта: использовать ключ petPhotoHint в локалях или получать hints из GET /api/v1/pets/pet-photo-constraints/",
+  "max_size_mb": 5,
+  "max_width": 2048,
+  "max_height": 2048,
+  "allowed_content_types": ["image/jpeg", "image/png", "image/webp"],
+  "accept": "image/jpeg,image/png,image/webp",
+  "hints": {
+    "en": "Photo: JPEG, PNG or WebP. Max size 5 MB, max resolution 2048×2048 px.",
+    "ru": "Фото: JPEG, PNG или WebP. Макс. размер 5 МБ, макс. разрешение 2048×2048 px.",
+    "de": "Foto: JPEG, PNG oder WebP. Max. Größe 5 MB, max. Auflösung 2048×2048 px.",
+    "me": "Fotografija: JPEG, PNG ili WebP. Maks. veličina 5 MB, maks. rezolucija 2048×2048 px."
+  },
+  "i18n_key": "petPhotoHint"
+}

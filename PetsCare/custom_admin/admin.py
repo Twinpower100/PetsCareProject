@@ -11,33 +11,45 @@ class CustomAdminSite(AdminSite):
     site_title = _("PetsCare Admin")
     index_title = _("Welcome to PetsCare Admin - Custom User & Role Management")
 
+    def _is_system_admin(self, user):
+        """Проверка системного администратора (поддержка/админы проекта). Доступ в Django admin только у них и суперпользователей."""
+        from django.contrib.auth.models import AnonymousUser
+        if isinstance(user, AnonymousUser):
+            return False
+        try:
+            return getattr(user, 'is_system_admin', None) and callable(user.is_system_admin) and user.is_system_admin()
+        except (AttributeError, TypeError):
+            return False
+
     def has_permission(self, request):
         """
-        Проверяет права доступа пользователя к админке.
-        Разрешает доступ для:
-        - Активных пользователей
-        - Сотрудников (is_staff)
-        - Суперпользователей (is_superuser)
-        - Менеджеров биллинга
-        - Администраторов провайдеров
-        - Системных администраторов
+        Проверяет права доступа к админке Django (MVP: только персонал проекта).
+        Доступ только у is_superuser или system_admin (поддержка и админы проекта).
+        Биллинг-менеджеры, администраторы и персонал провайдеров в Django admin не входят.
         """
-        if not request.user.is_active:
+        from django.contrib.auth.models import AnonymousUser
+        if isinstance(request.user, AnonymousUser):
             return False
-            
-        # Стандартные права Django
-        if request.user.is_staff or request.user.is_superuser:
-            return True
-            
-        # Кастомные права (если методы существуют)
         try:
-            return (
-                getattr(request.user, 'is_billing_manager', lambda: False)() or
-                getattr(request.user, 'is_provider_admin', lambda: False)() or
-                getattr(request.user, 'is_system_admin', lambda: False)()
-            )
-        except:
+            if not request.user.is_authenticated or not request.user.is_active:
+                return False
+        except (AttributeError, TypeError):
             return False
+        try:
+            if request.user.is_superuser:
+                return True
+        except (AttributeError, TypeError):
+            pass
+        if self._is_system_admin(request.user):
+            return True
+        return False
+    
+    def has_module_permission(self, request):
+        """
+        Доступ к модулям только у is_superuser или system_admin.
+        Биллинг-менеджеры, админы и персонал провайдеров не входят.
+        """
+        return self.has_permission(request)
 
     def get_urls(self):
         """
@@ -81,7 +93,12 @@ def register_admin_models():
     Регистрирует стандартные модели админки.
     """
     from django.contrib.admin.models import LogEntry
-    
+
     # Регистрируем только LogEntry для аудита
     # User и Group скрыты, так как используем кастомные UserType и User
-    custom_admin_site.register(LogEntry) 
+    custom_admin_site.register(LogEntry)
+
+    # Глобальный производственный календарь (Level 1) — регистрация здесь гарантирует появление в админке
+    from production_calendar.models import ProductionCalendar
+    from production_calendar.admin import ProductionCalendarAdmin
+    custom_admin_site.register(ProductionCalendar, ProductionCalendarAdmin) 

@@ -220,6 +220,67 @@ class Breed(models.Model):
             return self.name
 
 
+# Коды размеров для весовых правил и цен по размерам (должны совпадать с SizeRule.size_code).
+SIZE_CATEGORY_CHOICES = [
+    ('S', 'S'),
+    ('M', 'M'),
+    ('L', 'L'),
+    ('XL', 'XL'),
+]
+# Порядок размера для выбора «выше» при пересечении диапазонов: S < M < L < XL.
+SIZE_CATEGORY_ORDER = {'S': 0, 'M': 1, 'L': 2, 'XL': 3}
+
+
+class SizeRule(models.Model):
+    """
+    Глобальное правило: диапазон веса для размера (S/M/L/XL) по типу питомца.
+
+    Используется для автоматического определения размерной категории питомца по весу
+    и для привязки цен по размерам (LocationServicePrice / ServiceVariant).
+    """
+    pet_type = models.ForeignKey(
+        PetType,
+        on_delete=models.CASCADE,
+        verbose_name=_('Pet Type'),
+        related_name='size_rules',
+        help_text=_('Pet type (e.g. dog, cat)')
+    )
+    size_code = models.CharField(
+        _('Size Code'),
+        max_length=10,
+        choices=SIZE_CATEGORY_CHOICES,
+        help_text=_('Size category: S, M, L, XL')
+    )
+    min_weight_kg = models.DecimalField(
+        _('Min Weight (kg)'),
+        max_digits=5,
+        decimal_places=2,
+        help_text=_('Minimum weight in kg (inclusive)')
+    )
+    max_weight_kg = models.DecimalField(
+        _('Max Weight (kg)'),
+        max_digits=5,
+        decimal_places=2,
+        help_text=_('Maximum weight in kg (inclusive)')
+    )
+
+    class Meta:
+        verbose_name = _('Size Rule')
+        verbose_name_plural = _('Size Rules')
+        ordering = ['pet_type', 'min_weight_kg']
+        unique_together = [['pet_type', 'size_code']]
+
+    def __str__(self):
+        return f"{self.pet_type.code} {self.size_code}: {self.min_weight_kg}-{self.max_weight_kg} kg"
+
+    def clean(self):
+        if self.min_weight_kg is not None and self.max_weight_kg is not None:
+            if self.min_weight_kg > self.max_weight_kg:
+                raise ValidationError(
+                    _('Min weight must be less than or equal to max weight.')
+                )
+
+
 class Pet(models.Model):
     """
     Модель питомца.
@@ -268,17 +329,17 @@ class Pet(models.Model):
     )
     birth_date = models.DateField(
         _('Birth Date'),
-        null=True,
-        blank=True,
-        help_text=_('Pet birth date')
+        null=False,
+        blank=False,
+        help_text=_('Pet birth date (mandatory for weight-driven pricing)')
     )
     weight = models.DecimalField(
         _('Weight'),
         max_digits=5,
         decimal_places=2,
-        null=True,
-        blank=True,
-        help_text=_('Pet weight in kg')
+        null=False,
+        blank=False,
+        help_text=_('Pet weight in kg (mandatory for size-based pricing)')
     )
     description = models.TextField(
         _('Description'),
@@ -288,11 +349,15 @@ class Pet(models.Model):
     special_needs = models.JSONField(
         _('Special Needs'),
         default=dict,
+        blank=True,
+        null=True,
         help_text=_('Special care requirements')
     )
     medical_conditions = models.JSONField(
         _('Medical Conditions'),
         default=dict,
+        blank=True,
+        null=True,
         help_text=_('Medical conditions and history')
     )
     photo = models.ImageField(
@@ -301,6 +366,11 @@ class Pet(models.Model):
         null=True,
         blank=True,
         help_text=_('Pet photo')
+    )
+    is_active = models.BooleanField(
+        _('Is Active'),
+        default=True,
+        help_text=_('Whether the pet is active')
     )
     created_at = models.DateTimeField(
         auto_now_add=True,
@@ -317,35 +387,96 @@ class Pet(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.name} ({self.get_pet_type_display()})"
+        return f"{self.name} ({self.pet_type.name if self.pet_type else 'Unknown'})"
 
     def get_age(self):
-        """Возвращает возраст питомца в годах"""
+        """Возвращает возраст питомца в годах."""
         if not self.birth_date:
             return None
         today = date.today()
         age = today.year - self.birth_date.year
         if today.month < self.birth_date.month or (
-            today.month == self.birth_date.month and 
+            today.month == self.birth_date.month and
             today.day < self.birth_date.day
         ):
             age -= 1
         return age
 
+    def get_current_size_category(self):
+        """
+        Определяет размерную категорию (S/M/L/XL) по весу и глобальным правилам SizeRule.
+
+        - Ищет правила для pet_type, в диапазон которых попадает self.weight.
+        - Если вес попадает в несколько диапазонов (граница), возвращает больший размер.
+        - Если вес выше всех max_weight_kg для типа, возвращает максимальный размер для типа.
+        - Если правил для типа нет, возвращает None.
+
+        Returns:
+            str | None: Код размера (S, M, L, XL) или None.
+        """
+        weight_val = float(self.weight)
+        rules = list(
+            SizeRule.objects.filter(pet_type=self.pet_type).order_by('min_weight_kg')
+        )
+        if not rules:
+            return None
+        # Все подходящие по диапазону [min_weight_kg, max_weight_kg]
+        matching = [
+            r for r in rules
+            if float(r.min_weight_kg) <= weight_val <= float(r.max_weight_kg)
+        ]
+        if matching:
+            # Берём размер с большим порядком (если несколько — «выше»)
+            return max(matching, key=lambda r: SIZE_CATEGORY_ORDER.get(r.size_code, -1)).size_code
+        # Вес выше всех max — возвращаем максимальный размер для типа
+        return max(rules, key=lambda r: SIZE_CATEGORY_ORDER.get(r.size_code, -1)).size_code
+
     def clean(self):
         # Основной владелец не может быть пустым
         if not self.main_owner:
             raise ValidationError({'main_owner': _('Main owner must be set.')})
-        # Owners не может быть пустым
-        if not self.pk or self.owners.count() == 0:
-            raise ValidationError({'owners': _('There must be at least one owner.')})
-        # Основной владелец должен входить в owners
-        if self.main_owner and self.main_owner not in self.owners.all():
-            raise ValidationError({'main_owner': _('Main owner must be in owners list.')})
+        
+        # Для ManyToMany полей валидация будет в админке
+        # чтобы избежать проблем с несохраненными объектами
 
     def save(self, *args, **kwargs):
-        self.full_clean()
+        # Валидируем основные поля
+        self.clean()
+        
+        # Сохраняем объект
         super().save(*args, **kwargs)
+
+        # Ресайз фото до заданного max разрешения при необходимости
+        if self.photo:
+            self._resize_photo_if_needed()
+
+    def _resize_photo_if_needed(self):
+        """Уменьшает фото до PET_PHOTO_MAX_WIDTH×PET_PHOTO_MAX_HEIGHT при необходимости."""
+        from .constants import PET_PHOTO_MAX_WIDTH, PET_PHOTO_MAX_HEIGHT
+        try:
+            path = self.photo.path
+        except (ValueError, NotImplementedError):
+            return
+        if not path or not os.path.isfile(path):
+            return
+        try:
+            from PIL import Image
+            with Image.open(path) as img:
+                img.load()
+                w, h = img.size
+                if w <= PET_PHOTO_MAX_WIDTH and h <= PET_PHOTO_MAX_HEIGHT:
+                    return
+                ratio = min(
+                    PET_PHOTO_MAX_WIDTH / w,
+                    PET_PHOTO_MAX_HEIGHT / h,
+                    1.0
+                )
+                new_w = max(1, int(w * ratio))
+                new_h = max(1, int(h * ratio))
+                resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                resized.save(path, format=img.format or 'JPEG', quality=88, optimize=True)
+        except Exception as e:
+            logger.warning('Pet photo resize failed for pk=%s: %s', self.pk, e)
 
 
 class MedicalRecord(models.Model):
@@ -513,11 +644,24 @@ class PetRecord(models.Model):
         verbose_name=_('Pet'),
         related_name='records'
     )
+    # ВРЕМЕННО: оставляем для обратной совместимости, будет удалено после миграции данных
     provider = models.ForeignKey(
         'providers.Provider',
         on_delete=models.PROTECT,
-        verbose_name=_('Provider'),
-        related_name='pet_records'
+        verbose_name=_('Provider (Legacy)'),
+        related_name='pet_records',
+        null=True,
+        blank=True,
+        help_text=_('Legacy field - use provider_location instead')
+    )
+    provider_location = models.ForeignKey(
+        'providers.ProviderLocation',
+        on_delete=models.PROTECT,
+        verbose_name=_('Provider Location'),
+        related_name='pet_records',
+        null=True,
+        blank=True,
+        help_text=_('Location where the service was provided')
     )
     service = models.ForeignKey(
         Service,
@@ -529,7 +673,10 @@ class PetRecord(models.Model):
         'providers.Employee',
         on_delete=models.PROTECT,
         verbose_name=_('Employee'),
-        related_name='pet_records'
+        related_name='pet_records',
+        null=True,
+        blank=True,
+        help_text=_('Employee who performed the procedure; empty when record is added by owner')
     )
     date = models.DateTimeField(
         _('Date'),
@@ -543,6 +690,7 @@ class PetRecord(models.Model):
     )
     description = models.TextField(
         _('Description'),
+        blank=True,
         help_text=_('Description of what was done')
     )
     results = models.TextField(
@@ -559,6 +707,18 @@ class PetRecord(models.Model):
         _('Notes'),
         blank=True,
         help_text=_('Internal notes')
+    )
+    diagnosis = models.TextField(
+        _('Diagnosis'),
+        blank=True,
+        null=True,
+        help_text=_('Diagnosis (optional, can be empty for vaccinations)')
+    )
+    anamnesis = models.TextField(
+        _('Anamnesis'),
+        blank=True,
+        null=True,
+        help_text=_('Anamnesis / medical history note (optional)')
     )
     serial_number = models.CharField(
         _('Serial Number'),

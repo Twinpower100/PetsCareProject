@@ -110,27 +110,14 @@ class Command(BaseCommand):
                 self.stdout.write(f'Validating address {i}/{total_addresses}: {address}')
                 
                 with transaction.atomic():
-                    validation_result = validation_service.validate_address(address)
-                    
-                    if validation_result.is_valid:
-                        address.formatted_address = validation_result.formatted_address
-                        address.latitude = validation_result.latitude
-                        address.longitude = validation_result.longitude
-                        address.is_validated = True
-                        address.validation_status = 'valid'
-                        address.save(update_fields=[
-                            'formatted_address', 'latitude', 'longitude',
-                            'is_validated', 'validation_status', 'updated_at'
-                        ])
-                        
+                    is_valid = validation_service.validate_address(address)
+                    address.refresh_from_db()
+                    if is_valid:
                         self.stdout.write(
-                            self.style.SUCCESS(f'✓ Address validated: {validation_result.formatted_address}')
+                            self.style.SUCCESS(f'✓ Address validated: {address.formatted_address or address}')
                         )
                         success_count += 1
                     else:
-                        address.validation_status = 'invalid'
-                        address.save(update_fields=['validation_status', 'updated_at'])
-                        
                         self.stdout.write(
                             self.style.ERROR(f'✗ Address invalid: {address}')
                         )

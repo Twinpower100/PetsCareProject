@@ -1,0 +1,29 @@
+{% extends "email/base.html" %}
+{% load i18n %}
+
+{% block content %}
+<div class="notification-title">{% trans "Provider registration confirmed" %}: {{ provider_name }}</div>
+
+<div class="notification-message">
+    <p>{{ display_name }}.</p>
+
+    <p>{% trans "The registration of the organization" %} <strong>{{ provider_name }}</strong> {% trans "as a provider has been confirmed." %}</p>
+
+    <p>{% trans "Access to the provider admin panel has been granted to the provider administrator" %} ({% trans "email" %}: <strong>{{ provider_admin_email }}</strong>). {% trans "A separate email with login details has been sent to them." %}</p>
+
+    <p>{% trans "This email is for your information. For questions about login and setup, please contact the administrator above or our support team." %}</p>
+
+    {% if billing_manager_contacts %}
+    <div class="info-box">
+        <h3>{% trans "Need Help?" %}:</h3>
+        <p>{% trans "If needed, contact your billing manager:" %}</p>
+        {% for contact in billing_manager_contacts %}
+        <p style="margin-top: 10px;">
+            <strong>{{ contact.name }}</strong><br>
+            <a href="mailto:{{ contact.email }}" style="color: #667eea;">{{ contact.email }}</a>
+        </p>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

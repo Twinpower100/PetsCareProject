@@ -1,0 +1,128 @@
+@startuml sequence_provider_contract_approval
+title Диаграмма последовательности: Одобрение контракта провайдера
+
+actor "Billing Manager" as BillingManager
+actor "System Admin" as SystemAdmin
+participant "Django Admin UI\nили API" as AdminUI
+participant "Django ORM" as ORM
+database "Database" as DB
+
+== Отправка контракта на согласование ==
+BillingManager -> AdminUI: Открыть список контрактов\nсо статусом 'draft'
+activate AdminUI
+AdminUI -> ORM: Contract.objects.filter(\n  status='draft',\n  provider__in=managed_providers\n)
+activate ORM
+ORM -> DB: SELECT * FROM billing_contract\nWHERE status = 'draft' AND provider_id IN (...)
+activate DB
+DB --> ORM: Список контрактов
+deactivate DB
+ORM --> AdminUI: QuerySet контрактов
+deactivate ORM
+AdminUI --> BillingManager: Отображение списка контрактов
+deactivate AdminUI
+
+BillingManager -> AdminUI: Выбрать контракт и отправить на согласование
+activate AdminUI
+AdminUI -> ORM: contract.status = 'pending_approval'
+AdminUI -> ORM: contract.submitted_for_approval_at = now()
+AdminUI -> ORM: contract.save()
+activate ORM
+
+ORM -> DB: UPDATE billing_contract\nSET status = 'pending_approval',\n    submitted_for_approval_at = ?\nWHERE id = ?
+activate DB
+DB --> ORM: Статус обновлен
+deactivate DB
+
+ORM -> DB: INSERT INTO billing_contractapprovalhistory\n(action='submitted', user=billing_manager)
+activate DB
+DB --> ORM: История создана
+deactivate DB
+
+ORM --> AdminUI: Контракт отправлен на согласование
+deactivate ORM
+
+note right of AdminUI
+    Отправка уведомления\nсистемным админам о необходимости\nсогласования контракта
+end note
+
+AdminUI --> BillingManager: Сообщение об успехе
+deactivate AdminUI
+
+== Одобрение контракта системным админом ==
+SystemAdmin -> AdminUI: Открыть список контрактов\nсо статусом 'pending_approval'
+activate AdminUI
+AdminUI -> ORM: Contract.objects.filter(\n  status='pending_approval'\n)
+activate ORM
+ORM -> DB: SELECT * FROM billing_contract\nWHERE status = 'pending_approval'
+activate DB
+DB --> ORM: Список контрактов
+deactivate DB
+ORM --> AdminUI: QuerySet контрактов
+deactivate ORM
+AdminUI --> SystemAdmin: Отображение списка контрактов\n(ожидающих согласования)
+deactivate AdminUI
+
+SystemAdmin -> AdminUI: Выбрать контракт и открыть для просмотра
+activate AdminUI
+AdminUI -> ORM: Contract.objects.get(id=contract_id)
+activate ORM
+ORM -> DB: SELECT * FROM billing_contract WHERE id = ?
+activate DB
+DB --> ORM: Данные контракта
+deactivate DB
+ORM --> AdminUI: Contract объект
+deactivate ORM
+
+note right of AdminUI
+    Проверка перед одобрением:
+    - status = 'pending_approval'
+    - Все обязательные поля заполнены
+    - Документ загружен (если требуется)
+end note
+
+AdminUI --> SystemAdmin: Форма просмотра контракта\n(доступно одобрение/отклонение)
+
+SystemAdmin -> AdminUI: Одобрить контракт
+activate AdminUI
+AdminUI -> ORM: contract.status = 'active'
+AdminUI -> ORM: contract.approved_by = request.user
+AdminUI -> ORM: contract.approved_at = now()
+AdminUI -> ORM: contract.save()
+activate ORM
+
+ORM -> DB: UPDATE billing_contract\nSET status = 'active',\n    approved_by = ?,\n    approved_at = ?\nWHERE id = ?
+activate DB
+DB --> ORM: Контракт одобрен
+deactivate DB
+
+ORM -> DB: INSERT INTO billing_contractapprovalhistory\n(action='approved', user=system_admin)
+activate DB
+DB --> ORM: История создана
+deactivate DB
+
+ORM --> AdminUI: Контракт одобрен
+deactivate ORM
+
+note right of AdminUI
+    Отправка уведомления\nбиллинг-менеджеру об одобрении контракта
+end note
+
+AdminUI --> SystemAdmin: Сообщение об успехе
+deactivate AdminUI
+
+== Результат одобрения ==
+note over SystemAdmin
+    После одобрения контракта:
+    - status = 'active'
+    - approved_by = системный админ
+    - approved_at = текущая дата/время
+    
+    ✅ Админ провайдера получает полные возможности:
+    - Создавать и редактировать работников (Employee)
+    - Создавать и редактировать расписания (LocationSchedule)
+    
+    ✅ Услуги провайдера отображаются на фронтенде
+end note
+
+@enduml
+

@@ -24,3 +24,8 @@ class BillingConfig(AppConfig):
     default_auto_field = 'django.db.models.BigAutoField'
     name = 'billing'
     verbose_name = _('Billing')
+    
+    def ready(self):
+        """Подключаем сигналы при инициализации приложения."""
+        from . import signals  # noqa
+        from . import translation  # noqa - загружаем настройки переводов для modeltranslation

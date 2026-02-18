@@ -28,7 +28,7 @@ from .models import (
     Workplace, WorkplaceAllowedServices, ServicePriority,
     Vacation, SickLeave, DayOff, EmployeeSchedule, StaffingRequirement
 )
-from providers.models import Provider, Employee, Schedule
+from providers.models import Provider, Employee, Schedule, EmployeeLocationService
 from catalog.models import Service
 
 
@@ -153,7 +153,7 @@ class AvailabilityChecker:
     @staticmethod
     def get_employee_services(employee: Employee) -> List[Service]:
         """
-        Возвращает список услуг, которые может оказывать сотрудник.
+        Возвращает список услуг, которые может оказывать сотрудник (во всех локациях).
         
         Args:
             employee: Сотрудник
@@ -161,7 +161,10 @@ class AvailabilityChecker:
         Returns:
             List[Service]: Список услуг
         """
-        return list(employee.services.all())
+        service_ids = EmployeeLocationService.objects.filter(
+            employee=employee
+        ).values_list('service_id', flat=True).distinct()
+        return list(Service.objects.filter(id__in=service_ids))
     
     @staticmethod
     def get_employee_preferences(employee: Employee, day_of_week: int) -> Optional[EmployeeSchedule]:
@@ -446,10 +449,10 @@ class SchedulePlannerService:
         slots = []
         assigned_count = 0
         
-        # Фильтруем сотрудников, которые могут оказывать эту услугу
+        # Фильтруем сотрудников, которые могут оказывать эту услугу (по EmployeeLocationService)
         qualified_employees = [
             emp for emp in available_employees
-            if service in emp.services.all()
+            if emp.location_services.filter(service=service).exists()
         ]
         
         # Сортируем по предпочтениям

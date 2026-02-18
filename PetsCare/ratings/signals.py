@@ -21,6 +21,11 @@ def create_provider_rating(sender, instance, created, **kwargs):
     """
     Создает рейтинг для нового учреждения.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     if created:
         content_type = ContentType.objects.get_for_model(Provider)
         Rating.objects.get_or_create(
@@ -34,6 +39,11 @@ def create_employee_rating(sender, instance, created, **kwargs):
     """
     Создает рейтинг для нового сотрудника.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     if created:
         content_type = ContentType.objects.get_for_model(Employee)
         Rating.objects.get_or_create(
@@ -47,6 +57,11 @@ def create_sitter_rating(sender, instance, created, **kwargs):
     """
     Создает рейтинг для нового пэт-ситтера.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     if created:
         content_type = ContentType.objects.get_for_model(SitterProfile)
         Rating.objects.get_or_create(
@@ -60,6 +75,11 @@ def update_rating_on_review_change(sender, instance, created, **kwargs):
     """
     Обновляет рейтинг при изменении отзыва.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     if instance.is_approved and not instance.is_suspicious:
         rating_service = RatingCalculationService()
         rating_service.calculate_rating(instance.content_object)
@@ -70,6 +90,11 @@ def update_rating_on_complaint_change(sender, instance, created, **kwargs):
     """
     Обновляет рейтинг при изменении жалобы.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     rating_service = RatingCalculationService()
     rating_service.calculate_rating(instance.content_object)
 
@@ -79,6 +104,11 @@ def detect_suspicious_activity_on_review(sender, instance, created, **kwargs):
     """
     Обнаруживает подозрительную активность при создании отзыва.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     if created:
         detection_service = SuspiciousActivityDetectionService()
         detection_service.detect_suspicious_activity(instance.author)
@@ -89,6 +119,11 @@ def detect_suspicious_activity_on_complaint(sender, instance, created, **kwargs)
     """
     Обнаруживает подозрительную активность при создании жалобы.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     if created:
         detection_service = SuspiciousActivityDetectionService()
         detection_service.detect_suspicious_activity(instance.author) 

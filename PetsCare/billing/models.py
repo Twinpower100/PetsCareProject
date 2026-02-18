@@ -1462,15 +1462,15 @@ class BlockingTemplate(models.Model):
         help_text=_('City (optional)')
     )
     
-    # Интеграция с системой геолокации
+    # Привязка к точке предоставления услуг (для географического таргетирования)
     location = models.ForeignKey(
-        'geolocation.Location',
+        'providers.ProviderLocation',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         verbose_name=_('Location'),
         related_name='blocking_templates',
-        help_text=_('Associated location for precise geographic targeting')
+        help_text=_('Provider location for precise geographic targeting')
     )
     radius_km = models.PositiveIntegerField(
         _('Radius (km)'),
@@ -1568,10 +1568,13 @@ class BlockingTemplate(models.Model):
         """Сохраняет модель с автоматическим обновлением геоданных."""
         self.clean()
         
-        # Если указана локация, обновляем географические поля
-        if self.location:
-            self.country = self.location.country or self.country
-            self.city = self.location.city or self.city
+        # Если указана локация провайдера, берём страну/город из её структурированного адреса
+        if self.location and getattr(self.location, 'structured_address', None):
+            addr = self.location.structured_address
+            if addr.country:
+                self.country = addr.country
+            if addr.city:
+                self.city = addr.city
         
         super().save(*args, **kwargs)
 
@@ -1594,13 +1597,13 @@ class BlockingTemplate(models.Model):
         if provider_point:
             from django.contrib.gis.db.models.functions import Distance
             
-            # Ищем шаблоны с привязкой к локации
+            # Ищем шаблоны с привязкой к локации провайдера (координаты в structured_address)
             location_templates = cls.objects.filter(
                 is_active=True,
                 location__isnull=False,
-                location__point__isnull=False
+                location__structured_address__point__isnull=False
             ).annotate(
-                distance=Distance('location__point', provider_point)
+                distance=Distance('location__structured_address__point', provider_point)
             ).filter(
                 distance__lte=models.F('radius_km') * 1000  # Convert km to meters
             ).order_by('distance')

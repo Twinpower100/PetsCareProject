@@ -9,7 +9,10 @@ from .api_views import (
     PetDeleteAPIView, PetInviteAPIView, PetAcceptInviteAPIView, PetInviteQRCodeAPIView,
     PetRecordFileUploadAPIView, PetDocumentDownloadAPIView, PetDocumentPreviewAPIView,
     PetSearchAPIView, PetTypeSearchAPIView, BreedSearchAPIView,
-    PetRecommendationsAPIView, PetStatisticsAPIView
+    PetRecommendationsAPIView, PetStatisticsAPIView,
+    ServicesForPetRecordAPIView,
+    PetPhotoConstraintsAPIView,
+    SizeRulesByPetTypeAPIView,
 )
 
 router = DefaultRouter()
@@ -50,7 +53,10 @@ urlpatterns = [
     # Pet search endpoints
     path('search/', PetSearchAPIView.as_view(), name='pet-search'),
     path('pet-types/search/', PetTypeSearchAPIView.as_view(), name='pet-type-search'),
+    path('size-rules-by-pet-type/', SizeRulesByPetTypeAPIView.as_view(), name='size-rules-by-pet-type'),
     path('breeds/search/', BreedSearchAPIView.as_view(), name='breed-search'),
+    path('services-for-record/', ServicesForPetRecordAPIView.as_view(), name='services-for-record'),
+    path('pet-photo-constraints/', PetPhotoConstraintsAPIView.as_view(), name='pet-photo-constraints'),
     path('recommendations/', PetRecommendationsAPIView.as_view(), name='pet-recommendations'),
     path('statistics/', PetStatisticsAPIView.as_view(), name='pet-statistics'),
 ]

@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'sitters',
     'services',
     'scheduling',
+    'production_calendar',  # Глобальный производственный календарь (Level 1)
     'security',  # исправлено - ленивая инициализация
     'user_analytics',
     'custom_admin',
@@ -73,6 +74,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.locale.LocaleMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
@@ -94,6 +96,16 @@ DATABASES = {
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST'),
         'PORT': config('DB_PORT'),
+    }
+}
+
+# Настройки кэша (для VIES API и других сервисов)
+# Для разработки используем локальный кэш в памяти
+# Для продакшена рекомендуется использовать Redis (см. VIES_API_SETUP.md)
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
     }
 }
 
@@ -165,7 +177,7 @@ REST_FRAMEWORK = {
 from datetime import timedelta
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=30),
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),  # 30 min было мало при возврате на вкладку через полчаса
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'ROTATE_REFRESH_TOKENS': True,
     'BLACKLIST_AFTER_ROTATION': True,
@@ -179,10 +191,12 @@ SIMPLE_JWT = {
     'TOKEN_TYPE_CLAIM': 'token_type',
 }
 
-# CORS настройки
+# CORS настройки (основной фронт + Provider Admin App)
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
 ]
 
 # CSRF настройки
@@ -297,6 +311,9 @@ EMAIL_TIMEOUT = 30  # Таймаут в секундах
 # Frontend URL for password reset links
 FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')
 
+# Provider Admin App (отдельное SPA для админов/персонала провайдеров; в проде — свой домен)
+PROVIDER_ADMIN_URL = config('PROVIDER_ADMIN_URL', default='http://localhost:5173')
+
 # Celery настройки
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
@@ -364,10 +381,11 @@ LOGGING = {
             'propagate': False,
         },
         # Логи приложений - оставляем INFO для отладки
+        # propagate=False, иначе каждое сообщение уходит и в root → дубли в консоли/файле
         'users': {
             'handlers': ['file', 'console'],
             'level': 'INFO',
-            'propagate': True,
+            'propagate': False,
         },
         'billing': {
             'handlers': ['file', 'console'],

@@ -1,0 +1,82 @@
+{% extends "admin/change_form.html" %}
+{% load i18n static %}
+
+{% block field_sets %}
+    {{ block.super }}
+    
+    {% if check_vat_id_url and vat_number %}
+    <style>
+        .vat-verify-row.submit-row { align-items: center; flex-wrap: wrap; gap: 10px; }
+        .vat-verify-row.submit-row .vat-verify-label { margin: 0; padding-right: 10px; }
+        .vat-verify-row.submit-row a.button {
+            padding: 10px 15px;
+            height: 2.1875rem;
+            line-height: 0.9375rem;
+            box-sizing: border-box;
+            display: inline-flex;
+            align-items: center;
+            text-decoration: none;
+        }
+    </style>
+    <div class="submit-row vat-verify-row" style="margin-top: 20px;">
+        <p class="vat-verify-label">
+            <strong>{% trans "VAT ID Verification" %}</strong>
+            <span style="font-size: 12px; color: var(--body-quiet-color);"> — {% trans "Click 'Check VAT ID now' to verify the VAT ID via VIES API, or use 'Open VIES website' to verify manually." %}</span>
+        </p>
+        <a href="{{ check_vat_id_url }}" class="button default" id="check-vat-id-btn">
+            {% trans "Check VAT ID now" %}
+        </a>
+        {% if vies_url %}
+        <a href="{{ vies_url }}" target="_blank" class="button">
+            {% trans "Open VIES website" %}
+        </a>
+        {% endif %}
+    </div>
+    
+    <script>
+    (function($) {
+        $(document).ready(function() {
+            // Обработка AJAX запроса для проверки VAT ID
+            $('#check-vat-id-btn').on('click', function(e) {
+                e.preventDefault();
+                var $btn = $(this);
+                var originalText = $btn.text();
+                
+                // Блокируем кнопку и показываем загрузку
+                $btn.prop('disabled', true).text('{% trans "Checking..." %}');
+                
+                $.ajax({
+                    url: $btn.attr('href'),
+                    type: 'POST',
+                    headers: {
+                        'X-CSRFToken': $('[name=csrfmiddlewaretoken]').val(),
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    success: function(data) {
+                        if (data.success) {
+                            alert('{% trans "VAT ID verification completed successfully!" %}\n\n' +
+                                  '{% trans "Status:" %} ' + data.status + '\n' +
+                                  (data.company_name ? '{% trans "Company:" %} ' + data.company_name + '\n' : '') +
+                                  (data.message ? data.message : ''));
+                            // Перезагружаем страницу для обновления статуса
+                            location.reload();
+                        } else {
+                            alert('{% trans "Error:" %} ' + (data.error || data.message || '{% trans "Unknown error" %}'));
+                            $btn.prop('disabled', false).text(originalText);
+                        }
+                    },
+                    error: function(xhr) {
+                        var errorMsg = '{% trans "Error occurred during verification" %}';
+                        if (xhr.responseJSON && xhr.responseJSON.error) {
+                            errorMsg = xhr.responseJSON.error;
+                        }
+                        alert(errorMsg);
+                        $btn.prop('disabled', false).text(originalText);
+                    }
+                });
+            });
+        });
+    })(django.jQuery);
+    </script>
+    {% endif %}
+{% endblock %}

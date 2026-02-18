@@ -16,6 +16,8 @@ class Migration(migrations.Migration):
     dependencies = [
         ('auth', '0012_alter_user_first_name_max_length'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
+        # НЕ добавляем зависимость от providers.0001_initial, чтобы избежать циклической зависимости
+        # ForeignKey на Provider будет добавлен в отдельной миграции
     ]
 
     operations = [
@@ -121,13 +123,13 @@ class Migration(migrations.Migration):
                 ('declined_at', models.DateTimeField(blank=True, help_text='When the invite was declined', null=True, verbose_name='Declined At')),
                 ('accepted_by', models.ForeignKey(blank=True, help_text='User who accepted this invite', null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='accepted_role_invites', to=settings.AUTH_USER_MODEL, verbose_name='Accepted By')),
                 ('created_by', models.ForeignKey(help_text='User who created this invite', on_delete=django.db.models.deletion.CASCADE, related_name='sent_role_invites', to=settings.AUTH_USER_MODEL, verbose_name='Created By')),
-                ('provider', models.ForeignKey(help_text='Provider for employee role or project for billing manager', on_delete=django.db.models.deletion.CASCADE, to='providers.provider', verbose_name='Provider')),
+                # ForeignKey на Provider будет добавлен в отдельной миграции после создания модели Provider
             ],
             options={
                 'verbose_name': 'Role Invite',
                 'verbose_name_plural': 'Role Invites',
                 'ordering': ['-created_at'],
-                'indexes': [models.Index(fields=['email'], name='users_rolei_email_5d34a1_idx'), models.Index(fields=['token'], name='users_rolei_token_f9cfc3_idx'), models.Index(fields=['status'], name='users_rolei_status_64d92b_idx'), models.Index(fields=['expires_at'], name='users_rolei_expires_e49fdd_idx'), models.Index(fields=['role', 'provider'], name='users_rolei_role_b6af1b_idx')],
+                'indexes': [models.Index(fields=['email'], name='users_rolei_email_5d34a1_idx'), models.Index(fields=['token'], name='users_rolei_token_f9cfc3_idx'), models.Index(fields=['status'], name='users_rolei_status_64d92b_idx'), models.Index(fields=['expires_at'], name='users_rolei_expires_e49fdd_idx')],
             },
         ),
         migrations.CreateModel(
@@ -137,14 +139,13 @@ class Migration(migrations.Migration):
                 ('is_active', models.BooleanField(default=True, verbose_name='Is Active')),
                 ('created_at', models.DateTimeField(auto_now_add=True, verbose_name='Created At')),
                 ('updated_at', models.DateTimeField(auto_now=True, verbose_name='Updated At')),
-                ('provider', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='admins', to='providers.provider', verbose_name='Provider')),
                 ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='admin_providers', to='users.user', verbose_name='User')),
+                # ForeignKey на Provider будет добавлен в отдельной миграции после создания модели Provider
             ],
             options={
                 'verbose_name': 'Provider Admin',
                 'verbose_name_plural': 'Provider Admins',
                 'ordering': ['-created_at'],
-                'unique_together': {('user', 'provider')},
             },
         ),
     ]

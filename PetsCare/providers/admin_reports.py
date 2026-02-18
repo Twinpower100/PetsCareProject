@@ -70,7 +70,7 @@ class ProviderReportsAdminView(admin.ModelAdmin):
                     ", ".join([p.name for p in slot.employee.providers.all()]),
                 ])
             response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-            response['Content-Disposition'] = 'attachment; filename=ProviderScheduleExport.xlsx'
+            response['Content-Disposition'] = 'attachment; filename=LocationScheduleExport.xlsx'
             wb.save(response)
             return response
         context = dict(

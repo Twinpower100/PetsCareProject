@@ -14,6 +14,7 @@ import logging
 from datetime import timedelta, time, date, datetime
 
 from .models import Booking, TimeSlot, BookingStatus, BookingAutoCompleteSettings
+from .utils import get_effective_price_for_pet
 from pets.models import Pet
 from providers.models import Employee, Provider, Schedule, LocationSchedule, ProviderLocationService, ProviderLocation
 from catalog.models import Service
@@ -94,11 +95,12 @@ class BookingTransactionService:
         start_time: timezone.datetime,
         end_time: timezone.datetime,
         price: float,
-        notes: str = ""
+        notes: str = "",
+        provider_location: Optional[ProviderLocation] = None
     ) -> Booking:
         """
         Создает бронирование с защитой от конкурентного доступа.
-        
+
         Args:
             user: Пользователь, создающий бронирование
             pet: Питомец для бронирования
@@ -110,10 +112,10 @@ class BookingTransactionService:
             price: Стоимость
             notes: Заметки
             provider_location: Локация провайдера (опционально)
-            
+
         Returns:
             Booking: Созданное бронирование
-            
+
         Raises:
             ValidationError: Если слот уже занят
         """
@@ -123,12 +125,12 @@ class BookingTransactionService:
             'end_time': end_time,
             'provider': provider,
             'employee': employee,
-            'is_cancellation': False
+            'is_cancellation': False,
+            'provider_location': provider_location,
         }
         BookingTransactionService._validate_business_rules(booking_data)
-        
+
         # Проверяем доступность на лету
-        # Получаем provider_location из booking_data, если есть
         provider_location = booking_data.get('provider_location')
         if not BookingAvailabilityService.check_slot_availability(
             employee, provider, start_time, end_time, provider_location
@@ -481,7 +483,8 @@ class BookingCompletionService:
     def _send_cancellation_notifications(booking, user):
         """Отправить уведомления об отмене бронирования"""
         from notifications.models import Notification
-        
+        from users.models import ProviderAdmin
+
         # Определяем тип отмены
         if user.has_role('pet_owner') and user == booking.user:
             # Отменил клиент - уведомляем специалиста и админа учреждения
@@ -498,7 +501,8 @@ class BookingCompletionService:
                     'cancellation_reason': booking.cancellation_reason
                 }
             )
-            
+
+            provider = getattr(booking, 'provider', None) or (booking.provider_location.provider if booking.provider_location else None)
             # Уведомляем админа учреждения
             if provider:
                 provider_admins = ProviderAdmin.objects.filter(
@@ -542,7 +546,9 @@ class BookingCompletionService:
     def _send_auto_completion_notification(booking):
         """Отправить уведомление о автоматическом завершении"""
         from notifications.models import Notification
-        
+        from users.models import ProviderAdmin
+
+        provider = getattr(booking, 'provider', None) or (booking.provider_location.provider if booking.provider_location else None)
         # Уведомляем админа учреждения о автоматическом завершении
         if provider:
             provider_admins = ProviderAdmin.objects.filter(
@@ -986,33 +992,35 @@ class EmployeeAutoBookingService:
         start_time: timezone.datetime,
         end_time: timezone.datetime,
         price: float,
-        notes: str = ""
+        notes: str = "",
+        provider_location: Optional[ProviderLocation] = None
     ) -> Optional[Booking]:
         """
         Автоматически выбирает и бронирует работника для услуги.
-        
-        Args:
-            user: Пользователь, создающий бронирование
-            pet: Питомец
-            provider: Учреждение
-            service: Услуга
-            start_time: Время начала
-            end_time: Время окончания
-            price: Стоимость
-            notes: Примечания
-            
-        Returns:
-            Booking: Созданное бронирование или None если работник не найден
+
+        Цена при наличии provider_location берётся из get_effective_price_for_pet
+        (LocationServicePrice/ServiceVariant по размеру питомца), иначе используется переданная price.
         """
-        # Находим подходящего работника
+        # При необходимости определяем локацию и пересчитываем цену по размеру питомца
+        if not provider_location:
+            provider_location = ProviderLocation.objects.filter(
+                provider=provider,
+                is_active=True,
+                location_services__service=service,
+                location_services__is_active=True,
+            ).distinct().first()
+        effective_price = price
+        if provider_location:
+            computed_price, _ = get_effective_price_for_pet(provider_location, service, pet)
+            if computed_price is not None:
+                effective_price = float(computed_price)
+
         employee = EmployeeAutoBookingService._find_available_employee(
             provider, service, start_time, end_time
         )
-        
         if not employee:
             return None
-        
-        # Создаем бронирование с найденным работником
+
         return BookingTransactionService.create_booking(
             user=user,
             pet=pet,
@@ -1021,8 +1029,9 @@ class EmployeeAutoBookingService:
             service=service,
             start_time=start_time,
             end_time=end_time,
-            price=price,
-            notes=notes
+            price=effective_price,
+            notes=notes,
+            provider_location=provider_location,
         )
     
     @staticmethod
@@ -1102,8 +1111,8 @@ class EmployeeAutoBookingService:
         Returns:
             List[Employee]: Список работников
         """
-        from providers.models import EmployeeProvider, ProviderLocationService
-        
+        from providers.models import EmployeeProvider, ProviderLocationService, EmployeeLocationService
+
         # Проверяем, что провайдер может оказывать эту услугу (через available_category_levels)
         # Услуга должна быть в категориях уровня 0 провайдера или их потомках
         if not provider.available_category_levels.filter(
@@ -1119,28 +1128,28 @@ class EmployeeAutoBookingService:
                 is_active=True
             ).exists():
                 return []
-        
-        # Получаем активных работников учреждения
+
+        # Сотрудники, оказывающие эту услугу в какой-либо локации провайдера
+        employee_ids = set(
+            EmployeeLocationService.objects.filter(
+                provider_location__provider=provider,
+                provider_location__is_active=True,
+                service=service,
+            ).values_list('employee_id', flat=True).distinct()
+        )
+        if not employee_ids:
+            return []
+
+        # Ограничиваем активными работниками учреждения
         employee_providers = EmployeeProvider.objects.filter(
             provider=provider,
             is_active=True,
             start_date__lte=timezone.now().date(),
-            end_date__isnull=True
+            end_date__isnull=True,
+            employee_id__in=employee_ids,
         ).select_related('employee')
-        
-        employees = []
-        
-        for ep in employee_providers:
-            employee = ep.employee
-            
-            # Проверяем, назначен ли работник на эту услугу
-            if hasattr(employee, 'services') and service in employee.services.all():
-                employees.append(employee)
-            elif not hasattr(employee, 'services'):
-                # Если у работника нет ограничений по услугам, считаем что может оказывать любую
-                employees.append(employee)
-        
-        return employees
+
+        return [ep.employee for ep in employee_providers]
     
     @staticmethod
     def _calculate_employee_workload(employee: Employee, date: date) -> int:

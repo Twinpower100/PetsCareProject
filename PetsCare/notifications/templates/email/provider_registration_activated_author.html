@@ -1,0 +1,35 @@
+{% extends "email/base.html" %}
+{% load i18n %}
+
+{% block content %}
+<div class="notification-title">{% trans "Your provider registration has been confirmed" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ display_name }}!</p>
+
+    <p>{% trans "Your provider registration application for" %} <strong>{{ provider_name }}</strong> {% trans "has been approved; the provider account has been activated." %}</p>
+
+    <p>{% trans "Only the provider administrator has access to the provider admin panel." %} {% trans "A separate email with login details and setup instructions has been sent to" %} <strong>{{ provider_admin_email }}</strong>. {% trans "This email is for your information." %}</p>
+
+    {% if billing_manager_contacts %}
+    <div class="info-box">
+        <h3>{% trans "Need Help?" %}:</h3>
+        <p>{% trans "If you have any questions, please contact your billing manager:" %}</p>
+        {% for contact in billing_manager_contacts %}
+        <p style="margin-top: 10px;">
+            <strong>{{ contact.name }}</strong><br>
+            <a href="mailto:{{ contact.email }}" style="color: #667eea;">{{ contact.email }}</a>
+        </p>
+        {% endfor %}
+        <p style="margin-top: 15px; font-size: 14px; color: #666;">
+            {% trans "Your billing manager will help you with any questions or connect you with a specialist if needed." %}
+        </p>
+    </div>
+    {% else %}
+    <div class="info-box">
+        <h3>{% trans "Need Help?" %}:</h3>
+        <p>{% trans "If you have any questions, please contact our support team." %}</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

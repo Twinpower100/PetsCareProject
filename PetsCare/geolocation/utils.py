@@ -472,12 +472,6 @@ def create_geospatial_index_hint() -> str:
     -- GiST индекс для PointField в модели Address
     CREATE INDEX idx_address_point_gist ON geolocation_address USING GIST (point);
     
-    -- GiST индекс для PointField в модели Location
-    CREATE INDEX idx_location_point_gist ON geolocation_location USING GIST (point);
-    
-    -- GiST индекс для PointField в модели LocationHistory
-    CREATE INDEX idx_location_history_point_gist ON geolocation_locationhistory USING GIST (point);
-    
     -- GiST индекс для PointField в модели UserLocation
     CREATE INDEX idx_user_location_point_gist ON geolocation_userlocation USING GIST (point);
     
@@ -499,18 +493,12 @@ def create_geospatial_index_hint() -> str:
     CREATE INDEX idx_user_location_point_source ON geolocation_userlocation USING GIST (point) 
     WHERE source = 'device';
     
-    -- Для оптимизации запросов по времени (LocationHistory)
-    CREATE INDEX idx_location_history_point_time ON geolocation_locationhistory 
-    USING GIST (point, created_at);
-    
     -- Для оптимизации запросов по пользователю и времени (UserLocation)
     CREATE INDEX idx_user_location_point_user ON geolocation_userlocation 
     USING GIST (point, user_id);
     
     -- Анализ статистики для оптимизации запросов
     ANALYZE geolocation_address;
-    ANALYZE geolocation_location;
-    ANALYZE geolocation_locationhistory;
     ANALYZE geolocation_userlocation;
     ANALYZE providers_provider;
     ANALYZE providers_providerlocation;

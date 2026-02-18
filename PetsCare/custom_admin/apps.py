@@ -13,5 +13,10 @@ class CustomAdminConfig(AppConfig):
         """
         Регистрирует стандартные модели админки после загрузки всех приложений.
         """
+        # Проверяем, что Django полностью инициализирован
+        from django.conf import settings
+        if not settings.configured:
+            return
+            
         from .admin import register_admin_models
         register_admin_models() 

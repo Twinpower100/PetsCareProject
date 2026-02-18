@@ -23,7 +23,9 @@ from .serializers import (
     PetTypeSerializer,
     BreedSerializer
 )
-from providers.models import EmployeeProvider
+from providers.models import EmployeeProvider, Employee, ProviderLocation
+from catalog.models import Service
+from catalog.serializers import ServiceSerializer as CatalogServiceSerializer
 from django.core.mail import send_mail
 from django.conf import settings
 import uuid
@@ -36,7 +38,8 @@ from .models import PetOwnerIncapacity, PetIncapacityNotification
 from django.db import models
 import logging
 from .filters import PetFilter, PetTypeFilter, BreedFilter
-from .models import PetType, Breed
+from .models import PetType, Breed, SizeRule
+from .constants import get_pet_photo_constraints_for_api
 from rest_framework.filters import OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.pagination import PageNumberPagination
@@ -249,10 +252,14 @@ class PetRecordViewSet(viewsets.ModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """Возвращает записи питомцев текущего пользователя"""
+        """Владельцы видят записи своих питомцев; сотрудник — записи, где он исполнитель (по полю employee)."""
         if getattr(self, 'swagger_fake_view', False):
             return PetRecord.objects.none()
-        return self.queryset.filter(pet__owners=self.request.user)
+        user = self.request.user
+        from django.db.models import Q
+        return self.queryset.filter(
+            Q(pet__owners=user) | Q(employee__user=user)
+        ).distinct()
 
     def perform_create(self, serializer):
         """Создает запись в карте питомца"""
@@ -446,7 +453,11 @@ class PetRecordListCreateAPIView(generics.ListCreateAPIView):
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
             return PetRecord.objects.none()
-        return PetRecord.objects.filter(pet__owners=self.request.user)
+        from django.db.models import Q
+        user = self.request.user
+        return PetRecord.objects.filter(
+            Q(pet__owners=user) | Q(employee__user=user)
+        ).distinct()
 
 
 class PetRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -456,7 +467,11 @@ class PetRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIVie
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
             return PetRecord.objects.none()
-        return PetRecord.objects.filter(pet__owners=self.request.user)
+        from django.db.models import Q
+        user = self.request.user
+        return PetRecord.objects.filter(
+            Q(pet__owners=user) | Q(employee__user=user)
+        ).distinct()
 
 
 class PetAccessListCreateAPIView(generics.ListCreateAPIView):
@@ -1345,6 +1360,96 @@ class BreedSearchAPIView(generics.ListAPIView):
         if getattr(self, 'swagger_fake_view', False):
             return Breed.objects.none()
         return Breed.objects.select_related('pet_type').all()
+
+
+class SizeRulesByPetTypeAPIView(APIView):
+    """
+    Список допустимых размеров (size_code) по типу животного из таблицы SizeRule.
+    GET /api/v1/size-rules-by-pet-type/
+    Ответ: { "<pet_type_id>": ["S", "M", "L", "XL"], ... } — только те размеры, что заданы в SizeRule для каждого типа.
+    Используется на вкладке «Услуги и цены» филиала: выбор размера доступен только после выбора типа животного
+    и ограничен размерами этого типа (например, для кошек только S и L).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from .models import SIZE_CATEGORY_ORDER
+        qs = SizeRule.objects.values_list('pet_type_id', 'size_code').order_by('pet_type_id', 'min_weight_kg')
+        by_pet_type = {}
+        for pet_type_id, size_code in qs:
+            if pet_type_id not in by_pet_type:
+                by_pet_type[pet_type_id] = []
+            if size_code not in by_pet_type[pet_type_id]:
+                by_pet_type[pet_type_id].append(size_code)
+        from .models import SIZE_CATEGORY_ORDER
+        for key in by_pet_type:
+            by_pet_type[key] = sorted(
+                by_pet_type[key],
+                key=lambda c: SIZE_CATEGORY_ORDER.get(c, 99),
+            )
+        return Response({str(k): v for k, v in by_pet_type.items()})
+
+
+class ServicesForPetRecordAPIView(APIView):
+    """
+    Список услуг для формы записи в медкарту.
+    - Владелец: ?pet_id=X — глобальный каталог, отфильтрованный по типу питомца.
+    - Работник провайдера: ?pet_id=X&provider_location_id=Y — услуги локации (где работает сотрудник),
+      отфильтрованные по типу питомца.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        pet_id = request.query_params.get('pet_id')
+        if not pet_id:
+            return Response(
+                {'error': _('pet_id is required')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        pet = get_object_or_404(Pet, pk=pet_id)
+        if request.user not in pet.owners.all():
+            return Response(
+                {'error': _('You do not have access to this pet')},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        pet_type = pet.pet_type if hasattr(pet.pet_type, 'id') else Pet.objects.get(pk=pet_id).pet_type
+        provider_location_id = request.query_params.get('provider_location_id')
+
+        if provider_location_id:
+            location = get_object_or_404(ProviderLocation, pk=provider_location_id)
+            employee = getattr(request.user, 'employee_profile', None)
+            if not employee or not location.employees.filter(pk=employee.pk).exists():
+                return Response(
+                    {'error': _('You are not an employee of this location')},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            queryset = location.available_services.filter(
+                Q(allowed_pet_types__isnull=True) | Q(allowed_pet_types=pet_type)
+            ).filter(children__isnull=False).distinct().order_by('hierarchy_order', 'name')
+        else:
+            queryset = Service.objects.filter(
+                Q(allowed_pet_types__isnull=True) | Q(allowed_pet_types=pet_type)
+            ).filter(children__isnull=False).distinct().order_by('hierarchy_order', 'name')
+
+        serializer = CatalogServiceSerializer(queryset, many=True)
+        return Response(serializer.data)
+
+
+class PetPhotoConstraintsAPIView(APIView):
+    """
+    Лимиты и подсказки для загрузки фото питомца (для фронта).
+    Возвращает max размер, разрешение, допустимые форматы и мультиязычную подсказку (hints: { en, ru, de, me }).
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        hints = {}
+        for lang_code, _lang_name in getattr(settings, 'LANGUAGES', [('en', 'English'), ('ru', 'Russian'), ('me', 'Montenegrin'), ('de', 'German')]):
+            data = get_pet_photo_constraints_for_api(language_code=lang_code)
+            hints[lang_code] = data['hint']
+        data = get_pet_photo_constraints_for_api()
+        data['hints'] = hints
+        return Response(data)
 
 
 class PetRecommendationsAPIView(generics.ListAPIView):

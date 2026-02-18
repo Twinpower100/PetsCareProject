@@ -149,6 +149,14 @@ class Service(models.Model):
         default=False,
         help_text=_('Whether this service requires special licensing or certification')
     )
+
+    # Признак «оказывается клиенту». False для технических услуг (клинер, санитар и т.п.) —
+    # они не бронируются клиентами, используются только для расписания персонала.
+    is_client_facing = models.BooleanField(
+        _('Is client facing'),
+        default=True,
+        help_text=_('If False, this is a technical/internal service (e.g. cleaning) not bookable by clients.')
+    )
     
     # Связь с типами животных
     allowed_pet_types = models.ManyToManyField(

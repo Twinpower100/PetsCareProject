@@ -11,11 +11,13 @@ Serializers для API поставщиков.
 
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
-from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, EmployeeWorkSlot, EmployeeJoinRequest, ProviderLocation, ProviderLocationService
+from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, HolidayShift, EmployeeWorkSlot, EmployeeJoinRequest, ProviderLocation, ProviderLocationService
+from .contact_validators import validate_phone_contact, validate_email_contact
 from catalog.serializers import ServiceSerializer
 from catalog.models import Service
+from pets.models import PetType
 from users.serializers import UserSerializer
-from users.models import EmployeeSpecialization, User
+from users.models import EmployeeSpecialization, User, ProviderAdmin as UserProviderAdmin
 from django.db.models import Q
 from geopy.distance import geodesic
 from django.utils import timezone
@@ -60,8 +62,9 @@ class ProviderSerializer(serializers.ModelSerializer):
         # Для Swagger возвращаем пустой список
         if getattr(self, 'swagger_fake_view', False):
             return []
-        from .serializers import EmployeeSerializer
-        return EmployeeSerializer(obj.employees.all(), many=True).data
+        # EmployeeBriefSerializer без providers, чтобы не уходить в рекурсию Provider->employees->Employee->providers->Provider->employees
+        from .serializers import EmployeeBriefSerializer
+        return EmployeeBriefSerializer(obj.employees.all(), many=True).data
     
     def get_distance(self, obj):
         """
@@ -208,7 +211,6 @@ class ProviderSerializer(serializers.ModelSerializer):
                         available_employees.append({
                             'id': employee.id,
                             'name': f"{employee.user.first_name} {employee.user.last_name}",
-                            'position': employee.position
                         })
                 
                 if available_employees:
@@ -267,24 +269,62 @@ class EmployeeSpecializationSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'name', 'description', 'permissions']
 
 
-class EmployeeSerializer(serializers.ModelSerializer):
+class EmployeeBriefSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для сотрудника учреждения.
+    Краткий сериализатор сотрудника без вложенных providers.
+    Используется в ProviderSerializer.get_employees, чтобы избежать рекурсии
+    (EmployeeSerializer -> ProviderSerializer -> get_employees -> ...).
+    Услуги берутся из EmployeeLocationService (агрегат по всем локациям).
     """
     user = UserSerializer(read_only=True)
-    providers = ProviderSerializer(many=True, read_only=True)
-    services = ServiceSerializer(many=True, read_only=True)
+    services = serializers.SerializerMethodField()
     specializations = EmployeeSpecializationSerializer(many=True, read_only=True)
     is_manager = serializers.SerializerMethodField()
 
     class Meta:
         model = Employee
         fields = [
-            'id', 'user', 'providers', 'position', 'bio', 'photo',
+            'id', 'user',
             'services', 'specializations', 'is_active', 'is_manager',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+    def get_services(self, obj):
+        """Уникальные услуги сотрудника по всем локациям (EmployeeLocationService)."""
+        from catalog.models import Service
+        ids = obj.location_services.values_list('service_id', flat=True).distinct()
+        return ServiceSerializer(Service.objects.filter(id__in=ids), many=True).data
+
+    def get_is_manager(self, obj):
+        return obj.employeeprovider_set.filter(is_manager=True).exists()
+
+
+class EmployeeSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор для сотрудника учреждения.
+    Услуги берутся из EmployeeLocationService (агрегат по всем локациям).
+    """
+    user = UserSerializer(read_only=True)
+    providers = ProviderSerializer(many=True, read_only=True)
+    services = serializers.SerializerMethodField()
+    specializations = EmployeeSpecializationSerializer(many=True, read_only=True)
+    is_manager = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Employee
+        fields = [
+            'id', 'user', 'providers',
+            'services', 'specializations', 'is_active', 'is_manager',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+
+    def get_services(self, obj):
+        """Уникальные услуги сотрудника по всем локациям (EmployeeLocationService)."""
+        from catalog.models import Service
+        ids = obj.location_services.values_list('service_id', flat=True).distinct()
+        return ServiceSerializer(Service.objects.filter(id__in=ids), many=True).data
 
     def get_is_manager(self, obj):
         """
@@ -309,7 +349,7 @@ class EmployeeRegistrationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Employee
         fields = [
-            'user_id', 'position', 'bio', 'photo', 'specializations',
+            'user_id', 'specializations',
             'start_date', 'is_manager'
         ]
 
@@ -441,7 +481,10 @@ class ProviderSearchSerializer(serializers.Serializer):
             )
 
         if data.get('service_type'):
-            queryset = queryset.filter(services__category__name=data['service_type'])
+            # Поиск по услугам сотрудников в локациях (EmployeeLocationService)
+            queryset = queryset.filter(
+                employees__location_services__service__parent__name=data['service_type']
+            ).distinct()
 
         if all(key in data for key in ['latitude', 'longitude', 'radius']):
             from django.contrib.gis.geos import Point
@@ -617,7 +660,7 @@ class EmployeeProviderConfirmSerializer(serializers.ModelSerializer):
 
 class ProviderLocationSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для локации провайдера (точки предоставления услуг).
+    Сериализатор для локации провайдера (филиала).
     
     Основные характеристики:
     - Связь с организацией (Provider)
@@ -626,11 +669,57 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
     - Список доступных услуг
     """
     provider_name = serializers.CharField(source='provider.name', read_only=True)
+    # Код страны (ISO 3166-1 alpha-2) для API праздников и правил «закрыто в праздники»
+    country = serializers.SerializerMethodField()
     full_address = serializers.SerializerMethodField()
     latitude = serializers.SerializerMethodField()
     longitude = serializers.SerializerMethodField()
     available_services = serializers.SerializerMethodField()
-    
+    schedule_filled = serializers.SerializerMethodField()
+    employees_count = serializers.SerializerMethodField()
+    staff_schedule_filled = serializers.SerializerMethodField()
+    manager = serializers.SerializerMethodField()
+    manager_filled = serializers.SerializerMethodField()
+    manager_invite_pending_email = serializers.SerializerMethodField()
+    provider_currency_code = serializers.SerializerMethodField()
+    served_pet_types = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=PetType.objects.all().order_by('code'),
+        required=False,
+        allow_empty=True,
+        help_text=_('Pet types (e.g. dog, cat) that this location serves. Required before adding services and prices.'),
+    )
+    served_pet_types_details = serializers.SerializerMethodField()
+
+    def get_served_pet_types_details(self, obj):
+        """Список {id, code, name} по выбранным типам животных для отображения на фронте."""
+        if getattr(self, 'swagger_fake_view', False):
+            return []
+        if not hasattr(obj, 'served_pet_types'):
+            return []
+        return [
+            {'id': pt.id, 'code': pt.code, 'name': getattr(pt, 'name_en', None) or pt.name}
+            for pt in obj.served_pet_types.all().order_by('code')
+        ]
+
+    def get_country(self, obj):
+        """Страна локации: только из адреса локации (structured_address). Адрес обязателен — страны провайдера нет в поле."""
+        if obj.structured_address and getattr(obj.structured_address, 'country', None):
+            c = (obj.structured_address.country or '').strip().upper()
+            if len(c) == 2:
+                return c
+            # Частые названия стран из геокода (long_name) → ISO 3166-1 alpha-2
+            country_name_to_code = {
+                'RUSSIA': 'RU', 'RUSSIAN FEDERATION': 'RU',
+                'GERMANY': 'DE', 'DEUTSCHLAND': 'DE',
+                'UNITED STATES': 'US', 'UNITED STATES OF AMERICA': 'US', 'USA': 'US',
+                'FRANCE': 'FR', 'UNITED KINGDOM': 'GB', 'UK': 'GB', 'GREAT BRITAIN': 'GB',
+                'AUSTRIA': 'AT', 'SWITZERLAND': 'CH', 'BELARUS': 'BY', 'UKRAINE': 'UA',
+                'KAZAKHSTAN': 'KZ', 'SERBIA': 'RS', 'MONTENEGRO': 'ME',
+            }
+            return country_name_to_code.get(c)
+        return None
+
     def get_full_address(self, obj):
         """
         Возвращает полный адрес локации.
@@ -666,59 +755,160 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
             is_active=True
         )
         return ProviderLocationServiceSerializer(services, many=True).data
-    
+
+    def get_schedule_filled(self, obj):
+        """True если у локации есть хотя бы один рабочий день (LocationSchedule с is_closed=False и заданными open_time, close_time)."""
+        if getattr(self, 'swagger_fake_view', False):
+            return False
+        return LocationSchedule.objects.filter(
+            provider_location=obj,
+            is_closed=False
+        ).exclude(open_time__isnull=True).exclude(close_time__isnull=True).exists()
+
+    def get_employees_count(self, obj):
+        """Количество сотрудников, привязанных к этой локации (активные)."""
+        if getattr(self, 'swagger_fake_view', False):
+            return 0
+        return obj.employees.filter(is_active=True).count()
+
+    def get_staff_schedule_filled(self, obj):
+        """True если у локации нет активных сотрудников или у всех активных сотрудников есть хотя бы одна запись расписания (Schedule) для этой локации."""
+        if getattr(self, 'swagger_fake_view', False):
+            return True
+        active = obj.employees.filter(is_active=True)
+        if not active.exists():
+            return True
+        for emp in active:
+            if not Schedule.objects.filter(employee=emp, provider_location=obj).exists():
+                return False
+        return True
+
+    def get_manager(self, obj):
+        """Данные руководителя точки (имя, фамилия, email, телефон) для отображения во вкладке «Общая информация». Только для поддержки/эскалации."""
+        if getattr(self, 'swagger_fake_view', False):
+            return None
+        if not obj.manager_id:
+            return None
+        u = obj.manager
+        pn = getattr(u, 'phone_number', None)
+        phone_str = str(pn) if pn is not None else ''
+        return {
+            'first_name': u.first_name or '',
+            'last_name': u.last_name or '',
+            'email': u.email or '',
+            'phone_number': phone_str,
+        }
+
+    def get_manager_filled(self, obj):
+        """True если у локации назначен руководитель (для семафора на списке локаций)."""
+        return obj.manager_id is not None
+
+    def get_manager_invite_pending_email(self, obj):
+        """Email, на который отправлено приглашение, если инвайт ещё не истёк (для отображения «Приглашение отправлено на …»)."""
+        if getattr(self, 'swagger_fake_view', False):
+            return None
+        invite = getattr(obj, 'manager_invites', None)
+        if not invite:
+            return None
+        active = invite.filter(expires_at__gt=timezone.now()).order_by('-created_at').first()
+        return active.email if active else None
+
+    def get_provider_currency_code(self, obj):
+        """Код валюты провайдера (для отображения цен на вкладке «Услуги и цены»)."""
+        if getattr(self, 'swagger_fake_view', False):
+            return None
+        provider = getattr(obj, 'provider', None)
+        if not provider:
+            return None
+        inv = getattr(provider, 'invoice_currency', None)
+        return getattr(inv, 'code', None) if inv else None
+
     class Meta:
         model = ProviderLocation
         fields = [
             'id', 'provider', 'provider_name', 'name',
-            'structured_address', 'full_address',
+            'structured_address', 'full_address', 'country',
             'latitude', 'longitude',
             'phone_number', 'email',
+            'served_pet_types',
+            'served_pet_types_details',
             'available_services',
+            'schedule_filled',
+            'employees_count',
+            'staff_schedule_filled',
+            'manager',
+            'manager_filled',
+            'manager_invite_pending_email',
+            'provider_currency_code',
             'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['created_at', 'updated_at', 'provider_name', 'full_address', 'latitude', 'longitude', 'available_services']
+        read_only_fields = ['created_at', 'updated_at', 'provider_name', 'country', 'full_address', 'latitude', 'longitude', 'served_pet_types_details', 'available_services', 'schedule_filled', 'employees_count', 'staff_schedule_filled', 'manager', 'manager_filled', 'manager_invite_pending_email', 'provider_currency_code']
+
+    def validate_phone_number(self, value):
+        """Валидация формата телефона (10–15 цифр, E.164-подобный)."""
+        if not value:
+            return value
+        ok, err = validate_phone_contact(value)
+        if not ok:
+            raise serializers.ValidationError(err)
+        return value.strip()
+
+    def validate_email(self, value):
+        """Валидация формата email."""
+        if not value:
+            return value
+        ok, err = validate_email_contact(value)
+        if not ok:
+            raise serializers.ValidationError(err)
+        return value.strip().lower()
     
     def validate(self, data):
         """
         Валидация данных локации.
         
         Проверяет:
+        - Адрес обязателен при создании точки предоставления услуг
         - Услуги должны быть из категорий уровня 0 организации
+        - При создании можно подставлять phone/email из организации (предзаполнение)
         """
-        provider = data.get('provider')
+        if not self.instance:
+            if not data.get('structured_address'):
+                raise serializers.ValidationError({
+                    'structured_address': _('Address is required for the service location.')
+                })
+        provider = data.get('provider') or (self.instance.provider if self.instance else None)
         if provider:
-            # Проверяем, что услуги из доступных категорий организации
-            # (это будет проверяться при создании ProviderLocationService)
-            pass
+            # Предзаполнение: если phone_number или email не переданы, взять из организации
+            if not data.get('phone_number') and getattr(provider, 'phone_number', None):
+                data.setdefault('phone_number', provider.phone_number)
+            if not data.get('email') and getattr(provider, 'email', None):
+                data.setdefault('email', provider.email)
         return data
 
 
 class ProviderLocationServiceSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для услуги в локации провайдера.
-    
-    Основные характеристики:
-    - Связь с локацией и услугой
-    - Цена услуги в конкретной локации
-    - Длительность услуги
-    - Технический перерыв
+    Сериализатор для одной записи услуги в локации (локация + услуга + тип животного + размер).
+    При создании API может передать pet_type_id вместо pet_type.
     """
     location_name = serializers.CharField(source='location.name', read_only=True)
     service_name = serializers.CharField(source='service.name', read_only=True)
     service_details = ServiceSerializer(source='service', read_only=True)
-    
+    pet_type_code = serializers.CharField(source='pet_type.code', read_only=True)
+    pet_type_id = serializers.IntegerField(required=False, write_only=True, allow_null=True)
+
     class Meta:
         model = ProviderLocationService
         fields = [
             'id', 'location', 'location_name',
             'service', 'service_name', 'service_details',
+            'pet_type', 'pet_type_id', 'pet_type_code', 'size_code',
             'price', 'duration_minutes', 'tech_break_minutes',
             'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['created_at', 'updated_at', 'location_name', 'service_name', 'service_details']
+        read_only_fields = ['created_at', 'updated_at', 'location_name', 'service_name', 'service_details', 'pet_type_code']
     
     def validate(self, data):
         """
@@ -733,18 +923,29 @@ class ProviderLocationServiceSerializer(serializers.ModelSerializer):
         service = data.get('service')
         
         if location and service:
-            # Проверяем, что услуга из доступных категорий организации
+            # Та же логика, что в ProviderAvailableCatalogServicesAPIView: услуга должна быть
+            # в множестве «корни + все потомки» доступных категорий уровня 0.
             provider = location.provider
-            available_categories = provider.available_category_levels.filter(level=0, parent__isnull=True)
-            
-            # Проверяем, что услуга является потомком одной из доступных категорий
-            from django.db.models import Q
-            if not Service.objects.filter(
-                Q(id=service.id) & (
-                    Q(id__in=available_categories.values_list('id', flat=True)) |
-                    Q(parent_id__in=available_categories.values_list('id', flat=True))
+            root_ids = list(
+                provider.available_category_levels.filter(level=0, parent__isnull=True)
+                .values_list('id', flat=True)
+            )
+            if not root_ids:
+                raise serializers.ValidationError(
+                    _('Service must be from provider\'s available category levels (level 0).')
                 )
-            ).exists():
+            allowed_ids = set(root_ids)
+            frontier_ids = set(root_ids)
+            while frontier_ids:
+                child_ids = set(
+                    Service.objects.filter(parent_id__in=frontier_ids, is_active=True)
+                    .values_list('id', flat=True)
+                ) - allowed_ids
+                if not child_ids:
+                    break
+                allowed_ids.update(child_ids)
+                frontier_ids = child_ids
+            if service.id not in allowed_ids:
                 raise serializers.ValidationError(
                     _('Service must be from provider\'s available category levels (level 0).')
                 )
@@ -760,5 +961,121 @@ class ProviderLocationServiceSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 _('Duration must be positive.')
             )
-        
-        return data 
+        # API может передать pet_type_id при создании; приводим к pet_type для модели
+        pet_type_id = data.pop('pet_type_id', None)
+        if pet_type_id is not None:
+            from pets.models import PetType
+            try:
+                data['pet_type'] = PetType.objects.get(pk=pet_type_id)
+            except PetType.DoesNotExist:
+                raise serializers.ValidationError(_('Invalid pet type.'))
+        pet_type = data.get('pet_type')
+        if not self.instance and not pet_type:
+            raise serializers.ValidationError(_('Pet type is required when creating a location service.'))
+        if pet_type and location:
+            served_ids = set(location.served_pet_types.values_list('id', flat=True))
+            if pet_type.id not in served_ids:
+                raise serializers.ValidationError(
+                    _('Pet type must be one of the location\'s served pet types.')
+                )
+        if not self.instance and not data.get('size_code'):
+            raise serializers.ValidationError(_('Size code is required when creating a location service.'))
+        return data
+
+
+# --- Тело PUT матрицы цен (LocationServicePricesUpdateAPIView) ---
+
+class ServiceVariantWriteSerializer(serializers.Serializer):
+    """Тело варианта цены по размеру (S/M/L/XL) для PUT матрицы цен."""
+    size_code = serializers.ChoiceField(choices=['S', 'M', 'L', 'XL'])
+    price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0)
+    duration_minutes = serializers.IntegerField(min_value=1)
+
+
+class LocationServicePriceItemWriteSerializer(serializers.Serializer):
+    """Один элемент матрицы: тип животного + базовая цена/длительность + варианты по размерам."""
+    pet_type_id = serializers.IntegerField()
+    base_price = serializers.DecimalField(max_digits=10, decimal_places=2, min_value=0)
+    base_duration_minutes = serializers.IntegerField(min_value=1)
+    variants = serializers.ListField(
+        child=ServiceVariantWriteSerializer(),
+        required=False,
+        default=list
+    )
+
+    def validate_pet_type_id(self, value):
+        if not PetType.objects.filter(pk=value).exists():
+            raise serializers.ValidationError(_('Invalid pet type.'))
+        return value
+
+
+class LocationServicePricesUpdateSerializer(serializers.Serializer):
+    """Тело PUT запроса на обновление матрицы цен по услуге локации."""
+    prices = serializers.ListField(child=LocationServicePriceItemWriteSerializer())
+
+
+class LocationScheduleSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор расписания работы локации (дни недели, время открытия/закрытия).
+    provider_location задаётся из URL (location_pk) при создании в view.
+    """
+    weekday_display = serializers.CharField(source='get_weekday_display', read_only=True)
+    open_time = serializers.TimeField(required=False, allow_null=True, input_formats=['%H:%M:%S', '%H:%M'])
+    close_time = serializers.TimeField(required=False, allow_null=True, input_formats=['%H:%M:%S', '%H:%M'])
+
+    class Meta:
+        model = LocationSchedule
+        fields = [
+            'id', 'provider_location', 'weekday', 'weekday_display',
+            'open_time', 'close_time', 'is_closed',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'weekday_display']
+        extra_kwargs = {'provider_location': {'required': False}}
+
+    def validate(self, data):
+        """Валидация: если не выходной, то open_time и close_time должны быть заданы и open_time < close_time."""
+        is_closed = data.get('is_closed', getattr(self.instance, 'is_closed', False))
+        open_t = data.get('open_time') if 'open_time' in data else getattr(self.instance, 'open_time', None)
+        close_t = data.get('close_time') if 'close_time' in data else getattr(self.instance, 'close_time', None)
+        # При закрытом дне принудительно null (на случай пустых строк от клиента).
+        if is_closed:
+            data['open_time'] = None
+            data['close_time'] = None
+            return data
+        if open_t is None or close_t is None:
+            raise serializers.ValidationError(
+                _('Open time and close time are required when the location is not closed on this day.')
+            )
+        if open_t >= close_t:
+            raise serializers.ValidationError(
+                _('Open time must be before close time.')
+            )
+        return data
+
+
+class HolidayShiftSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор смены в праздничный день.
+    provider_location задаётся из URL (location_pk) при создании.
+    Валидация (дата должна быть праздником в глобальном календаре, start < end) выполняется в модели.
+    """
+    class Meta:
+        model = HolidayShift
+        fields = ['id', 'provider_location', 'date', 'start_time', 'end_time']
+        read_only_fields = []
+        extra_kwargs = {'provider_location': {'required': False}}
+
+
+class ProviderAdminListSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор списка админов провайдера для страницы персонала.
+    Возвращает пользователя и роль (owner / provider_admin), чтобы отображать владельца учреждения.
+    """
+    user = UserSerializer(read_only=True)
+    role = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = UserProviderAdmin
+        fields = ['id', 'user', 'role', 'is_active', 'created_at']
+        read_only_fields = ['id', 'user', 'role', 'is_active', 'created_at']

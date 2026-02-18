@@ -9,4 +9,9 @@ class AuditConfig(AppConfig):
     
     def ready(self):
         """Инициализация приложения при запуске"""
+        # Проверяем, что Django полностью инициализирован
+        from django.conf import settings
+        if not settings.configured:
+            return
+            
         import audit.signals

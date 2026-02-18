@@ -1,0 +1,21 @@
+{% extends "email/base.html" %}
+{% load i18n %}
+
+{% block content %}
+<div class="notification-title">{% trans "Provider registration request received" %}: {{ provider_name }}</div>
+
+<div class="notification-message">
+    <p>{{ display_name }}.</p>
+
+    <p>{% trans "We have received a registration request for the organization" %} <strong>{{ provider_name }}</strong> {% trans "as a provider." %}</p>
+
+    <p>{% trans "The application will be reviewed. After the provider is activated, the applicant and the designated administrator will receive separate notifications with instructions." %}</p>
+
+    <p>{% trans "This email is for your information." %}</p>
+
+    <div class="info-box">
+        <h3>{% trans "Need Help?" %}:</h3>
+        <p>{% trans "If you have any questions, please contact our support team." %}</p>
+    </div>
+</div>
+{% endblock %}

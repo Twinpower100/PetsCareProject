@@ -54,11 +54,7 @@ def test_employee_role_logic():
     print()
     
     # Создаем профиль сотрудника (БЕЗ связи с учреждением)
-    employee_profile = Employee.objects.create(
-        user=user,
-        position='Ветеринар',
-        bio='Тестовый сотрудник'
-    )
+    employee_profile = Employee.objects.create(user=user)
     
     print(f"3. Created employee profile: {employee_profile}")
     print(f"   Roles: {list(user.user_types.values_list('name', flat=True))}")

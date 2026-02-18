@@ -24,5 +24,5 @@ app_name = 'ratings'
 
 urlpatterns = [
     # API маршруты
-    path('api/', include(router.urls)),
+    path('', include(router.urls)),
 ] 

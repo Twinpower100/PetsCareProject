@@ -13,10 +13,26 @@ from django.core.cache import cache
 from django.db import transaction
 from django.utils.translation import gettext as _
 
+from django.contrib.gis.geos import Point
+
 from users.models import User
 from .models import Address, AddressValidation, AddressCache, UserLocation
 
 logger = logging.getLogger(__name__)
+
+
+def _make_json_serializable(obj: Any) -> Any:
+    """
+    Рекурсивно приводит dict/list к виду, пригодному для JSON (Decimal -> float).
+    Используется при сохранении api_response и address_data в JSONField и в cache.
+    """
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, dict):
+        return {k: _make_json_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_make_json_serializable(x) for x in obj]
+    return obj
 
 
 class GoogleMapsService:
@@ -35,6 +51,7 @@ class GoogleMapsService:
         
         self.geocoding_url = "https://maps.googleapis.com/maps/api/geocode/json"
         self.places_url = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
+        self.place_details_url = "https://maps.googleapis.com/maps/api/place/details/json"
     
     def geocode_address(self, address: str, country: str = None) -> Optional[Dict[str, Any]]:
         """
@@ -144,7 +161,39 @@ class GoogleMapsService:
         except Exception as e:
             logger.error(f"Autocomplete error: {e}")
             return []
-    
+
+    def get_place_details(self, place_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Place Details по place_id: полный адрес с номером дома, координаты, компоненты.
+        Используется после выбора подсказки автодополнения, чтобы подставить полный адрес.
+        """
+        if not place_id or not place_id.strip():
+            return None
+        params = {
+            'place_id': place_id.strip(),
+            'fields': 'formatted_address,address_components,geometry',
+            'key': self.api_key,
+        }
+        try:
+            response = requests.get(self.place_details_url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            if data.get('status') != 'OK' or 'result' not in data:
+                return None
+            result = data['result']
+            location = result.get('geometry', {}).get('location', {})
+            components = self._parse_address_components(result.get('address_components', []))
+            return {
+                'formatted_address': result.get('formatted_address', ''),
+                'address_components': components,
+                'latitude': float(location['lat']) if location else None,
+                'longitude': float(location['lng']) if location else None,
+                'place_id': place_id,
+            }
+        except (requests.RequestException, KeyError, TypeError) as e:
+            logger.error("Place details error: %s", e)
+            return None
+
     def _parse_geocoding_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """
         Parsing geocoding result from Google Maps API.
@@ -278,7 +327,7 @@ class AddressValidationService:
             cached_result = self._get_cached_result(address)
             if cached_result:
                 self._update_address_from_cache(address, cached_result)
-                return address.is_valid
+                return address.validation_status == 'valid'
             
             # Perform geocoding
             geocoding_result = self._geocode_address(address)
@@ -372,9 +421,14 @@ class AddressValidationService:
         coordinates = result['coordinates']
         components = result['address_components']
         
-        # Update coordinates
+        # Update coordinates and PostGIS point (lon, lat for SRID 4326)
         address.latitude = coordinates['latitude']
         address.longitude = coordinates['longitude']
+        address.point = Point(
+            float(address.longitude),
+            float(address.latitude),
+            srid=4326
+        )
         
         # Update formatted address
         address.formatted_address = result['formatted_address']
@@ -411,6 +465,11 @@ class AddressValidationService:
         
         address.latitude = coordinates['latitude']
         address.longitude = coordinates['longitude']
+        address.point = Point(
+            float(address.longitude),
+            float(address.latitude),
+            srid=4326
+        )
         address.formatted_address = cached_result['formatted_address']
         address.geocoding_accuracy = cached_result['location_type']
         address.validation_status = 'valid'
@@ -456,15 +515,12 @@ class AddressValidationService:
             confidence_score=Decimal('0.95') if is_valid else Decimal('0.0'),
             api_provider='google_maps',
             processing_time=timedelta(seconds=processing_time),
-            api_response=result or {},
+            api_response=_make_json_serializable(result or {}),
             validation_errors=[error] if error else [],
             suggestions=[]
         )
         
-        # Update address status
-        address.is_valid = is_valid
-        address.is_geocoded = bool(address.point)
-        address.is_validated = True
+        # Обновляем только каноническое поле состояния и метаданные
         address.validation_status = 'valid' if is_valid else 'invalid'
         address.validated_at = timezone.now()
         address.save()
@@ -479,14 +535,15 @@ class AddressValidationService:
         """
         cache_key = self._generate_cache_key(address)
         expires_at = timezone.now() + self.cache_duration
+        serializable = _make_json_serializable(result)
         
         # Save to Django cache
-        cache.set(cache_key, result, int(self.cache_duration.total_seconds()))
+        cache.set(cache_key, serializable, int(self.cache_duration.total_seconds()))
         
         # Save to database
         AddressCache.objects.create(
             cache_key=cache_key,
-            address_data=result,
+            address_data=serializable,
             api_provider='google_maps',
             expires_at=expires_at,
             hit_count=1

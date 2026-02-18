@@ -16,15 +16,15 @@ router.register(r'bookings', api_views.BookingViewSet, basename='booking')
 router.register(r'booking-reviews', api_views.BookingReviewViewSet, basename='booking-review')
 
 urlpatterns = [
-    path('api/', include(router.urls)),
+    path('', include(router.urls)),
     
     # API для автоматического бронирования работника
-    path('api/auto-book-employee/', api_views.auto_book_employee, name='auto_book_employee'),
-    path('api/available-employees/', api_views.get_available_employees, name='get_available_employees'),
+    path('auto-book-employee/', api_views.auto_book_employee, name='auto_book_employee'),
+    path('available-employees/', api_views.get_available_employees, name='get_available_employees'),
     
     # Существующие URL - восстановлены
-    path('api/bookings/<int:booking_id>/cancel/', api_views.CancelBookingAPIView.as_view(), name='cancel_booking'),
-    path('api/bookings/<int:booking_id>/complete/', api_views.CompleteBookingAPIView.as_view(), name='complete_booking'),
-    path('api/bookings/<int:booking_id>/no-show/', api_views.MarkNoShowAPIView.as_view(), name='mark_no_show'),
-    path('api/bookings/<int:booking_id>/time-slots/', api_views.GetAvailableTimeSlotsAPIView.as_view(), name='get_available_time_slots'),
+    path('bookings/<int:booking_id>/cancel/', api_views.CancelBookingAPIView.as_view(), name='cancel_booking'),
+    path('bookings/<int:booking_id>/complete/', api_views.CompleteBookingAPIView.as_view(), name='complete_booking'),
+    path('bookings/<int:booking_id>/no-show/', api_views.MarkNoShowAPIView.as_view(), name='mark_no_show'),
+    path('bookings/<int:booking_id>/time-slots/', api_views.GetAvailableTimeSlotsAPIView.as_view(), name='get_available_time_slots'),
 ] 

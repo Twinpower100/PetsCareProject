@@ -50,7 +50,6 @@ class AddressModelTest(TestCase):
         self.assertEqual(address.street, 'Test Street')
         self.assertEqual(address.city, 'Test City')
         self.assertEqual(address.country, 'Test Country')
-        self.assertFalse(address.is_validated)
         self.assertEqual(address.validation_status, 'pending')
     
     def test_address_str_representation(self):
@@ -66,13 +65,11 @@ class AddressModelTest(TestCase):
             **self.address_data,
             latitude=Decimal('55.7558'),
             longitude=Decimal('37.6176'),
-            is_validated=True,
             validation_status='valid'
         )
         
         self.assertEqual(address.latitude, Decimal('55.7558'))
         self.assertEqual(address.longitude, Decimal('37.6176'))
-        self.assertTrue(address.is_validated)
         self.assertEqual(address.validation_status, 'valid')
 
 
@@ -204,7 +201,6 @@ class AddressSerializerTest(APITestCase):
         self.assertIn('street', data)
         self.assertIn('city', data)
         self.assertIn('country', data)
-        self.assertIn('is_valid', data)
         self.assertIn('is_geocoded', data)
         self.assertIn('validation_status', data)
     
@@ -461,7 +457,7 @@ from django.db import connection
 from decimal import Decimal
 import math
 
-from .models import Address, Location, LocationHistory, UserLocation
+from .models import Address, UserLocation
 from .utils import (
     filter_by_distance,
     create_distance_annotation,

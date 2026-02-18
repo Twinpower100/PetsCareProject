@@ -25,7 +25,8 @@ import logging
 from .models import Address, AddressValidation, AddressCache
 from .serializers import (
     AddressSerializer, AddressValidationSerializer, AddressCacheSerializer,
-    AddressAutocompleteSerializer, AddressGeocodeSerializer, AddressReverseGeocodeSerializer
+    AddressAutocompleteSerializer, PlaceDetailsSerializer,
+    AddressGeocodeSerializer, AddressReverseGeocodeSerializer
 )
 from .services import AddressValidationService, GoogleMapsService
 
@@ -100,27 +101,16 @@ class AddressViewSet(viewsets.ModelViewSet):
         try:
             with transaction.atomic():
                 validation_service = AddressValidationService()
-                validation_result = validation_service.validate_address(address)
-                
-                # Update address with validation results
-                if validation_result.is_valid:
-                    address.formatted_address = validation_result.formatted_address
-                    address.latitude = validation_result.latitude
-                    address.longitude = validation_result.longitude
-                    address.is_validated = True
-                    address.validation_status = 'valid'
-                else:
-                    address.validation_status = 'invalid'
-                
-                address.save()
+                is_valid = validation_service.validate_address(address)  # bool; service already saves address
+                address.refresh_from_db()
                 
                 return Response({
                     'success': True,
-                    'is_valid': validation_result.is_valid,
-                    'formatted_address': validation_result.formatted_address,
-                    'latitude': validation_result.latitude,
-                    'longitude': validation_result.longitude,
-                    'confidence_score': validation_result.confidence_score
+                    'is_valid': is_valid,
+                    'formatted_address': address.formatted_address or '',
+                    'latitude': float(address.latitude) if address.latitude is not None else None,
+                    'longitude': float(address.longitude) if address.longitude is not None else None,
+                    'validation_status': address.validation_status,
                 })
                 
         except Exception as e:
@@ -139,7 +129,7 @@ class AddressViewSet(viewsets.ModelViewSet):
             Response: Address statistics
         """
         total_addresses = Address.objects.count()
-        validated_addresses = Address.objects.filter(is_validated=True).count()
+        validated_addresses = Address.objects.exclude(validation_status='pending').count()
         invalid_addresses = Address.objects.filter(validation_status='invalid').count()
         pending_addresses = Address.objects.filter(validation_status='pending').count()
         
@@ -223,11 +213,10 @@ class AddressAutocompleteView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         query = serializer.validated_data['query']
-        session_token = serializer.validated_data.get('session_token')
         
         try:
             maps_service = GoogleMapsService()
-            predictions = maps_service.get_place_autocomplete(query, session_token)
+            predictions = maps_service.autocomplete_address(query)
 
             return Response({
                 'success': True,
@@ -240,6 +229,31 @@ class AddressAutocompleteView(APIView):
                 'success': False,
                 'error': _('Unexpected error')
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class PlaceDetailsView(APIView):
+    """
+    API Place Details по place_id: полный адрес (с номером дома), координаты, компоненты.
+    Вызывается после выбора подсказки автодополнения.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = PlaceDetailsSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        place_id = serializer.validated_data['place_id']
+        try:
+            maps_service = GoogleMapsService()
+            details = maps_service.get_place_details(place_id)
+            if not details:
+                return Response({'success': False, 'error': _('Place not found')}, status=status.HTTP_404_NOT_FOUND)
+            return Response({'success': True, **details})
+        except ValueError as e:
+            return Response({'success': False, 'error': str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except Exception as e:
+            logger.exception("Place details failed: %s", e)
+            return Response({'success': False, 'error': _('Unexpected error')}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class AddressGeocodeView(APIView):
@@ -386,26 +400,14 @@ class AddressValidationBulkView(APIView):
                 for address_id in address_ids:
                     try:
                         address = Address.objects.get(id=address_id)
-                        validation_result = validation_service.validate_address(address)
-                        
-                        # Update address
-                        if validation_result.is_valid:
-                            address.formatted_address = validation_result.formatted_address
-                            address.latitude = validation_result.latitude
-                            address.longitude = validation_result.longitude
-                            address.is_validated = True
-                            address.validation_status = 'valid'
-                        else:
-                            address.validation_status = 'invalid'
-                        
-                        address.save()
-                        
+                        is_valid = validation_service.validate_address(address)  # bool; service already saves
+                        address.refresh_from_db()
                         results.append({
                             'address_id': address_id,
                             'success': True,
-                            'is_valid': validation_result.is_valid
+                            'is_valid': is_valid,
+                            'validation_status': address.validation_status,
                         })
-                        
                     except Address.DoesNotExist:
                         results.append({
                             'address_id': address_id,
@@ -423,4 +425,68 @@ class AddressValidationBulkView(APIView):
             return Response({
                 'success': False,
                 'error': _('Unexpected error')
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class HolidaysAPIView(APIView):
+    """
+    API нерабочих дней по стране и году: государственные праздники + наблюдаемые даты (переносы).
+    Используется при настройке графика работы локации (закрыто в праздники).
+    Источник: библиотека holidays (country_holidays) с observed=True — для стран вроде РФ
+    включаются дни, когда праздник переносится (напр. с воскресенья на понедельник).
+    Это не полный производственный календарь РФ (все переносы могут отличаться от приказа Минтруда).
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        country = request.query_params.get('country', '').upper()[:2]
+        year_str = request.query_params.get('year', '')
+        lang = (request.query_params.get('lang') or 'en').strip().lower()[:5]
+        # Язык для названий праздников: en, de, ru, sr (и т.д.) — как поддерживает библиотека holidays
+        if not lang or len(lang) < 2:
+            lang = 'en'
+        if not country or not year_str:
+            return Response(
+                {'error': _('Query parameters "country" (ISO 3166-1 alpha-2) and "year" are required.')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            year = int(year_str)
+        except ValueError:
+            return Response(
+                {'error': _('Parameter "year" must be an integer.')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        if year < 2000 or year > 2100:
+            return Response(
+                {'error': _('Year must be between 2000 and 2100.')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        try:
+            import holidays as holidays_lib
+            # observed=True: включать даты, когда праздник отмечается (перенос с выходного на рабочий день)
+            # language: язык названий праздников (en, de, ru, sr и т.д.); при ошибке — откат на en
+            try:
+                country_holidays = holidays_lib.country_holidays(
+                    country, years=year, observed=True, language=lang
+                )
+            except (ValueError, TypeError):
+                country_holidays = holidays_lib.country_holidays(
+                    country, years=year, observed=True, language='en'
+                )
+            items = [
+                {'date': d.isoformat(), 'name': name or ''}
+                for d, name in sorted(country_holidays.items())
+            ]
+            return Response({'country': country, 'year': year, 'holidays': items})
+        except NotImplementedError:
+            return Response(
+                {'error': _('Holidays for this country are not supported.')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        except Exception as e:
+            logger.exception("Holidays API failed: %s", e)
+            return Response(
+                {'error': _('Unexpected error')},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

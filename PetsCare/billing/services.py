@@ -14,8 +14,10 @@ from django.utils.translation import gettext as _
 from django.db import transaction
 from django.core.mail import send_mail
 from django.conf import settings
+import requests
+from typing import Dict, Optional, Any
 from .models import (
-    Contract, BlockingRule, ProviderBlocking, BlockingNotification,
+    BlockingRule, ProviderBlocking, BlockingNotification,
     BillingManagerProvider, BlockingSystemSettings
 )
 from providers.models import Provider
@@ -56,84 +58,74 @@ class MultiLevelBlockingService:
                 'exclusion_reason': provider.blocking_exclusion_reason
             }
         
-            # Получаем активные договоры учреждения
-        active_contracts = provider.contracts.filter(
-            status='active',
-            exclude_from_automatic_blocking=False
-            )
-            
-            if not active_contracts.exists():
-                return {
+        # Проверяем наличие активной оферты
+        if not provider.has_active_offer_acceptance():
+            return {
                 'should_block': False,
-                'reason': 'No active contracts found'
+                'reason': 'No active offer acceptance found'
             }
         
-            max_blocking_level = 0
-            blocking_reasons = []
-            
-            for contract in active_contracts:
-            # Проверяем договор на блокировку
-            contract_result = self._check_contract_blocking(contract)
-            
-            if contract_result['should_block']:
-                max_blocking_level = max(max_blocking_level, contract_result['blocking_level'])
-                blocking_reasons.append(contract_result['reason'])
-            
-            return {
-            'should_block': max_blocking_level > 0,
-                'blocking_level': max_blocking_level,
-            'reasons': blocking_reasons,
+        # Проверяем провайдера на блокировку
+        result = self._check_provider_offer_blocking(provider)
+        
+        return {
+            'should_block': result['should_block'],
+            'blocking_level': result['blocking_level'],
+            'reasons': [result['reason']] if result['reason'] else [],
             'provider': provider
         }
     
-    def _check_contract_blocking(self, contract):
+    def _check_provider_offer_blocking(self, provider):
         """
-        Проверяет необходимость блокировки по договору.
+        Проверяет необходимость блокировки провайдера на основе оферты и Invoice.
         
         Args:
-            contract: Объект Contract
+            provider: Объект Provider
             
         Returns:
             dict: Результат проверки
         """
-        # Рассчитываем задолженность
-        debt_info = contract.calculate_debt()
+        # Рассчитываем задолженность через Invoice
+        debt_info = provider.calculate_debt()
         total_debt = debt_info['total_debt']
         overdue_debt = debt_info['overdue_debt']
         
         # Получаем максимальное количество дней просрочки
-        max_overdue_days = contract.get_max_overdue_days()
+        max_overdue_days = provider.get_max_overdue_days()
+        
+        # Получаем пороги блокировки
+        thresholds = provider.get_blocking_thresholds()
         
         # Проверяем пороги блокировки
         blocking_level = 0
         reason = None
         
         # Проверка по сумме задолженности
-        if contract.debt_threshold and total_debt > contract.debt_threshold:
+        if thresholds['debt_threshold'] and total_debt > thresholds['debt_threshold']:
             blocking_level = max(blocking_level, 3)
             reason = _("Debt threshold exceeded: %(debt)s > %(threshold)s") % {
                 'debt': total_debt,
-                'threshold': contract.debt_threshold
+                'threshold': thresholds['debt_threshold']
             }
         
         # Проверка по дням просрочки
-        if contract.overdue_threshold_3 and max_overdue_days >= contract.overdue_threshold_3:
+        if thresholds['overdue_threshold_3'] and max_overdue_days >= thresholds['overdue_threshold_3']:
             blocking_level = max(blocking_level, 3)
             reason = _("Critical overdue: %(days)s days >= %(threshold)s") % {
                 'days': max_overdue_days,
-                'threshold': contract.overdue_threshold_3
+                'threshold': thresholds['overdue_threshold_3']
             }
-        elif contract.overdue_threshold_2 and max_overdue_days >= contract.overdue_threshold_2:
+        elif thresholds['overdue_threshold_2'] and max_overdue_days >= thresholds['overdue_threshold_2']:
             blocking_level = max(blocking_level, 2)
             reason = _("High overdue: %(days)s days >= %(threshold)s") % {
                 'days': max_overdue_days,
-                'threshold': contract.overdue_threshold_2
+                'threshold': thresholds['overdue_threshold_2']
             }
-        elif contract.overdue_threshold_1 and max_overdue_days >= contract.overdue_threshold_1:
+        elif thresholds['overdue_threshold_1'] and max_overdue_days >= thresholds['overdue_threshold_1']:
             blocking_level = max(blocking_level, 1)
             reason = _("Information overdue: %(days)s days >= %(threshold)s") % {
                 'days': max_overdue_days,
-                'threshold': contract.overdue_threshold_1
+                'threshold': thresholds['overdue_threshold_1']
             }
         
         return {
@@ -142,7 +134,7 @@ class MultiLevelBlockingService:
             'reason': reason,
             'total_debt': total_debt,
             'overdue_days': max_overdue_days,
-            'contract': contract
+            'provider': provider
         }
     
     def apply_blocking(self, provider, blocking_level, reasons):
@@ -157,14 +149,17 @@ class MultiLevelBlockingService:
         Returns:
             ProviderBlocking: Созданная запись блокировки
         """
+        # Рассчитываем задолженность для блокировки
+        debt_info = provider.calculate_debt()
+        
         # Создаем запись блокировки
         blocking = ProviderBlocking.objects.create(
-                provider=provider,
+            provider=provider,
             blocking_rule=None,  # Будет создано автоматически
             status='active',
-            debt_amount=provider.contracts.first().calculate_debt()['total_debt'],
-            overdue_days=provider.contracts.first().get_max_overdue_days(),
-            currency=provider.contracts.first().currency,
+            debt_amount=debt_info['total_debt'],
+            overdue_days=provider.get_max_overdue_days(),
+            currency=debt_info['currency'],
             notes=_("Automatic blocking level %(level)s: %(reasons)s") % {
                 'level': blocking_level,
                 'reasons': '; '.join(reasons)
@@ -358,146 +353,4 @@ Notes: {blocking.notes}
         return stats 
 
 
-# Функции уведомлений для workflow согласования контрактов
-def notify_admins_contract_approval_needed(contract):
-    """
-    Отправляет уведомления админам о необходимости согласования контракта.
-    
-    Args:
-        contract: Объект Contract
-    """
-    from django.contrib.auth import get_user_model
-    from notifications.models import Notification
-    
-    User = get_user_model()
-    
-    # Получаем всех админов
-    admins = User.objects.filter(is_staff=True, is_active=True)
-    
-    for admin in admins:
-        Notification.objects.create(
-            user=admin,
-            title=_('Contract Approval Required'),
-            message=_('Contract %(contract_number)s for provider %(provider_name)s requires your approval.') % {
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name
-            },
-            notification_type='contract_approval',
-            data={
-                'contract_id': contract.id,
-                'provider_id': contract.provider.id,
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name
-            }
-        )
-
-
-def notify_manager_contract_approved(contract):
-    """
-    Отправляет уведомление менеджеру об одобрении контракта.
-    
-    Args:
-        contract: Объект Contract
-    """
-    from notifications.models import Notification
-    
-    # Уведомляем создателя контракта
-    if contract.created_by:
-        Notification.objects.create(
-            user=contract.created_by,
-            title=_('Contract Approved'),
-            message=_('Your contract %(contract_number)s for provider %(provider_name)s has been approved.') % {
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name
-            },
-            notification_type='contract_approved',
-            data={
-                'contract_id': contract.id,
-                'provider_id': contract.provider.id,
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name
-            }
-        )
-    
-    # Уведомляем менеджеров по биллингу для этого провайдера
-    from .models import BillingManagerProvider
-    
-    billing_managers = BillingManagerProvider.objects.filter(
-        provider=contract.provider,
-        status='active'
-    )
-    
-    for billing_manager in billing_managers:
-        Notification.objects.create(
-            user=billing_manager.billing_manager,
-            title=_('Contract Approved'),
-            message=_('Contract %(contract_number)s for provider %(provider_name)s has been approved.') % {
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name
-            },
-            notification_type='contract_approved',
-            data={
-                'contract_id': contract.id,
-                'provider_id': contract.provider.id,
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name
-            }
-        )
-
-
-def notify_manager_contract_rejected(contract, rejection_reason):
-    """
-    Отправляет уведомление менеджеру об отклонении контракта.
-    
-    Args:
-        contract: Объект Contract
-        rejection_reason: Причина отклонения
-    """
-    from notifications.models import Notification
-    
-    # Уведомляем создателя контракта
-    if contract.created_by:
-        Notification.objects.create(
-            user=contract.created_by,
-            title=_('Contract Rejected'),
-            message=_('Your contract %(contract_number)s for provider %(provider_name)s has been rejected. Reason: %(reason)s') % {
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name,
-                'reason': rejection_reason
-            },
-            notification_type='contract_rejected',
-            data={
-                'contract_id': contract.id,
-                'provider_id': contract.provider.id,
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name,
-                'rejection_reason': rejection_reason
-            }
-        )
-    
-    # Уведомляем менеджеров по биллингу для этого провайдера
-    from .models import BillingManagerProvider
-    
-    billing_managers = BillingManagerProvider.objects.filter(
-        provider=contract.provider,
-        status='active'
-    )
-    
-    for billing_manager in billing_managers:
-        Notification.objects.create(
-            user=billing_manager.billing_manager,
-            title=_('Contract Rejected'),
-            message=_('Contract %(contract_number)s for provider %(provider_name)s has been rejected. Reason: %(reason)s') % {
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name,
-                'reason': rejection_reason
-            },
-            notification_type='contract_rejected',
-            data={
-                'contract_id': contract.id,
-                'provider_id': contract.provider.id,
-                'contract_number': contract.number,
-                'provider_name': contract.provider.name,
-                'rejection_reason': rejection_reason
-            }
-        ) 
+# Функции уведомлений для workflow согласования контрактов удалены - используется LegalDocument и DocumentAcceptance 

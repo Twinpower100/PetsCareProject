@@ -61,3 +61,7 @@ desktop.ini
 /PetsCare/.env
 logs/
 *.log
+
+# Gmail API credentials (не коммитить!)
+credentials.json
+token.json

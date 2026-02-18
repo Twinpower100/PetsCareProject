@@ -56,18 +56,20 @@ class ProviderAPITestCase(TestCase):
             point=Point(49.1221, 55.7887, srid=4326)
         )
         
-        # Создаем категорию услуг
-        self.category = ServiceCategory.objects.create(
+        # Категория и услуга (каталог: иерархия через parent)
+        self.category = Service.objects.create(
+            code='vet_cat',
             name="Ветеринария",
-            description="Ветеринарные услуги"
+            description="Ветеринарные услуги",
+            parent=None,
+            level=0
         )
-        
-        # Создаем услугу
         self.service = Service.objects.create(
+            code='vet_consult',
             name="Консультация ветеринара",
             description="Консультация специалиста",
-            category=self.category,
-            base_price=Decimal('1000.00')
+            parent=self.category,
+            level=1
         )
         
         # Создаем провайдеров

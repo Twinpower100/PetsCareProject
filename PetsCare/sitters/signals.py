@@ -12,6 +12,11 @@ def assign_pet_sitter_role_on_profile_creation(sender, instance, created, **kwar
     """
     Автоматически присваивает роль 'pet_sitter' пользователю при создании профиля ситтера.
     """
+    # Проверяем, что Django полностью инициализирован
+    from django.conf import settings
+    if not settings.configured:
+        return
+        
     if created:
         from users.models import UserType
         

@@ -30,7 +30,7 @@ def auto_validate_address(sender, instance, created, **kwargs):
         **kwargs: Дополнительные параметры
     """
     # Если адрес уже валидирован, не выполняем повторную валидацию
-    if instance.is_validated and instance.validation_status == 'valid':
+    if instance.validation_status == 'valid':
         return
     
     # Если адрес помечен как невалидный, не выполняем повторную валидацию
@@ -68,7 +68,6 @@ def update_address_validation_status(sender, instance, created, **kwargs):
         
         # Обновляем статус адреса на основе результата валидации
         if instance.is_valid:
-            address.is_validated = True
             address.validation_status = 'valid'
             address.formatted_address = instance.formatted_address
             address.latitude = instance.latitude
@@ -78,7 +77,6 @@ def update_address_validation_status(sender, instance, created, **kwargs):
         
         # Сохраняем изменения без вызова сигнала
         Address.objects.filter(id=address.id).update(
-            is_validated=address.is_validated,
             validation_status=address.validation_status,
             formatted_address=address.formatted_address,
             latitude=address.latitude,
@@ -160,8 +158,8 @@ def update_related_models(sender, instance, created, **kwargs):
         created: Флаг создания новой записи
         **kwargs: Дополнительные параметры
     """
-    # Обновляем координаты в связанных моделях
-    if instance.is_validated and instance.latitude and instance.longitude:
+    # Обновляем координаты в связанных моделях (адрес провалидирован и имеет координаты)
+    if instance.validation_status != 'pending' and instance.latitude and instance.longitude:
         # Обновляем локации провайдеров (ProviderLocation)
         from providers.models import ProviderLocation
         

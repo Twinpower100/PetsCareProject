@@ -1,0 +1,69 @@
+@startuml sequence_provider_registration
+title Диаграмма последовательности: Создание заявки провайдера услуг
+
+actor "Пользователь" as User
+participant "Web UI (React)" as UI
+participant "Backend (Django)" as API
+participant "Django ORM" as ORM
+database "Database" as DB
+
+== Заполнение данных и фронтенд валидация ==
+User -> UI: Ввод данных (Email, Телефон, \nНаименование, Юр. адрес, Язык,\nКатегории услуг уровня 0)
+activate UI
+
+note right of UI
+  Валидация формата 
+  Email и Телефона
+  Сохранение выбранного языка
+  (для последующей отправки писем)
+  Выбор категорий услуг уровня 0
+  (обязательно минимум одна)
+end note
+
+alt Ошибка формата (Email или Телефон)
+    UI --> User: Сообщение об ошибке формата
+else Формат корректен
+    
+    == Отправка и серверная проверка ==
+    UI -> API: POST данные организации
+    activate API
+    API -> ORM: Проверка категорий услуг\n(должны быть level=0, минимум одна)
+    activate ORM
+    ORM -> DB: SELECT * FROM catalog_service\nWHERE id IN (...) AND level = 0
+    activate DB
+    DB --> ORM: Результат проверки категорий
+    deactivate DB
+    ORM --> API: Категории валидны/невалидны
+    deactivate ORM
+    alt Категории невалидны
+        API --> UI: Ошибка валидации категорий
+        UI --> User: Отображение ошибки
+    else Категории валидны
+        API -> ORM: Создать ProviderForm
+        activate ORM
+        ORM -> DB: Проверка уникальности среди\n заявок провайдеров / провайдеров \n(Email, Телефон)
+        activate DB
+        alt Значения НЕ уникальны
+            DB --> ORM: Ошибка (Constraint Violation)
+            ORM --> API: Ошибка уникальности
+            deactivate ORM
+            API --> UI: Передача ошибки
+            UI --> User: Отображение ошибки пользователю
+        else Значения уникальны
+            ORM -> DB: INSERT INTO users_providerform\n(Email, Телефон, Наименование, Адрес,\nПользователь, Язык, Статус: Pending)
+            ORM -> DB: INSERT INTO users_providerform_selected_categories\n(Категории услуг уровня 0)
+            DB --> ORM: Заявка создана
+            deactivate DB
+            ORM --> API: Успех
+            deactivate ORM
+            API --> UI: Успех (HTTP 201 Created)
+            deactivate API
+            UI --> User: Сообщение: Успех
+        end
+    end
+end
+
+deactivate UI
+
+@enduml
+

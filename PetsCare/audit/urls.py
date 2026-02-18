@@ -15,11 +15,11 @@ app_name = 'audit'
 
 urlpatterns = [
     # Audit endpoints
-    path('audit/actions/', api_views.UserActionViewSet.as_view(), name='user-actions'),
-    path('audit/actions/statistics/', api_views.UserActionStatisticsView.as_view(), name='user-actions-statistics'),
-    path('audit/actions/export/', api_views.UserActionExportView.as_view(), name='user-actions-export'),
-    path('audit/actions/cleanup/', api_views.UserActionCleanupView.as_view(), name='user-actions-cleanup'),
-    path('audit/activity/<int:user_id>/', api_views.UserActivityView.as_view(), name='user-activity'),
-    path('audit/security/', api_views.SecurityAuditView.as_view(), name='security-audit'),
-    path('audit/statistics/', api_views.AuditStatisticsView.as_view(), name='audit-statistics'),
+    path('actions/', api_views.UserActionViewSet.as_view(), name='user-actions'),
+    path('actions/statistics/', api_views.UserActionStatisticsView.as_view(), name='user-actions-statistics'),
+    path('actions/export/', api_views.UserActionExportView.as_view(), name='user-actions-export'),
+    path('actions/cleanup/', api_views.UserActionCleanupView.as_view(), name='user-actions-cleanup'),
+    path('activity/<int:user_id>/', api_views.UserActivityView.as_view(), name='user-activity'),
+    path('security/', api_views.SecurityAuditView.as_view(), name='security-audit'),
+    path('statistics/', api_views.AuditStatisticsView.as_view(), name='audit-statistics'),
 ] 

@@ -18,4 +18,9 @@ class RatingsConfig(AppConfig):
         """
         Инициализация приложения при запуске.
         """
+        # Проверяем, что Django полностью инициализирован
+        from django.conf import settings
+        if not settings.configured:
+            return
+            
         import ratings.signals 

@@ -90,6 +90,18 @@ ROLE_PERMISSION_SETS = {
         'permissions': list(PERMISSION_DESCRIPTIONS.keys()),
     },
     
+    'owner': {
+        'name': _('Owner'),
+        'description': _('Provider owner (one per provider); same permissions as provider administrator'),
+        'permissions': [
+            'users.view_user', 'users.change_user',
+            'pets.view_pet', 'providers.change_provider', 'providers.view_provider',
+            'booking.view_booking', 'booking.change_booking',
+            'billing.view_contract', 'billing.view_payment',
+            'notifications.add_notification', 'notifications.view_notification',
+            'ratings.view_rating',
+        ]
+    },
     'provider_admin': {
         'name': _('Provider Administrator'),
         'description': _('Managing provider and its employees'),
@@ -100,6 +112,36 @@ ROLE_PERMISSION_SETS = {
             'billing.view_contract', 'billing.view_payment',
             'notifications.add_notification', 'notifications.view_notification',
             'ratings.view_rating',
+        ]
+    },
+    'provider_manager': {
+        'name': _('Provider Manager'),
+        'description': _('Business manager of the provider'),
+        'permissions': [
+            'users.view_user', 'users.change_user',
+            'pets.view_pet', 'providers.change_provider', 'providers.view_provider',
+            'booking.view_booking', 'booking.change_booking',
+            'billing.view_contract', 'billing.view_payment',
+            'notifications.add_notification', 'notifications.view_notification',
+            'ratings.view_rating',
+        ]
+    },
+    'branch_manager': {
+        'name': _('Branch Manager'),
+        'description': _('Manager of a provider location/branch'),
+        'permissions': [
+            'users.view_user', 'pets.view_pet', 'providers.view_provider',
+            'booking.view_booking', 'booking.change_booking',
+            'notifications.view_notification', 'ratings.view_rating',
+        ]
+    },
+    'specialist': {
+        'name': _('Specialist'),
+        'description': _('Service or technical worker at a branch'),
+        'permissions': [
+            'users.view_user', 'pets.view_pet', 'providers.view_provider',
+            'booking.view_booking', 'booking.change_booking',
+            'notifications.view_notification',
         ]
     },
     

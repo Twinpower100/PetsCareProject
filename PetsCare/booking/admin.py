@@ -56,21 +56,21 @@ class BookingAdmin(admin.ModelAdmin):
     Административный интерфейс для модели бронирования.
     """
     list_display = [
-        'id', 'user', 'pet', 'provider', 'employee',
+        'id', 'user', 'pet', 'provider_location', 'get_provider', 'employee',
         'service', 'status', 'start_time', 'end_time',
         'price', 'created_at', 'completed_at', 'cancelled_at'
     ]
     list_filter = [
-        'status', 'start_time', 'end_time',
+        'status', 'provider_location', 'start_time', 'end_time',
         'created_at', 'updated_at', 'completed_at', 'cancelled_at'
     ]
     search_fields = [
-        'user__username', 'pet__name', 'provider__name',
-        'employee__user__username', 'service__name'
+        'user__username', 'pet__name', 'provider_location__name',
+        'provider_location__provider__name', 'employee__user__username', 'service__name'
     ]
     readonly_fields = [
         'created_at', 'updated_at', 'completed_at', 'cancelled_at',
-        'completed_by', 'cancelled_by', 'cancellation_reason'
+        'completed_by', 'cancelled_by', 'cancellation_reason', 'get_provider'
     ]
     date_hierarchy = 'created_at'
     inlines = [BookingNoteInline, BookingCancellationInline]
@@ -128,18 +128,28 @@ class BookingAdmin(admin.ModelAdmin):
         self.message_user(request, _("Marked as 'no show' {} bookings").format(marked_count))
     
     mark_no_show.short_description = _("Mark as 'no show'")
+    
+    def get_provider(self, obj):
+        """Отображает название организации провайдера."""
+        if obj.provider_location:
+            return obj.provider_location.provider.name
+        elif obj.provider:
+            return obj.provider.name
+        return '-'
+    get_provider.short_description = _('Provider Organization')
+    
     fieldsets = (
         (None, {
-            'fields': ('pet', 'provider_service', 'employee')
+            'fields': ('pet', 'provider_location', 'employee', 'service')
         }),
         (_('Time'), {
             'fields': ('start_time', 'end_time')
         }),
         (_('Status'), {
-            'fields': ('status', 'price', 'description')
+            'fields': ('status', 'price', 'notes')
         }),
         (_('Metadata'), {
-            'fields': ('created_by', 'created_at', 'updated_at'),
+            'fields': ('user', 'created_at', 'updated_at'),
             'classes': ('collapse',)
         })
     )
@@ -164,16 +174,22 @@ class BookingAdmin(admin.ModelAdmin):
                 )
             else:
                 # Создание нового бронирования
+                # Получаем provider из provider_location, если он не указан напрямую
+                provider = obj.provider
+                if not provider and obj.provider_location:
+                    provider = obj.provider_location.provider
+                
                 BookingTransactionService.create_booking(
                     user=obj.user,
                     pet=obj.pet,
-                    provider=obj.provider,
+                    provider=provider,
                     employee=obj.employee,
                     service=obj.service,
                     start_time=obj.start_time,
                     end_time=obj.end_time,
                     price=obj.price,
-                    notes=obj.notes
+                    notes=obj.notes,
+                    provider_location=obj.provider_location
                 )
         except ValidationError as e:
             from django.contrib import messages

@@ -5,10 +5,10 @@ app_name = 'reports'
 
 urlpatterns = [
     # API endpoints для отчетов
-    path('api/income/', api_views.income_report, name='income_report'),
-    path('api/workload/', api_views.employee_workload_report, name='workload_report'),
-    path('api/debt/', api_views.debt_report, name='debt_report'),
-    path('api/activity/', api_views.activity_report, name='activity_report'),
-    path('api/payment/', api_views.payment_report, name='payment_report'),
-    path('api/cancellation/', api_views.cancellation_report, name='cancellation_report'),
+    path('income/', api_views.income_report, name='income_report'),
+    path('workload/', api_views.employee_workload_report, name='workload_report'),
+    path('debt/', api_views.debt_report, name='debt_report'),
+    path('activity/', api_views.activity_report, name='activity_report'),
+    path('payment/', api_views.payment_report, name='payment_report'),
+    path('cancellation/', api_views.cancellation_report, name='cancellation_report'),
 ] 

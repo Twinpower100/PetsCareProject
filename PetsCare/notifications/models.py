@@ -16,7 +16,7 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from pets.models import Pet
 from catalog.models import Service
-from providers.models import ProviderService
+# ProviderService удален - используйте ProviderLocationService
 from push_notifications.models import GCMDevice, APNSDevice, WebPushDevice
 from decouple import config
 

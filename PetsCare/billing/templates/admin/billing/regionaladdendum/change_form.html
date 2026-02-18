@@ -1,0 +1,116 @@
+{% extends "admin/change_form.html" %}
+{% load i18n admin_urls static %}
+
+{% block extrahead %}
+{{ block.super }}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Находим кнопку конвертации и добавляем обработчик
+    const convertBtn = document.getElementById('convert-docx-btn');
+    if (convertBtn) {
+        convertBtn.addEventListener('click', function() {
+            convertDocxFiles();
+        });
+    }
+    
+    function convertDocxFiles() {
+        const form = document.getElementById('regionaladdendum_form') || document.querySelector('form');
+        if (!form) {
+            alert('{% trans "Form not found" %}');
+            return;
+        }
+        
+        const formData = new FormData(form);
+        const convertBtn = document.getElementById('convert-docx-btn');
+        const originalText = convertBtn.textContent;
+        convertBtn.disabled = true;
+        convertBtn.textContent = '{% trans "Converting..." %}';
+        
+        // Определяем URL для конвертации
+        const objectId = '{{ original.pk|default:"" }}';
+        const isEdit = objectId !== '';
+        let convertUrl;
+        
+        if (isEdit) {
+            // Для редактирования - просто перенаправляем на URL конвертации
+            window.location.href = '{% url "admin:billing_regionaladdendum_convert_docx" "PLACEHOLDER" %}'.replace('PLACEHOLDER', objectId);
+            return;
+        } else {
+            // Для создания - используем AJAX
+            convertUrl = '{% url "admin:billing_regionaladdendum_convert_docx_preview" %}';
+        }
+        
+        fetch(convertUrl, {
+            method: 'POST',
+            body: formData,
+            headers: {
+                'X-CSRFToken': getCookie('csrftoken')
+            }
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Заполняем поля content
+                const contentFields = data.content;
+                for (const [fieldName, htmlContent] of Object.entries(contentFields)) {
+                    // Ищем поле по имени (modeltranslation создает поля с суффиксами)
+                    const field = document.querySelector(`[name="${fieldName}"], textarea[name*="${fieldName}"]`);
+                    if (field) {
+                        field.value = htmlContent;
+                        // Триггерим событие change для обновления UI
+                        field.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+                
+                alert(data.message || '{% trans "Files converted successfully!" %}');
+                convertBtn.textContent = '{% trans "Converted! Click Save" %}';
+                convertBtn.style.backgroundColor = '#28a745';
+            } else {
+                alert('{% trans "Error" %}: ' + (data.error || data.message || '{% trans "Unknown error" %}'));
+                convertBtn.disabled = false;
+                convertBtn.textContent = originalText;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('{% trans "Error converting files" %}: ' + error.message);
+            convertBtn.disabled = false;
+            convertBtn.textContent = originalText;
+        });
+    }
+    
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+});
+</script>
+{% endblock %}
+
+{% block submit_buttons_bottom %}
+<div class="submit-row">
+    {% if not original.pk %}
+    <input type="button" id="convert-docx-btn" class="button" value="{% trans 'Convert DOCX files to HTML' %}">
+    {% else %}
+    <a href="{% url 'admin:billing_regionaladdendum_convert_docx' original.pk %}" class="button" style="display: inline-block; padding: 10px 15px; text-decoration: none; box-sizing: border-box; height: 35px; line-height: 15px;">{% trans "Convert DOCX files to HTML" %}</a>
+    {% endif %}
+    <input type="submit" value="{% trans 'Save' %}" class="default" name="_save">
+    <input type="submit" value="{% trans 'Save and continue editing' %}" name="_continue">
+    <input type="submit" value="{% trans 'Save and add another' %}" name="_addanother">
+    {% if original.pk %}
+    <p class="deletelink-box">
+        <a href="{% url 'admin:billing_regionaladdendum_delete' original.pk %}" class="deletelink">{% trans "Delete" %}</a>
+    </p>
+    {% endif %}
+</div>
+{% endblock %}

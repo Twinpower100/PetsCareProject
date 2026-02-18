@@ -9,7 +9,7 @@
 """
 
 import os
-from django.db import models
+from django.db import models, transaction
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.contrib.postgres.fields import ArrayField
 from django.utils.translation import gettext_lazy as _
@@ -352,23 +352,13 @@ class User(AbstractUser):
     
     # Структурированный адрес пользователя (убрано для избежания циклических зависимостей)
     # Адрес пользователя можно получить через geolocation.Location
-    
-    def get_default_user_type():
-        """Получает дефолтный тип пользователя"""
-        from django.conf import settings
-        if not settings.configured:
-            return None
-        try:
-            return UserType.objects.get(name='basic_user')
-        except UserType.DoesNotExist:
-            return None
+    # Дефолтная роль basic_user назначается в post_save-сигнале при создании пользователя.
 
     user_types = models.ManyToManyField(
         UserType,
         blank=True,
         verbose_name=_('User Types'),
         help_text=_('Roles of the user in the system.'),
-        default=get_default_user_type,
     )
 
     # Переопределяем поля для избежания конфликтов related_name
@@ -613,12 +603,30 @@ class User(AbstractUser):
     def is_provider_admin(self):
         """
         Проверяет, является ли пользователь администратором провайдера.
-        
+
         Returns:
             bool: True, если пользователь имеет роль provider_admin
         """
         return self.has_role('provider_admin')
-    
+
+    def is_provider_owner(self, provider=None):
+        """
+        Проверяет, является ли пользователь владельцем провайдера (роль owner в ProviderAdmin).
+
+        Args:
+            provider: Provider или id провайдера. Если None — проверяет, есть ли
+                     у пользователя роль владельца хотя бы у одного провайдера.
+
+        Returns:
+            bool: True, если пользователь является владельцем (роль owner в ProviderAdmin).
+        """
+        from .models import ProviderAdmin
+        qs = ProviderAdmin.objects.filter(user=self, is_active=True, role=ProviderAdmin.ROLE_OWNER)
+        if provider is not None:
+            provider_id = getattr(provider, 'id', provider)
+            qs = qs.filter(provider_id=provider_id)
+        return qs.exists()
+
     def is_employee(self):
         """
         Проверяет, является ли пользователь сотрудником учреждения.
@@ -826,7 +834,14 @@ class ProviderForm(models.Model):
         max_length=200,
         verbose_name=_('Provider Address')
     )
-    
+    # Компоненты адреса из Google Places Autocomplete (город, улица, дом и т.д.). Опционально.
+    address_components = models.JSONField(
+        verbose_name=_('Address components'),
+        null=True,
+        blank=True,
+        help_text=_('Structured address from Google Places: formatted_address, street, house_number, city, postal_code, country, region.')
+    )
+
     # Новая структурированная модель адреса (убрано для избежания циклических зависимостей)
     # Адрес провайдера можно получить через geolocation.Location
     
@@ -837,12 +852,18 @@ class ProviderForm(models.Model):
         verbose_name=_('Provider Email'),
         help_text=_('Email address of the provider (may differ from the applicant email). Login credentials will be sent to this address upon approval.')
     )
+    admin_email = models.EmailField(
+        verbose_name=_('Admin Email'),
+        help_text=_('Email address of the registered user who will be appointed as provider administrator. The user must exist in the system. If not specified, will use the email of the user who created the form.'),
+        null=True,
+        blank=True
+    )
     documents = models.FileField(
         upload_to='provider_docs/%Y/%m/%d/',
         verbose_name=_('Registration Documents'),
         blank=True,
         null=True,
-        help_text=_('Required only if the institution provides services that require licensing or certification')
+        help_text=_('Optional. If uploaded, we show consumers a "Documents available" badge and the documents on request.')
     )
     status = models.CharField(
         max_length=20,
@@ -909,6 +930,14 @@ class ProviderForm(models.Model):
         null=True,
         blank=True,
         help_text=_('Country of registration. Required for regional addendums and VAT requirements.')
+    )
+    # Язык интерфейса при подаче заявки (en, ru, de, me) — для писем на языке регистрировавшего
+    language = models.CharField(
+        _('Registration language'),
+        max_length=10,
+        blank=True,
+        default='en',
+        help_text=_('UI language of the user who submitted the form. Used for sending emails in that language.')
     )
     invoice_currency = models.ForeignKey(
         'billing.Currency',
@@ -993,6 +1022,65 @@ class ProviderForm(models.Model):
         help_text=_('User agent from which the offer was accepted')
     )
     
+    # Поля для валидации VAT ID (копируются в Provider при создании)
+    VAT_VERIFICATION_STATUS_CHOICES = [
+        ('pending', _('Pending Verification')),
+        ('valid', _('Valid')),
+        ('invalid', _('Invalid')),
+        ('failed', _('Verification Failed')),
+    ]
+    
+    vat_verification_status = models.CharField(
+        _('VAT Verification Status'),
+        max_length=20,
+        choices=VAT_VERIFICATION_STATUS_CHOICES,
+        default='pending',
+        help_text=_('Status of VAT ID verification')
+    )
+    
+    vat_verification_result = models.JSONField(
+        _('VAT Verification Result'),
+        null=True,
+        blank=True,
+        help_text=_('Result of VAT ID verification from VIES API (company name, address, etc.)')
+    )
+    
+    vat_verification_manual_override = models.BooleanField(
+        _('VAT ID Manually Confirmed'),
+        default=False,
+        help_text=_('Whether VAT ID was manually confirmed by administrator')
+    )
+    
+    vat_verification_date = models.DateTimeField(
+        _('VAT Verification Date'),
+        null=True,
+        blank=True,
+        help_text=_('Date when VAT ID was verified via VIES API')
+    )
+    
+    vat_verification_manual_comment = models.TextField(
+        _('Manual Verification Comment'),
+        blank=True,
+        help_text=_('Comment when manually confirming VAT ID (required if manually confirmed)')
+    )
+    
+    vat_verification_manual_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='manually_verified_vat_forms',
+        verbose_name=_('Manually Verified By'),
+        help_text=_('User who manually confirmed VAT ID')
+    )
+    
+    vat_verification_manual_at = models.DateTimeField(
+        _('Manually Verified At'),
+        null=True,
+        blank=True,
+        help_text=_('Date and time when VAT ID was manually confirmed')
+    )
+    
     approved_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
@@ -1029,9 +1117,38 @@ class ProviderForm(models.Model):
         self.approved_at = timezone.now()
         self.save()
 
+    def save(self, *args, **kwargs):
+        """
+        Переопределяем save для установки admin_email по умолчанию из created_by.email
+        если admin_email не указан
+        """
+        # Если admin_email не указан и есть created_by, используем email создателя
+        if not self.admin_email:
+            if self.pk and not self.created_by_id:
+                # Если объект уже сохранен, загружаем created_by
+                try:
+                    self.refresh_from_db(fields=['created_by'])
+                except:
+                    pass
+            if self.created_by_id:
+                if not hasattr(self, '_created_by_loaded'):
+                    try:
+                        # Загружаем created_by если еще не загружен
+                        self.created_by
+                        self._created_by_loaded = True
+                    except:
+                        pass
+                if self.created_by:
+                    self.admin_email = self.created_by.email
+        super().save(*args, **kwargs)
+    
     def clean(self):
         """Валидация обязательных полей для упрощенного процесса"""
         super().clean()
+        
+        # Если admin_email не указан, устанавливаем из created_by
+        if not self.admin_email and self.created_by:
+            self.admin_email = self.created_by.email
         
         # Проверяем обязательные реквизиты
         if not self.tax_id or not self.tax_id.strip():
@@ -1099,10 +1216,48 @@ class ProviderForm(models.Model):
         return file
 
 
+class ProviderFormDocument(models.Model):
+    """
+    Дополнительные загруженные документы заявки провайдера (лицензии, сертификаты).
+    Все файлы из мульти-загрузки сохраняются здесь; первый также дублируется в ProviderForm.documents
+    для обратной совместимости.
+    """
+    provider_form = models.ForeignKey(
+        ProviderForm,
+        on_delete=models.CASCADE,
+        related_name='registration_documents',
+        verbose_name=_('Provider Form'),
+    )
+    file = models.FileField(
+        upload_to='provider_docs/%Y/%m/%d/',
+        verbose_name=_('Document File'),
+    )
+
+    class Meta:
+        verbose_name = _('Provider form document')
+        verbose_name_plural = _('Provider form documents')
+        ordering = ['id']
+
+
 class ProviderAdmin(models.Model):
     """
     Модель для связи пользователя с учреждением в роли администратора.
+
+    Роли:
+    - owner: владелец провайдера. У каждого провайдера один владелец; один пользователь может быть владельцем нескольких провайдеров. Назначается системой при активации заявки.
+    - provider_manager: менеджер провайдера (бизнес-менеджер).
+    - provider_admin: админ провайдера (управление персоналом, настройки).
+    Один пользователь может иметь несколько ролей у одного провайдера и/или быть владельцем нескольких провайдеров (несколько бизнесов).
     """
+    ROLE_OWNER = 'owner'
+    ROLE_PROVIDER_MANAGER = 'provider_manager'
+    ROLE_PROVIDER_ADMIN = 'provider_admin'
+    ROLE_CHOICES = [
+        (ROLE_OWNER, _('Owner')),
+        (ROLE_PROVIDER_MANAGER, _('Provider manager')),
+        (ROLE_PROVIDER_ADMIN, _('Provider admin')),
+    ]
+
     user = models.ForeignKey(
         'users.User',
         on_delete=models.CASCADE,
@@ -1114,6 +1269,13 @@ class ProviderAdmin(models.Model):
         on_delete=models.CASCADE,
         related_name='admins',
         verbose_name=_('Provider')
+    )
+    role = models.CharField(
+        _('Role'),
+        max_length=20,
+        choices=ROLE_CHOICES,
+        default=ROLE_PROVIDER_ADMIN,
+        help_text=_('Owner / Provider manager / Provider admin. One user can have several roles per provider.')
     )
     is_active = models.BooleanField(
         default=True,
@@ -1131,11 +1293,15 @@ class ProviderAdmin(models.Model):
     class Meta:
         verbose_name = _('Provider Admin')
         verbose_name_plural = _('Provider Admins')
-        unique_together = ['user', 'provider']
+        unique_together = [['user', 'provider', 'role']]
         ordering = ['-created_at']
 
     def __str__(self):
         return f"{self.user} - {self.provider}"
+
+    def is_owner(self):
+        """Является ли этот админ владельцем провайдера (единственным на провайдера)."""
+        return self.role == self.ROLE_OWNER
 
     def deactivate(self):
         """Деактивирует администратора учреждения"""
@@ -1157,6 +1323,9 @@ class RoleInvite(models.Model):
     ROLE_CHOICES = [
         ('employee', _('Employee')),
         ('billing_manager', _('Billing Manager')),
+        ('owner', _('Owner')),
+        ('provider_manager', _('Provider manager')),
+        ('provider_admin', _('Provider admin')),
     ]
     
     STATUS_CHOICES = [
@@ -1338,6 +1507,8 @@ class RoleInvite(models.Model):
             self._assign_employee_role(user)
         elif self.role == 'billing_manager':
             self._assign_billing_manager_role(user)
+        elif self.role in ('owner', 'provider_manager', 'provider_admin'):
+            self._assign_provider_admin_role(user)
         
         # Обновляем статус
         self.status = 'accepted'
@@ -1396,6 +1567,32 @@ class RoleInvite(models.Model):
             start_date=timezone.now().date(),
             status='active'
         )
+
+    def _assign_provider_admin_role(self, user):
+        """
+        Назначает роль владельца/менеджера/админа организации (ProviderAdmin).
+        При принятии инвайта: снимаем роль с предыдущих (один владелец, один менеджер), создаём запись для user.
+        """
+        from . import ProviderAdmin, UserType
+        role = self.role
+        provider = self.provider
+        with transaction.atomic():
+            if role == ProviderAdmin.ROLE_OWNER:
+                for prev in ProviderAdmin.objects.filter(provider=provider, role=ProviderAdmin.ROLE_OWNER, is_active=True):
+                    prev.deactivate()
+            elif role == ProviderAdmin.ROLE_PROVIDER_MANAGER:
+                for prev in ProviderAdmin.objects.filter(
+                    provider=provider, role=ProviderAdmin.ROLE_PROVIDER_MANAGER, is_active=True
+                ):
+                    prev.deactivate()
+            ProviderAdmin.objects.create(user=user, provider=provider, role=role, is_active=True)
+            ut, _ = UserType.objects.get_or_create(name='provider_admin')
+            if not user.user_types.filter(name='provider_admin').exists():
+                user.user_types.add(ut)
+            if role in (ProviderAdmin.ROLE_OWNER, ProviderAdmin.ROLE_PROVIDER_MANAGER):
+                role_ut, _ = UserType.objects.get_or_create(name=role)
+                if not user.user_types.filter(name=role).exists():
+                    user.user_types.add(role_ut)
     
     @classmethod
     def cleanup_expired(cls):

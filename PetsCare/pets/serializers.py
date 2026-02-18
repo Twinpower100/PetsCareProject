@@ -17,6 +17,13 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from .models import PetOwnerIncapacity, PetIncapacityNotification
+from .constants import (
+    PET_PHOTO_MAX_SIZE_BYTES,
+    PET_PHOTO_MAX_SIZE_MB,
+    PET_PHOTO_MAX_WIDTH,
+    PET_PHOTO_MAX_HEIGHT,
+    PET_PHOTO_ALLOWED_CONTENT_TYPES,
+)
 
 
 class MedicalRecordSerializer(serializers.ModelSerializer):
@@ -71,11 +78,14 @@ class PetRecordSerializer(serializers.ModelSerializer):
             'id',
             'pet',
             'provider',
+            'provider_location',
             'service',
             'employee',
             'date',
             'next_date',
             'description',
+            'diagnosis',
+            'anamnesis',
             'results',
             'recommendations',
             'notes',
@@ -86,6 +96,11 @@ class PetRecordSerializer(serializers.ModelSerializer):
             'updated_at'
         ]
         read_only_fields = ['id', 'created_by', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'employee': {'required': False, 'allow_null': True},
+            'description': {'required': False, 'allow_blank': True},
+            'provider_location': {'required': False, 'allow_null': True},
+        }
 
 
 class PetAccessSerializer(serializers.ModelSerializer):
@@ -152,6 +167,7 @@ class PetSerializer(serializers.ModelSerializer):
         queryset=User.objects.all(),
         default=serializers.CurrentUserDefault()
     )
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True, default='')
     age = serializers.SerializerMethodField()
     medical_records = MedicalRecordSerializer(many=True, read_only=True)
     records = PetRecordSerializer(many=True, read_only=True)
@@ -201,6 +217,10 @@ class PetSerializer(serializers.ModelSerializer):
             'main_owner_name', 'main_owner_email', 'records_count', 'last_visit_date',
             'has_medical_conditions', 'has_special_needs'
         ]
+        extra_kwargs = {
+            'special_needs': {'required': False},
+            'medical_conditions': {'required': False},
+        }
 
     def get_age(self, obj):
         """Возвращает возраст питомца"""
@@ -225,6 +245,41 @@ class PetSerializer(serializers.ModelSerializer):
     def get_has_special_needs(self, obj):
         """Возвращает True если у питомца есть особые потребности"""
         return bool(obj.special_needs and obj.special_needs != {})
+
+    def validate_description(self, value):
+        """Пустое значение и null приводим к пустой строке."""
+        return value or ''
+
+    def validate_photo(self, value):
+        """Проверка размера, типа и разрешения загружаемого фото питомца."""
+        if not value:
+            return value
+        if value.size > PET_PHOTO_MAX_SIZE_BYTES:
+            raise serializers.ValidationError(
+                _('Photo size must not exceed %(max_mb)s MB.')
+                % {'max_mb': PET_PHOTO_MAX_SIZE_MB}
+            )
+        content_type = getattr(value, 'content_type', None) or ''
+        if content_type and content_type.lower() not in [t.lower() for t in PET_PHOTO_ALLOWED_CONTENT_TYPES]:
+            raise serializers.ValidationError(
+                _('Allowed formats: JPEG, PNG, WebP.')
+            )
+        try:
+            from PIL import Image
+            img = Image.open(value)
+            img.verify()
+        except Exception:
+            raise serializers.ValidationError(_('Invalid or unsupported image file.'))
+        value.seek(0)
+        img = Image.open(value)
+        w, h = img.size
+        if w > PET_PHOTO_MAX_WIDTH or h > PET_PHOTO_MAX_HEIGHT:
+            raise serializers.ValidationError(
+                _('Photo resolution must not exceed %(max_w)s×%(max_h)s px.')
+                % {'max_w': PET_PHOTO_MAX_WIDTH, 'max_h': PET_PHOTO_MAX_HEIGHT}
+            )
+        value.seek(0)
+        return value
 
     def validate(self, data):
         """Проверяет корректность данных"""
@@ -327,12 +382,23 @@ class PetRecordFileSerializer(serializers.ModelSerializer):
 class PetTypeSerializer(serializers.ModelSerializer):
     """
     Сериализатор для типа питомца.
+    Поле name_display — локализованное название по языку запроса (Accept-Language или ?lang=).
     """
+    name_display = serializers.SerializerMethodField()
+
     class Meta:
         model = PetType
-        fields = ['id', 'code', 'name', 'description']
+        fields = ['id', 'code', 'name', 'name_display', 'name_ru', 'name_en', 'name_de', 'name_me', 'description']
         read_only_fields = ['id']
         ref_name = 'PetsPetType'
+
+    def get_name_display(self, obj):
+        request = self.context.get('request')
+        lang = request.GET.get('lang') if request else None
+        if not lang and request and request.META.get('HTTP_ACCEPT_LANGUAGE'):
+            raw = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+            lang = raw.split(',')[0].split('-')[0].strip().lower() if raw else None
+        return obj.get_localized_name(lang) if lang else obj.get_localized_name()
 
 
 class DocumentTypeSerializer(serializers.ModelSerializer):
@@ -372,11 +438,22 @@ class DocumentTypeSerializer(serializers.ModelSerializer):
 class BreedSerializer(serializers.ModelSerializer):
     """
     Сериализатор для породы питомца.
+    Поле name_display — локализованное название по языку запроса (Accept-Language или ?lang=).
     """
+    name_display = serializers.SerializerMethodField()
+
     class Meta:
         model = Breed
-        fields = ['id', 'code', 'name', 'description', 'pet_type']
+        fields = ['id', 'code', 'name', 'name_display', 'name_ru', 'name_en', 'name_de', 'name_me', 'description', 'pet_type']
         read_only_fields = ['id']
+
+    def get_name_display(self, obj):
+        request = self.context.get('request')
+        lang = request.GET.get('lang') if request else None
+        if not lang and request and request.META.get('HTTP_ACCEPT_LANGUAGE'):
+            raw = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+            lang = raw.split(',')[0].split('-')[0].strip().lower() if raw else None
+        return obj.get_localized_name(lang) if lang else obj.get_localized_name()
 
 
 class PetOwnershipInviteSerializer(serializers.ModelSerializer):

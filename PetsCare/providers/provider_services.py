@@ -13,7 +13,7 @@ from typing import Optional, List, Dict, Any
 from datetime import date, time
 import logging
 
-from .models import Provider, ProviderService, ProviderSchedule
+from .models import Provider, LocationSchedule, ProviderLocationService, ProviderLocation
 from booking.models import Booking, TimeSlot
 
 logger = logging.getLogger(__name__)
@@ -32,8 +32,6 @@ class ProviderTransactionService:
     def update_provider_settings(
         provider_id: int,
         name: Optional[str] = None,
-        description: Optional[str] = None,
-        address: Optional[str] = None,
         phone: Optional[str] = None,
         email: Optional[str] = None,
         is_active: Optional[bool] = None
@@ -44,8 +42,6 @@ class ProviderTransactionService:
         Args:
             provider_id: ID учреждения
             name: Название
-            description: Описание
-            address: Адрес
             phone: Телефон
             email: Email
             is_active: Активность
@@ -62,12 +58,8 @@ class ProviderTransactionService:
         # Обновляем поля
         if name is not None:
             provider.name = name
-        if description is not None:
-            provider.description = description
-        if address is not None:
-            provider.address = address
         if phone is not None:
-            provider.phone = phone
+            provider.phone_number = phone
         if email is not None:
             provider.email = email
         if is_active is not None:
@@ -78,14 +70,15 @@ class ProviderTransactionService:
         logger.info(f"Provider settings updated: {provider.id}")
         return provider
     
+    # Метод update_provider_service удален - используйте ProviderLocationService API
     @staticmethod
     @transaction.atomic
-    def update_provider_service(
+    def _deprecated_update_provider_service(
         provider_service_id: int,
         price: Optional[float] = None,
         duration: Optional[int] = None,
         is_active: Optional[bool] = None
-    ) -> ProviderService:
+    ):
         """
         Обновляет услугу учреждения с блокировкой.
         
@@ -101,8 +94,9 @@ class ProviderTransactionService:
         Raises:
             ValidationError: Если услуга уже обновляется другим пользователем
         """
-        # Блокируем услугу учреждения для изменения
-        provider_service = ProviderService.objects.select_for_update().get(id=provider_service_id)
+        # DEPRECATED: Используйте ProviderLocationService API
+        raise NotImplementedError("ProviderService is deprecated. Use ProviderLocationService API instead.")
+        # provider_service = ProviderService.objects.select_for_update().get(id=provider_service_id)
         
         # Блокируем учреждение
         Provider.objects.select_for_update().get(id=provider_service.provider.id)
@@ -133,35 +127,35 @@ class ProviderTransactionService:
     
     @staticmethod
     @transaction.atomic
-    def update_provider_schedule(
-        provider_id: int,
+    def update_location_schedule(
+        location_id: int,
         weekday: int,
         start_time: Optional[str] = None,
         end_time: Optional[str] = None,
         is_closed: Optional[bool] = None
-    ) -> ProviderSchedule:
+    ) -> LocationSchedule:
         """
-        Обновляет расписание учреждения с блокировкой.
+        Обновляет расписание локации с блокировкой.
         
         Args:
-            provider_id: ID учреждения
+            location_id: ID локации
             weekday: День недели (0-6)
             start_time: Время начала
             end_time: Время окончания
             is_closed: Закрыто
             
         Returns:
-            ProviderSchedule: Обновленное расписание
+            LocationSchedule: Обновленное расписание
             
         Raises:
             ValidationError: Если расписание уже обновляется другим пользователем
         """
-        # Блокируем учреждение
-        provider = Provider.objects.select_for_update().get(id=provider_id)
+        # Блокируем локацию
+        location = ProviderLocation.objects.select_for_update().get(id=location_id)
         
-        # Блокируем расписание учреждения на этот день
-        schedule = ProviderSchedule.objects.select_for_update().filter(
-            provider=provider,
+        # Блокируем расписание локации на этот день
+        schedule = LocationSchedule.objects.select_for_update().filter(
+            provider_location=location,
             weekday=weekday
         ).first()
         
@@ -176,42 +170,44 @@ class ProviderTransactionService:
             
             target_date = today + timedelta(days=days_ahead)
             
+            from booking.models import Booking
             active_bookings = Booking.objects.filter(
-                provider=provider,
+                provider_location=location,
                 start_time__date=target_date,
                 status__name__in=['active', 'pending_confirmation']
             ).first()
             
             if active_bookings:
-                raise ValidationError(_("Cannot close provider - there are active bookings"))
+                raise ValidationError(_("Cannot close location - there are active bookings"))
         
         # Обновляем или создаем расписание
         if schedule:
             if start_time is not None:
-                schedule.start_time = start_time
+                schedule.open_time = start_time
             if end_time is not None:
-                schedule.end_time = end_time
+                schedule.close_time = end_time
             if is_closed is not None:
                 schedule.is_closed = is_closed
             schedule.save()
         else:
-            schedule = ProviderSchedule.objects.create(
-                provider=provider,
+            schedule = LocationSchedule.objects.create(
+                provider_location=location,
                 weekday=weekday,
-                start_time=start_time or "09:00",
-                end_time=end_time or "18:00",
+                open_time=start_time or "09:00",
+                close_time=end_time or "18:00",
                 is_closed=is_closed or False
             )
         
-        logger.info(f"Provider schedule updated: {provider.id} for weekday {weekday}")
+        logger.info(f"Location schedule updated: {location.id} for weekday {weekday}")
         return schedule
     
+    # Метод bulk_update_provider_services удален - используйте ProviderLocationService API
     @staticmethod
     @transaction.atomic
-    def bulk_update_provider_services(
+    def _deprecated_bulk_update_provider_services(
         provider_id: int,
         services_data: List[Dict[str, Any]]
-    ) -> List[ProviderService]:
+    ):
         """
         Массовое обновление услуг учреждения с блокировкой.
         
@@ -236,11 +232,12 @@ class ProviderTransactionService:
             duration = data.get('duration')
             is_active = data.get('is_active')
             
-            # Блокируем услугу учреждения
-            provider_service = ProviderService.objects.select_for_update().filter(
-                provider=provider,
-                service_id=service_id
-            ).first()
+            # DEPRECATED: Используйте ProviderLocationService API
+            raise NotImplementedError("ProviderService is deprecated. Use ProviderLocationService API instead.")
+            # provider_service = ProviderService.objects.select_for_update().filter(
+            #     provider=provider,
+            #     service_id=service_id
+            # ).first()
             
             if not provider_service:
                 raise ValidationError(_("Provider service not found"))
@@ -294,19 +291,23 @@ class ProviderTransactionService:
         if not provider.is_active:
             return False
         
-        # Проверяем расписание учреждения
+        # Проверяем расписание локаций учреждения
+        # Если хотя бы одна локация работает в этот день в указанное время, считаем что провайдер доступен
         weekday = target_date.weekday()
-        schedule = ProviderSchedule.objects.filter(
-            provider=provider,
+        locations = ProviderLocation.objects.filter(provider=provider, is_active=True)
+        working_schedules = LocationSchedule.objects.filter(
+            provider_location__in=locations,
             weekday=weekday,
             is_closed=False
-        ).first()
+        )
         
-        if not schedule:
+        if not working_schedules.exists():
             return False
         
-        # Проверяем рабочие часы
-        if start_time < schedule.start_time or end_time > schedule.end_time:
-            return False
+        # Проверяем, что хотя бы одна локация работает в указанное время
+        for schedule in working_schedules:
+            if schedule.open_time and schedule.close_time:
+                if schedule.open_time <= start_time and schedule.close_time >= end_time:
+                    return True
         
-        return True 
+        return False 

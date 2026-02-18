@@ -45,8 +45,8 @@ urlpatterns = [
     path('assign-role/', api_views.UserRoleAssignmentAPIView.as_view(), name='assign-role'),
     path('deactivate/<int:user_id>/', api_views.UserDeactivationAPIView.as_view(), name='deactivate-user'),
     
-    # Формы учреждений согласно ФД
-    path('provider-forms/', api_views.ProviderFormListCreateAPIView.as_view(), name='provider-forms'),
+    # Формы учреждений согласно ФД (только для чтения и одобрения системным админом)
+    path('provider-forms/', api_views.ProviderFormListAPIView.as_view(), name='provider-forms-list'),
     path('provider-forms/approve/', api_views.ProviderFormApprovalAPIView.as_view(), name='approve-provider-form'),
     
     # Управление сотрудниками согласно ФД
@@ -86,4 +86,16 @@ urlpatterns = [
     path('user-sittings/', api_views.UserSittingsView.as_view(), name='user-sittings'),
     path('user-pets/', api_views.UserPetsView.as_view(), name='user-pets'),
     path('remove-role/', api_views.RemoveUserRoleView.as_view(), name='remove-role'),
+    
+    # Provider registration wizard endpoints
+    path('provider-registration/has-application/', api_views.ProviderRegistrationHasApplicationAPIView.as_view(), name='provider-registration-has-application'),
+    path('provider-registration/step2-hints/', api_views.ProviderRegistrationStep2HintsAPIView.as_view(), name='provider-registration-step2-hints'),
+    path('provider-registration/step3-hints/', api_views.ProviderRegistrationStep3HintsAPIView.as_view(), name='provider-registration-step3-hints'),
+    path('provider-registration/step3-validate/', api_views.ProviderRegistrationStep3ValidateAPIView.as_view(), name='provider-registration-step3-validate'),
+    path('provider-registration/check-admin-email/', api_views.CheckAdminEmailAPIView.as_view(), name='check-admin-email'),
+    path('provider-registration/check-iban/', api_views.CheckIbanAPIView.as_view(), name='check-iban'),
+    path('provider-registration/check-tax-id/', api_views.CheckTaxIdAPIView.as_view(), name='check-tax-id'),
+    path('provider-registration/check-registration-number/', api_views.CheckRegistrationNumberAPIView.as_view(), name='check-registration-number'),
+    path('provider-registration/check-vat-number/', api_views.CheckVatNumberAPIView.as_view(), name='check-vat-number'),
+    path('provider-registration/wizard/', api_views.ProviderRegistrationWizardAPIView.as_view(), name='provider-registration-wizard'),
 ] 

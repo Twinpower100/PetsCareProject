@@ -1,0 +1,120 @@
+@startuml sequence_provider_requisites
+title Диаграмма последовательности: Заполнение реквизитов провайдера биллинг-менеджером
+
+actor "Billing Manager" as BillingManager
+participant "Django Admin UI" as AdminUI
+participant "Django ORM" as ORM
+participant "Signal Handler\n(post_save)" as SignalHandler
+database "Database" as DB
+
+== Поиск провайдеров ==
+BillingManager -> AdminUI: Открыть список назначенных провайдеров
+activate AdminUI
+AdminUI -> ORM: BillingManagerProvider.objects.filter(\n  billing_manager=user,\n  status='active'\n).values_list('provider', flat=True)
+activate ORM
+ORM -> DB: SELECT provider_id FROM billing_billingmanagerprovider\nWHERE billing_manager_id = ? AND status = 'active'
+activate DB
+DB --> ORM: Список ID провайдеров
+deactivate DB
+ORM -> DB: SELECT * FROM providers_provider\nWHERE id IN (...)
+activate DB
+DB --> ORM: Список провайдеров
+deactivate DB
+ORM --> AdminUI: QuerySet провайдеров
+deactivate ORM
+AdminUI --> BillingManager: Отображение списка провайдеров
+deactivate AdminUI
+
+== Заполнение реквизитов ==
+BillingManager -> AdminUI: Выбрать провайдера и открыть для редактирования
+activate AdminUI
+AdminUI -> ORM: Provider.objects.get(id=provider_id)
+activate ORM
+ORM -> DB: SELECT * FROM providers_provider WHERE id = ?
+activate DB
+DB --> ORM: Данные провайдера
+deactivate DB
+ORM --> AdminUI: Provider объект
+deactivate ORM
+AdminUI --> BillingManager: Форма редактирования провайдера\n(доступны поля: tax_id, registration_number)
+
+BillingManager -> AdminUI: Заполнить реквизиты:\n- tax_id (ИНН)\n- registration_number\nи сохранить
+activate AdminUI
+AdminUI -> ORM: provider.tax_id = '...'
+AdminUI -> ORM: provider.registration_number = '...'
+AdminUI -> ORM: provider.save()
+activate ORM
+
+ORM -> DB: UPDATE providers_provider\nSET tax_id = ?, registration_number = ?\nWHERE id = ?
+activate DB
+DB --> ORM: Успех
+deactivate DB
+
+note right of ORM
+    При сохранении Provider
+    Django автоматически вызывает
+    post_save сигнал для проверки
+    и автоматической установки статуса
+end note
+
+ORM -> SignalHandler: post_save сигнал (если настроено)
+activate SignalHandler
+note right of SignalHandler
+    Автоматическая 
+    установка статуса:
+    activation_status = 
+    "activation_required"
+    если реквизиты заполнены
+end note
+SignalHandler -> ORM: Проверить заполнение реквизитов
+activate ORM
+ORM -> DB: Проверка: tax_id IS NOT NULL\nAND registration_number IS NOT NULL
+activate DB
+DB --> ORM: Реквизиты заполнены
+deactivate DB
+ORM --> SignalHandler: Реквизиты заполнены
+deactivate ORM
+
+SignalHandler -> ORM: provider.activation_status = 'activation_required'
+SignalHandler -> ORM: provider.is_active = False
+SignalHandler -> ORM: provider.save()
+activate ORM
+ORM -> DB: UPDATE providers_provider\nSET activation_status = 'activation_required',\n    is_active = False\nWHERE id = ?
+activate DB
+DB --> ORM: Статус обновлен
+deactivate DB
+ORM --> SignalHandler: Успех
+deactivate ORM
+
+SignalHandler -> ORM: Отправить уведомление системным админам
+activate ORM
+note right of ORM
+    Уведомление 
+    о готовности 
+    провайдера
+    к активации 
+    (заполнены реквизиты)
+end note
+ORM --> SignalHandler: Уведомление отправлено
+deactivate ORM
+
+SignalHandler --> ORM: Сигнал завершен
+deactivate SignalHandler
+
+ORM --> AdminUI: Реквизиты сохранены
+deactivate ORM
+AdminUI --> BillingManager: Сообщение об успехе
+deactivate AdminUI
+
+== Результат ==
+note over BillingManager
+    После заполнения реквизитов:
+    - activation_status = 'activation_required'
+    - is_active = False
+    - Системные админы уведомлены
+    - Провайдер готов к активации 
+    системным админом
+end note
+
+@enduml
+

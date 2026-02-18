@@ -26,4 +26,9 @@ class PetsConfig(AppConfig):
     
     def ready(self):
         """Подключает сигналы приложения."""
+        # Проверяем, что Django полностью инициализирован
+        from django.conf import settings
+        if not settings.configured:
+            return
+            
         import pets.signals

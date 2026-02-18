@@ -26,5 +26,14 @@ class UsersConfig(AppConfig):
     verbose_name = _('Users')
     
     def ready(self):
-        """Подключает сигналы приложения."""
+        """Подключает сигналы приложения и настраивает админку для SocialApp."""
+        # Проверяем, что Django полностью инициализирован
+        from django.conf import settings
+        if not settings.configured:
+            return
+        
+        # Импортируем сигналы только после полной инициализации
         import users.signals
+        
+        # Настраиваем админку для SocialApp (только для суперпользователей)
+        import users.admin_socialapp  # noqa

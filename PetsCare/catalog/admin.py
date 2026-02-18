@@ -28,8 +28,8 @@ class ServiceAdmin(admin.ModelAdmin):
     - Автоматический уровень (level)
     - Исключение самой услуги из parent
     """
-    list_display = ['get_tree_name', 'get_full_path', 'code', 'parent', 'level', 'hierarchy_order', 'is_active', 'is_mandatory', 'is_periodic', 'requires_license', 'get_allowed_pet_types']
-    list_filter = ['level', 'is_active', 'is_mandatory', 'is_periodic', 'requires_license', 'allowed_pet_types']
+    list_display = ['get_tree_name', 'get_full_path', 'code', 'parent', 'level', 'hierarchy_order', 'is_active', 'is_client_facing', 'is_mandatory', 'is_periodic', 'requires_license', 'get_allowed_pet_types']
+    list_filter = ['level', 'is_active', 'is_client_facing', 'is_mandatory', 'is_periodic', 'requires_license', 'allowed_pet_types']
     search_fields = ['code', 'name', 'name_en', 'name_ru', 'name_me', 'name_de', 'description', 'description_en', 'description_ru', 'description_me', 'description_de']
     ordering = ['hierarchy_order', 'name']
     readonly_fields = ['level', 'hierarchy_order', 'version']
@@ -54,10 +54,12 @@ class ServiceAdmin(admin.ModelAdmin):
         (_('Status'), {
             'fields': (
                 'is_active',
+                'is_client_facing',
                 'is_mandatory',
                 'is_periodic',
                 'requires_license'
-            )
+            ),
+            'description': _('is_client_facing: if unchecked, this is a technical/internal service (e.g. cleaning) not bookable by clients.')
         }),
         (_('Pet Types'), {
             'fields': (

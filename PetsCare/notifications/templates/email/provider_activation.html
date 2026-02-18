@@ -1,0 +1,98 @@
+{% extends "email/base.html" %}
+{% load i18n %}
+
+{% block content %}
+<div class="notification-title">{% trans "Your provider account has been activated" %}</div>
+
+<div class="notification-message">
+    <p>{% trans "Hello" %}, {{ admin_first_name }}!</p>
+    
+    <p>{% trans "We are pleased to inform you that your provider account" %} <strong>{{ provider_name }}</strong> {% trans "has been activated." %}</p>
+    
+    <div class="info-box">
+        <p><strong>{% trans "Provider name" %}:</strong> {{ provider_name }}</p>
+        <p><strong>{% trans "Your email" %}:</strong> {{ admin_email }}</p>
+        {% if not is_admin and provider_admin_info %}
+        <p><strong>{% trans "Provider administrator" %}:</strong> {{ provider_admin_info.name }} ({{ provider_admin_info.email }})</p>
+        <p style="margin-top: 10px; font-size: 14px; color: #666;">
+            {% trans "Note: The provider administrator is the person who submitted the application. Only the administrator has access to the admin panel." %}
+        </p>
+        {% endif %}
+    </div>
+    
+    {% if is_admin %}
+    <p>{% trans "You can now access the administrative panel to start configuring your provider account." %}</p>
+    {% else %}
+    <p>{% trans "The provider account has been activated. The provider administrator will receive separate instructions for accessing the administrative panel." %}</p>
+    {% endif %}
+    
+    <div style="text-align: center; margin: 30px 0;">
+        <a href="{{ admin_login_url }}" class="button">{% trans "Go to Admin Panel" %}</a>
+    </div>
+    
+    <div class="info-box">
+        <h3>{% trans "How to log in" %}:</h3>
+        {% if is_admin %}
+        {# Получатель - админ, показываем его данные #}
+        {% if login_method == 'password' %}
+        <p>{% trans "Your login" %}: <strong>{{ admin_email }}</strong></p>
+        <p>{% trans "Use your existing password to log in." %}</p>
+        {% else %}
+        <p>{% trans "Log in through Google using your account" %} <strong>{{ admin_email }}</strong></p>
+        <p>{% trans "Click the 'Log in with Google' button on the login page." %}</p>
+        {% endif %}
+        {% else %}
+        {# Получатель - не админ, показываем данные админа #}
+        {% if provider_admin_info %}
+        <p>{% trans "The provider administrator can log in using:" %}</p>
+        {% if login_method_for_display == 'password' %}
+        <p>{% trans "Login" %}: <strong>{{ login_email }}</strong></p>
+        <p>{% trans "Use the existing password to log in." %}</p>
+        {% else %}
+        <p>{% trans "Log in through Google using account" %} <strong>{{ login_email }}</strong></p>
+        <p>{% trans "Click the 'Log in with Google' button on the login page." %}</p>
+        {% endif %}
+        {% endif %}
+        {% endif %}
+    </div>
+    
+    <p style="margin-top: 20px; font-size: 14px; color: #666;">
+        {% trans "If the button doesn't work, use this link:" %}<br>
+        <a href="{{ admin_login_url }}" style="color: #667eea;">{{ admin_login_url }}</a>
+    </p>
+    
+    <div class="info-box">
+        <h3>{% trans "Setup Guide" %}:</h3>
+        <p>{% trans "A detailed step-by-step setup guide is available after you log in. It will help you configure:" %}</p>
+        <p>• {% trans "Provider locations" %}</p>
+        <p>• {% trans "Services and pricing" %}</p>
+        <p>• {% trans "Working hours and schedules" %}</p>
+        <p>• {% trans "Staff and employees" %}</p>
+        <p style="margin-top: 15px;">
+            <a href="{{ setup_guide_url }}" style="color: #667eea; font-weight: 600;">{% trans "View Setup Guide" %}</a>
+        </p>
+    </div>
+    
+    {% if billing_manager_contacts %}
+    <div class="info-box">
+        <h3>{% trans "Need Help?" %}:</h3>
+        <p>{% trans "If you have any questions or need assistance with setup, please contact your billing manager:" %}</p>
+        {% for contact in billing_manager_contacts %}
+        <p style="margin-top: 10px;">
+            <strong>{{ contact.name }}</strong><br>
+            <a href="mailto:{{ contact.email }}" style="color: #667eea;">{{ contact.email }}</a>
+        </p>
+        {% endfor %}
+        <p style="margin-top: 15px; font-size: 14px; color: #666;">
+            {% trans "Your billing manager will help you with any questions or connect you with a specialist if needed." %}
+        </p>
+    </div>
+    {% else %}
+    <div class="info-box">
+        <h3>{% trans "Need Help?" %}:</h3>
+        <p>{% trans "If you have any questions or need assistance, please contact our support team." %}</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+

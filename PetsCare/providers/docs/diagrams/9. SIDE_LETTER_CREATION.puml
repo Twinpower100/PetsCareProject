@@ -1,0 +1,115 @@
+@startuml sequence_side_letter_creation
+title Диаграмма последовательности: Создание Side Letter (доп. соглашения) для крупного клиента
+
+actor "System Admin" as SystemAdmin
+participant "Django Admin UI\nили API" as AdminUI
+participant "Django ORM" as ORM
+database "Database" as DB
+
+== Поиск провайдера ==
+SystemAdmin -> AdminUI: Открыть список провайдеров
+activate AdminUI
+AdminUI -> ORM: Provider.objects.all()
+activate ORM
+ORM -> DB: SELECT * FROM providers_provider\nORDER BY name
+activate DB
+DB --> ORM: Список провайдеров
+deactivate DB
+ORM --> AdminUI: QuerySet провайдеров
+deactivate ORM
+AdminUI --> SystemAdmin: Отображение списка провайдеров
+deactivate AdminUI
+
+== Создание Side Letter ==
+SystemAdmin -> AdminUI: Выбрать провайдера и создать Side Letter
+activate AdminUI
+AdminUI -> ORM: Получить активную оферту
+activate ORM
+ORM -> DB: SELECT * FROM legal_legaldocument WHERE document_type='global_offer'\nWHERE is_active = True\nORDER BY effective_date DESC\nLIMIT 1
+activate DB
+DB --> ORM: PublicOffer объект
+deactivate DB
+ORM --> AdminUI: PublicOffer объект
+deactivate ORM
+
+AdminUI --> SystemAdmin: Форма создания Side Letter:\n- Провайдер (выбран)\n- Оферта (текущая активная)\n- Измененные пункты (JSON)\n- Загрузка документа
+deactivate AdminUI
+
+== Заполнение данных Side Letter ==
+SystemAdmin -> AdminUI: Заполнить данные:\n- provider (выбран)\n- offer (текущая активная)\n- modified_clauses: {\n    "5.1": "Комиссия 5% вместо 10%",\n    "4.3": "Отсрочка платежа 10 дней вместо 5"\n  }\n- document (загрузить PDF)
+activate AdminUI
+AdminUI -> ORM: Валидация данных Side Letter
+activate ORM
+ORM -> DB: Проверка валидности данных
+activate DB
+note right of DB
+    Валидация:
+    - provider должен существовать
+    - offer должна быть активной
+    - modified_clauses должен быть валидным JSON
+    - document должен быть загружен (PDF)
+    - modified_clauses не должен быть пустым
+end note
+DB --> ORM: Данные валидны
+deactivate DB
+
+ORM -> DB: INSERT INTO billing_sideletter\n(provider_id, offer_id, modified_clauses,\ndocument, created_by, is_active=True)
+activate DB
+DB --> ORM: Side Letter создан
+deactivate DB
+ORM --> AdminUI: SideLetter объект
+deactivate ORM
+AdminUI --> SystemAdmin: Side Letter создан
+deactivate AdminUI
+
+== Активация Side Letter ==
+SystemAdmin -> AdminUI: Активировать Side Letter\n(после подписания документа)
+activate AdminUI
+AdminUI -> ORM: side_letter.is_active = True
+AdminUI -> ORM: side_letter.signed_at = now()
+AdminUI -> ORM: side_letter.save()
+activate ORM
+ORM -> DB: UPDATE billing_sideletter\nSET is_active = True,\n    signed_at = NOW()\nWHERE id = ?
+activate DB
+DB --> ORM: Side Letter активирован
+deactivate DB
+ORM --> AdminUI: Успех
+deactivate ORM
+AdminUI --> SystemAdmin: Side Letter активирован
+deactivate AdminUI
+
+== Применение условий Side Letter ==
+note over SystemAdmin
+    После активации Side Letter:
+    
+    1. Условия из modified_clauses применяются к провайдеру:
+       - Комиссия изменяется с 10% на 5%
+       - Отсрочка платежа изменяется с 5 на 10 дней
+    
+    2. В биллинге при расчете комиссии:
+       - Проверяется наличие активного Side Letter
+       - Если есть - применяются условия из Side Letter
+       - Если нет - применяются условия из оферты
+    
+    3. Уведомление провайдера:
+       - Email о применении Side Letter
+       - Информация об измененных условиях
+end note
+
+== Результат ==
+note over SystemAdmin
+    Side Letter позволяет:
+    
+    ✅ Изменить отдельные пункты оферты для конкретного провайдера
+    ✅ Сохранить все остальные условия оферты без изменений
+    ✅ Применить изменения автоматически в биллинге
+    ✅ Хранить подписанный документ для аудита
+    
+    Примеры использования:
+    - Снижение комиссии для крупных сетей
+    - Увеличение отсрочки платежа для VIP-клиентов
+    - Изменение порогов блокировки для надежных партнеров
+end note
+
+@enduml
+

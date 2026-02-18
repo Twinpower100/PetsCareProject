@@ -1,0 +1,196 @@
+@startuml sequence_provider_registration_with_offer
+title Диаграмма последовательности: Регистрация провайдера с принятием публичной оферты
+
+actor "Owner\n(Владелец)" as Owner
+participant "React Frontend" as Frontend
+participant "Backend API\n(Django)" as API
+participant "Django ORM" as ORM
+database "Database" as DB
+participant "Email Service" as Email
+
+== Этап 1: Регистрация пользователя ==
+Owner -> Frontend: Регистрация (Email + Пароль)
+activate Frontend
+Frontend -> API: POST /api/users/register/
+activate API
+API -> ORM: Создать User
+activate ORM
+ORM -> DB: INSERT INTO users_user
+activate DB
+DB --> ORM: User создан
+deactivate DB
+ORM --> API: User объект
+deactivate ORM
+API --> Frontend: Успех (HTTP 201)
+deactivate API
+Frontend --> Owner: Регистрация успешна
+deactivate Frontend
+
+== Этап 2: Создание заявки провайдера ==
+Owner -> Frontend: Заполнение формы заявки\n(Email, Телефон, Наименование,\nАдрес, Категории услуг)
+activate Frontend
+Frontend -> API: POST /api/users/provider-forms/
+activate API
+API -> ORM: Создать ProviderForm\n(status='pending')
+activate ORM
+ORM -> DB: INSERT INTO users_providerform
+activate DB
+DB --> ORM: ProviderForm создан
+deactivate DB
+ORM --> API: ProviderForm объект
+deactivate ORM
+API --> Frontend: Успех (HTTP 201)
+deactivate API
+Frontend --> Owner: Заявка создана
+deactivate Frontend
+
+== Этап 3: Одобрение заявки системным админом ==
+note over Owner, DB
+    Системный админ одобряет заявку через Django Admin:
+    1. Выбирает биллинг-менеджера
+    2. Нажимает "Approve"
+    3. Сигнал create_provider_on_approval создает Provider
+    4. Owner автоматически становится provider_admin
+    5. Назначается биллинг-менеджер
+end note
+
+ORM -> DB: INSERT INTO providers_provider\n(activation_status='pending')
+ORM -> DB: INSERT INTO users_provideradmin
+ORM -> DB: UPDATE users_user SET is_staff=True
+ORM -> DB: INSERT INTO billing_billingmanagerprovider
+activate DB
+DB --> ORM: Provider создан
+deactivate DB
+
+== Этап 4: Заполнение реквизитов Owner'ом ==
+Owner -> Frontend: Заполнение реквизитов\n(Страна, Тип организации, ИНН,\nVAT Number для ЕС, и т.д.)
+activate Frontend
+Frontend -> API: PATCH /api/providers/{id}/
+activate API
+API -> ORM: Обновить Provider\n(реквизиты)
+activate ORM
+ORM -> DB: UPDATE providers_provider\nSET country=?, tax_id=?, vat_number=?, ...
+activate DB
+DB --> ORM: Реквизиты сохранены
+deactivate DB
+ORM --> API: Provider обновлен
+deactivate ORM
+API --> Frontend: Успех (HTTP 200)
+deactivate API
+Frontend --> Owner: Реквизиты сохранены
+deactivate Frontend
+
+== Этап 5: Получение текста оферты ==
+Owner -> Frontend: Нажать "Просмотреть оферту"
+activate Frontend
+Frontend -> API: GET /api/providers/{id}/offer/
+activate API
+API -> ORM: Получить активную LegalDocument (global_offer)
+activate ORM
+ORM -> DB: SELECT * FROM legal_legaldocument WHERE document_type='global_offer'\nWHERE is_active=True
+activate DB
+DB --> ORM: PublicOffer объект
+deactivate DB
+ORM --> API: PublicOffer
+deactivate ORM
+
+API -> API: OfferGeneratorService.get_offer_for_provider()\n(подстановка переменных: {{commission_percent}})
+API -> ORM: Получить региональные дополнения\n(по country провайдера)
+activate ORM
+ORM -> DB: SELECT * FROM legal_legaldocument WHERE document_type='regional_addendum'\nWHERE region_code=?
+activate DB
+DB --> ORM: LegalDocument список (regional_addendum)
+deactivate DB
+ORM --> API: Региональные дополнения
+deactivate ORM
+
+API --> Frontend: Текст оферты + региональные дополнения
+deactivate API
+Frontend --> Owner: Отображение полного текста оферты
+deactivate Frontend
+
+== Этап 6: Принятие оферты Owner'ом ==
+Owner -> Frontend: Прочитать оферту\nПоставить галочку:\n"Нажимая кнопку, вы подтверждаете,\nчто имеете полномочия действовать\nот имени организации и принимаете\nусловия Оферты"\nНажать "Принять оферту"
+activate Frontend
+Frontend -> API: POST /api/providers/{id}/accept-offer/\n{ip_address, user_agent}
+activate API
+
+API -> ORM: Проверка прав доступа\n(Owner = provider_admin)
+activate ORM
+ORM -> DB: SELECT * FROM users_provideradmin\nWHERE provider_id=? AND user_id=?
+activate DB
+DB --> ORM: ProviderAdmin найден
+deactivate DB
+ORM --> API: Права подтверждены
+deactivate ORM
+
+API -> ORM: Получить активную LegalDocument (global_offer)
+activate ORM
+ORM -> DB: SELECT * FROM legal_legaldocument WHERE document_type='global_offer'\nWHERE is_active=True
+activate DB
+DB --> ORM: PublicOffer
+deactivate DB
+ORM --> API: PublicOffer
+deactivate ORM
+
+API -> ORM: Получить региональные дополнения\n(по country провайдера)
+activate ORM
+ORM -> DB: SELECT * FROM legal_legaldocument WHERE document_type='regional_addendum'\nWHERE region_code=? AND is_active=True
+activate DB
+DB --> ORM: LegalDocument список (regional_addendum)
+deactivate DB
+ORM --> API: Региональные дополнения
+deactivate ORM
+
+API -> ORM: Создать DocumentAcceptance
+activate ORM
+ORM -> DB: INSERT INTO legal_documentacceptance\n(provider, document, accepted_by=Owner,\ndocument_version, accepted_at=NOW(), ip_address, user_agent,\nis_active=True)
+activate DB
+DB --> ORM: DocumentAcceptance создан
+deactivate DB
+ORM --> API: DocumentAcceptance
+deactivate ORM
+
+note right of ORM
+    Django автоматически вызывает
+    post_save сигнал для DocumentAcceptance
+end note
+
+ORM -> ORM: Сигнал handle_offer_acceptance\n(автоматическая активация провайдера)
+activate ORM
+ORM -> DB: UPDATE providers_provider\nSET activation_status='active',\n    is_active=True
+activate DB
+DB --> ORM: Провайдер активирован
+deactivate DB
+ORM --> ORM: Отправить письмо Owner'у\nоб успешной активации
+ORM -> Email: Отправить письмо
+activate Email
+Email --> Owner: Письмо об активации провайдера\n(с информацией об оферте)
+deactivate Email
+ORM --> ORM: Сигнал завершен
+deactivate ORM
+
+API --> Frontend: Успех (HTTP 201)\n{offer_acceptance_id, provider_activated: true}
+deactivate API
+Frontend --> Owner: Оферта принята!\nПровайдер активирован
+deactivate Frontend
+
+== Результат ==
+note over Owner, DB
+    После принятия оферты:
+    
+    ✅ Provider активирован (activation_status='active', is_active=True)
+    ✅ Owner имеет полные права provider_admin
+    ✅ Owner может:
+       - Создавать и редактировать точки (ProviderLocation)
+       - Создавать и редактировать услуги (ProviderLocationService)
+       - Создавать и редактировать работников (Employee)
+       - Создавать и редактировать расписания (LocationSchedule)
+       - Управлять видимостью услуг (show_services)
+    
+    ✅ Письмо отправлено Owner'у об успешной активации
+    ✅ DocumentAcceptance сохранен с IP-адресом и User-Agent
+    ✅ Региональные дополнения привязаны к акцепту
+end note
+
+@enduml
