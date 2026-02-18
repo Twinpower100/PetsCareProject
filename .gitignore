@@ -59,6 +59,7 @@ desktop.ini
 
 # Project specific
 /PetsCare/.env
+staticfiles/
 logs/
 *.log
 
