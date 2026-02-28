@@ -1,0 +1,41 @@
+Using existing test database for alias 'default'...
+
+..FF.....F
+======================================================================
+FAIL: test_profile_form_valid (users.tests.UserFormTest.test_profile_form_valid)
+Тест валидной формы профиля.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 123, in test_profile_form_valid
+    self.assertTrue(serializer.is_valid(), getattr(serializer, 'errors', None))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : {'phone_number': [ErrorDetail(string='Введен некорректный номер телефона.', code='invalid_phone_number')]}
+
+======================================================================
+FAIL: test_registration_form_valid (users.tests.UserFormTest.test_registration_form_valid)
+Тест валидной формы регистрации.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 113, in test_registration_form_valid
+    self.assertTrue(serializer.is_valid(), getattr(serializer, 'errors', None))
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true : {'phone_number': [ErrorDetail(string='Обязательное поле.', code='required')]}
+
+======================================================================
+FAIL: test_user_registration (users.tests.UserRegistrationTest.test_user_registration)
+Тест успешной регистрации пользователя
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 149, in test_user_registration
+    self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 400 != 201 : {'phone_number': [ErrorDetail(string='Обязательное поле.', code='required')]}
+
+----------------------------------------------------------------------
+Ran 10 tests in 7.518s
+
+FAILED (failures=3)
+Preserving test database for alias 'default'...
+
+Found 10 test(s).
+System check identified no issues (0 silenced).

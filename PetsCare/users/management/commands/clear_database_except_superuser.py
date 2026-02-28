@@ -87,7 +87,7 @@ class Command(BaseCommand):
             ('pets', 'PetAccess'),
             ('pets', 'PetOwnerIncapacity'),
             ('pets', 'PetIncapacityNotification'),
-            ('pets', 'PetOwnershipInvite'),
+            ('invites', 'Invite'),
             ('pets', 'Pet'),
             # PetType и Breed оставляем (справочники)
             
@@ -96,14 +96,9 @@ class Command(BaseCommand):
             ('providers', 'ProviderLocationService'),  # Если уже существует
             
             # Расписания
-            ('scheduling', 'WorkSlot'),
-            ('scheduling', 'SchedulePreference'),
             ('scheduling', 'DayOff'),
             ('scheduling', 'SickLeave'),
             ('scheduling', 'Vacation'),
-            ('scheduling', 'StaffingRequirement'),
-            ('scheduling', 'ServicePriority'),
-            ('scheduling', 'Workplace'),
             ('providers', 'Schedule'),
             ('providers', 'PatternDay'),
             ('providers', 'SchedulePattern'),
@@ -111,15 +106,12 @@ class Command(BaseCommand):
             # Сотрудники
             ('providers', 'EmployeeProvider'),
             ('providers', 'EmployeeWorkSlot'),
-            ('providers', 'ManagerInvite'),
-            ('providers', 'JoinRequest'),
             ('providers', 'Employee'),
             
             # Локации (если уже существуют)
             ('providers', 'ProviderLocation'),
             
-            # Организации
-            ('providers', 'ProviderAdmin'),
+            # Организации (роли провайдера — в providers.EmployeeProvider)
             ('providers', 'Provider'),
             
             # Заявки провайдеров
@@ -181,7 +173,7 @@ class Command(BaseCommand):
             # Service и DocumentType оставляем (справочники)
             
             # Роли и инвайты
-            ('users', 'RoleInvite'),
+            ('invites', 'Invite'),
             ('users', 'RoleTermination'),
             
             # Пользователи (кроме суперюзера)

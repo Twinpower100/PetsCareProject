@@ -24,12 +24,14 @@ from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from django.utils.translation import gettext_lazy as _
+from django.utils import translation
 from django_filters.rest_framework import DjangoFilterBackend
 
 from users.serializers import UserSerializer
-from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, EmployeeWorkSlot, EmployeeJoinRequest, SchedulePattern, ProviderLocation, ProviderLocationService, LocationManagerInvite, LocationStaffInvite, EmployeeLocationService, ProviderOwnerManagerInvite
+from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, EmployeeWorkSlot, SchedulePattern, ProviderLocation, ProviderLocationService, EmployeeLocationService, EmployeeLocationRole
 from catalog.models import Service
 from django.db.models import Q, Count, Case, When, Value
+from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from booking.models import Booking
 from .serializers import (
@@ -38,14 +40,13 @@ from .serializers import (
     EmployeeRegistrationSerializer,
     EmployeeProviderUpdateSerializer,
     EmployeeWorkSlotSerializer,
-    EmployeeJoinRequestSerializer, EmployeeProviderConfirmSerializer,
     ProviderLocationSerializer, ProviderLocationServiceSerializer,
     LocationScheduleSerializer, HolidayShiftSerializer,
     LocationServicePricesUpdateSerializer,
     ProviderAdminListSerializer,
 )
 # from users.permissions import IsProviderAdmin  # Класс определен ниже в этом файле
-from users.models import User, ProviderAdmin as UserProviderAdmin
+from users.models import User
 
 from django.utils import translation
 
@@ -98,22 +99,43 @@ def _get_provider_rating_map(providers):
     return {rating.object_id: float(rating.current_rating) for rating in ratings}
 
 
+def _get_employee(user):
+    """Возвращает Employee для user (get_or_create)."""
+    return Employee.objects.get_or_create(user=user)[0]
+
+
+def _active_employee_provider_q():
+    """Q-объект для активных записей EmployeeProvider (end_date пусто или >= сегодня)."""
+    from django.utils import timezone
+    today = timezone.now().date()
+    return Q(end_date__isnull=True) | Q(end_date__gte=today)
+
+
+def _user_is_owner_for_provider(user, provider):
+    """
+    Проверяет, является ли пользователь владельцем данного провайдера.
+    Используется для ограничения «Пригласить менеджера» и «Я сам себе менеджер» только владельцу.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    return EmployeeProvider.objects.filter(
+        provider=provider,
+        employee__user=user,
+        is_owner=True,
+    ).filter(_active_employee_provider_q()).exists()
+
+
 class IsProviderAdmin(permissions.BasePermission):
     """
-    Проверка прав администратора провайдера.
+    Проверка доступа в приложение «Админка провайдеров».
     
-    Проверяет:
-    - Наличие типа пользователя
-    - Соответствие типа 'provider_admin'
+    Доступ разрешён, если пользователь привязан хотя бы к одному провайдеру через EmployeeProvider.
+    Уровень доступа внутри приложения определяется ролью (owner, provider_manager, и т.д.).
     """
     def has_permission(self, request, view):
-        """
-        Проверяет права доступа.
-        
-        Returns:
-            bool: True, если пользователь является администратором провайдера
-        """
-        return _user_has_role(request.user, 'provider_admin')
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return request.user.get_managed_providers().exists()
 
 
 class RequisitesValidationRulesAPIView(APIView):
@@ -201,7 +223,7 @@ class ProviderListCreateAPIView(generics.ListCreateAPIView):
         if getattr(self, 'swagger_fake_view', False):
             return Provider.objects.none()
         queryset = self.queryset
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             queryset = queryset.filter(id__in=self.request.user.get_managed_providers())
         return queryset
 
@@ -226,15 +248,15 @@ class ProviderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
     def get_queryset(self):
         """Для provider_admin — только управляемые организации."""
         queryset = self.queryset
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             queryset = queryset.filter(id__in=self.request.user.get_managed_providers())
         return queryset
 
 
 class ProviderAdminListAPIView(generics.ListAPIView):
     """
-    Список админов провайдера с полем role (owner / provider_admin).
-    Для страницы персонала: отображение владельца учреждения и админов, управление правами.
+    Список админов провайдера с полем role (owner / provider_manager / provider_admin).
+    Для страницы персонала: отображение владельца учреждения и админов. Источник — EmployeeProvider.
     Доступ: только админ или владелец данного провайдера.
     """
     permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
@@ -242,321 +264,164 @@ class ProviderAdminListAPIView(generics.ListAPIView):
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return UserProviderAdmin.objects.none()
+            return EmployeeProvider.objects.none()
         provider_id = self.kwargs.get('provider_id')
         managed = self.request.user.get_managed_providers()
         if not managed.filter(pk=provider_id).exists():
-            return UserProviderAdmin.objects.none()
-        return UserProviderAdmin.objects.filter(
+            return EmployeeProvider.objects.none()
+        role_q = Q(is_owner=True) | Q(is_provider_manager=True) | Q(is_provider_admin=True)
+        return EmployeeProvider.objects.filter(
             provider_id=provider_id,
-            is_active=True
-        ).select_related('user', 'provider').order_by(
-            Case(
-                When(role=UserProviderAdmin.ROLE_OWNER, then=Value(0)),
-                When(role=UserProviderAdmin.ROLE_PROVIDER_MANAGER, then=Value(1)),
-                default=Value(2),
-            ),
-            'created_at'
-        )
-
-
-def _send_provider_owner_manager_invite_email(provider, email, role, code_6, language):
-    """
-    Отправляет письмо с приглашением на роль владельца/менеджера организации.
-    Как у инвайта менеджера локации: адрес страницы + 6-значный код. Язык — language (en/ru/de/me).
-    """
-    from django.conf import settings
-    lang = (language or 'en').strip().lower()
-    if lang not in ('en', 'ru', 'de', 'me'):
-        lang = 'en'
-    translation.activate(lang)
-    provider_name = provider.name or ''
-    role_label = (
-        _('Owner') if role == UserProviderAdmin.ROLE_OWNER
-        else _('Manager')
-    )
-    base_url = getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173').rstrip('/')
-    accept_page_url = f'{base_url}/accept-organization-role-invite'
-    subject = _('Invitation to become %(role)s of the organization "%(name)s"') % {'role': role_label, 'name': provider_name}
-    body_plain = _(
-        'You have been invited to become %(role)s for the organization "%(name)s". '
-        'Open the link and enter the activation code. Link: %(url)s Activation code: %(code)s. Valid for 7 days. '
-        'If you received this message by mistake, please ignore it.'
-    ) % {'role': role_label, 'name': provider_name, 'url': accept_page_url, 'code': code_6}
-    body_html = (
-        f'<p>{subject}</p>'
-        f'<p>{provider_name}</p>'
-        f'<p><a href="{accept_page_url}">{accept_page_url}</a></p>'
-        f'<p>{_("Activation code:")} <strong>{code_6}</strong>. {_("Valid for 7 days.")}</p>'
-        f'<p><em>{_("If you received this message by mistake, please ignore it.")}</em></p>'
-    )
-    from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'noreply@example.com'
-    try:
-        send_mail(subject, body_plain, from_email, [email], fail_silently=True, html_message=body_html)
-    except Exception as e:
-        logger.warning('Failed to send provider owner/manager invite email to %s: %s', email, e)
-
-
-class ProviderAdminInviteAPIView(APIView):
-    """
-    Приглашение по email на роль владельца или менеджера организации (как инвайт менеджера локации).
-    POST providers/<provider_id>/admins/invite/
-    Body: { "email": "user@example.com", "role": "owner" | "provider_manager", "language": "en" }
-    Создаётся ProviderOwnerManagerInvite с 6-значным кодом; письмо — адрес страницы + код. Роль назначается
-    после ввода кода на странице приёма (POST provider-owner-manager-invite/accept/). Язык письма — body.language.
-    """
-    permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
-
-    def post(self, request, provider_id):
-        import random
-        from django.utils import timezone
-        from django.db import IntegrityError
-
-        managed = request.user.get_managed_providers()
-        if not managed.filter(pk=provider_id).exists():
-            raise PermissionDenied(_('You do not manage this provider.'))
-        provider = get_object_or_404(Provider, pk=provider_id)
-        email = (request.data.get('email') or '').strip().lower()
-        role = request.data.get('role')
-        language = (request.data.get('language') or '').strip() or (request.META.get('HTTP_ACCEPT_LANGUAGE') or 'en').split(',')[0].split('-')[0].lower()
-        if not email:
-            return Response(
-                {'email': [_('This field is required.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if role not in (UserProviderAdmin.ROLE_OWNER, UserProviderAdmin.ROLE_PROVIDER_MANAGER):
-            return Response(
-                {'role': [_('Must be "owner" or "provider_manager".')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if role == UserProviderAdmin.ROLE_OWNER:
-            has_owner = UserProviderAdmin.objects.filter(
-                provider=provider, role=UserProviderAdmin.ROLE_OWNER, is_active=True
-            ).exists()
-            inviter_is_provider_admin = UserProviderAdmin.objects.filter(
-                provider=provider, user=request.user, role=UserProviderAdmin.ROLE_PROVIDER_ADMIN, is_active=True
-            ).exists()
-            if has_owner and not inviter_is_provider_admin:
-                return Response(
-                    {'role': [_('Cannot invite owner: this organization already has an owner. Only a provider admin can invite a new owner.')]},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-        try:
-            User.objects.get(email__iexact=email)
-        except User.DoesNotExist:
-            return Response(
-                {'email': [_('No user with this email address was found.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if UserProviderAdmin.objects.filter(provider=provider, user__email__iexact=email, role=role, is_active=True).exists():
-            return Response(
-                {'email': [_('This user already has this role for this provider.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        # Удаляем старые инвайты на эту роль для этого email по этому провайдеру
-        ProviderOwnerManagerInvite.objects.filter(provider=provider, email__iexact=email, role=role).delete()
-        expires_at = timezone.now() + timezone.timedelta(days=7)
-        invite = None
-        for _attempt in range(10):
-            token = ''.join(random.choices('0123456789', k=6))
-            try:
-                invite = ProviderOwnerManagerInvite.objects.create(
-                    provider=provider,
-                    email=email,
-                    role=role,
-                    token=token,
-                    expires_at=expires_at,
-                )
-                break
-            except IntegrityError:
-                continue
-        if invite is None:
-            return Response(
-                {'detail': _('Could not generate a unique activation code. Please try again.')},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-        _send_provider_owner_manager_invite_email(provider, email, role, invite.token, language)
-        return Response(
-            {'detail': _('Invitation sent.'), 'invite_id': invite.pk, 'expires_at': invite.expires_at},
-            status=status.HTTP_201_CREATED,
-        )
+        ).filter(role_q).filter(_active_employee_provider_q()).select_related(
+            'employee', 'employee__user', 'provider'
+        ).order_by('-is_owner', '-is_provider_manager', '-is_provider_admin', 'created_at')
 
 
 class ProviderAdminAssignSelfAPIView(APIView):
     """
-    Назначить себя владельцем или менеджером провайдера (второй поток: без инвайта).
+    Назначить себя менеджером провайдера (без инвайта). Владелец через этот API назначить нельзя.
     POST providers/<provider_id>/admins/assign-self/
-    Body: { "role": "owner" | "provider_manager" }
-    Создаёт ProviderAdmin для request.user и добавляет UserType при необходимости.
-    Доступ: пользователь уже управляет провайдером ИЛИ у провайдера нет владельца и нет активных админов
-    (чтобы первый админ мог назначить себя владельцем).
+    Body: { "role": "provider_manager" }. role=owner возвращает 400.
     """
     permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
 
     def post(self, request, provider_id):
-        from users.models import UserType
+        from django.utils import timezone
         provider = get_object_or_404(Provider, pk=provider_id)
         managed = request.user.get_managed_providers()
-        can_manage = managed.filter(pk=provider_id).exists()
-        if not can_manage:
-            # Провайдер без владельца и без активных админов: разрешаем назначить себя (первый админ).
-            has_no_admins = not UserProviderAdmin.objects.filter(
-                provider=provider, is_active=True
-            ).exists()
-            if not (has_no_admins and request.user.has_role('provider_admin')):
-                raise PermissionDenied(_('You do not manage this provider.'))
+        if not managed.filter(pk=provider_id).exists():
+            raise PermissionDenied(_('You do not manage this provider.'))
+        if not _user_is_owner_for_provider(request.user, provider):
+            raise PermissionDenied(_('Only the owner can assign themselves as manager.'))
         role = request.data.get('role')
-        if role not in (UserProviderAdmin.ROLE_OWNER, UserProviderAdmin.ROLE_PROVIDER_MANAGER):
+        if role not in (EmployeeProvider.ROLE_OWNER, EmployeeProvider.ROLE_PROVIDER_MANAGER):
             return Response(
                 {'role': [_('Must be "owner" or "provider_manager".')]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if UserProviderAdmin.objects.filter(
-            provider=provider, user=request.user, role=role, is_active=True
-        ).exists():
+        if role == EmployeeProvider.ROLE_OWNER:
+            return Response(
+                {'role': [_('Owner cannot be self-assigned. Can only be changed via support.')]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        employee = _get_employee(request.user)
+        role_filter = Q(is_provider_manager=True)
+        if EmployeeProvider.objects.filter(
+            provider=provider, employee=employee,
+        ).filter(role_filter).filter(_active_employee_provider_q()).exists():
             return Response(
                 {'detail': _('You already have this role for this provider.')},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if role == UserProviderAdmin.ROLE_OWNER:
-            if UserProviderAdmin.objects.filter(
-                provider=provider, role=UserProviderAdmin.ROLE_OWNER, is_active=True
-            ).exists():
-                return Response(
-                    {'role': [_('This provider already has an owner.')]},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
+        today = timezone.now().date()
+        is_owner = False
+        is_provider_manager = role == EmployeeProvider.ROLE_PROVIDER_MANAGER
         from django.db import transaction
+        from invites.services import maybe_remove_role
         with transaction.atomic():
-            existing = UserProviderAdmin.objects.filter(user=request.user, provider=provider).first()
-            if existing:
-                existing.role = role
-                existing.is_active = True
-                existing.save()
-                pa = existing
-            else:
-                pa = UserProviderAdmin.objects.create(
-                    user=request.user,
-                    provider=provider,
-                    role=role,
-                    is_active=True,
+            # Менеджер у организации один: снимаем роль менеджера со всех остальных, затем назначаем себя.
+            old_manager_eps = []
+            if is_provider_manager:
+                old_manager_eps = list(
+                    EmployeeProvider.objects.filter(
+                        provider=provider,
+                    ).filter(_active_employee_provider_q()).filter(
+                        is_provider_manager=True,
+                    ).exclude(employee=employee).select_related('employee__user')
                 )
-            ut, _ = UserType.objects.get_or_create(name='provider_admin')
-            if not request.user.user_types.filter(name='provider_admin').exists():
-                request.user.user_types.add(ut)
-            role_ut, _ = UserType.objects.get_or_create(name=role)
-            if not request.user.user_types.filter(name=role).exists():
-                request.user.user_types.add(role_ut)
-        serializer = ProviderAdminListSerializer(pa)
+                EmployeeProvider.objects.filter(
+                    provider=provider,
+                ).filter(_active_employee_provider_q()).filter(
+                    is_provider_manager=True,
+                ).exclude(employee=employee).update(is_provider_manager=False, is_manager=False)
+            existing = EmployeeProvider.objects.filter(
+                employee=employee, provider=provider,
+            ).filter(_active_employee_provider_q()).first()
+            if existing:
+                if is_owner:
+                    existing.is_owner = True
+                if is_provider_manager:
+                    existing.is_provider_manager = True
+                    existing.is_manager = True
+                existing.save(update_fields=['is_owner', 'is_provider_manager', 'is_manager'])
+                ep = existing
+            else:
+                ep = EmployeeProvider.objects.create(
+                    employee=employee,
+                    provider=provider,
+                    start_date=today,
+                    end_date=None,
+                    role=role,
+                    is_owner=is_owner,
+                    is_provider_manager=is_provider_manager,
+                    is_provider_admin=False,
+                    is_manager=is_provider_manager,
+                )
+            # Синхронизация UserType с EmployeeProvider: владельцу добавляем provider_manager, бывшим менеджерам снимаем.
+            if is_provider_manager:
+                request.user.add_role('provider_manager')
+                for old_ep in old_manager_eps:
+                    old_user = old_ep.employee.user
+                    if old_user.pk != request.user.pk:
+                        maybe_remove_role(old_user, 'provider_manager')
+        serializer = ProviderAdminListSerializer(ep)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
-def _remove_provider_role_user_types_if_needed(user, provider, role):
+class ProviderAdminRevokeAPIView(APIView):
     """
-    После деактивации ProviderAdmin у user для provider+role: убрать user_types owner/provider_manager
-    и при необходимости provider_admin, если у пользователя больше нет активных записей с этой ролью/провайдером.
+    Снять пользователя с роли админа провайдера. Только владелец.
+    POST providers/<provider_id>/admins/revoke/
+    Body: { "user_id": <id> }
     """
-    from users.models import UserType
-    has_other_active_same_role = UserProviderAdmin.objects.filter(
-        user=user, role=role, is_active=True
-    ).exclude(provider=provider).exists()
-    if not has_other_active_same_role:
-        role_ut = UserType.objects.filter(name=role).first()
-        if role_ut and user.user_types.filter(name=role).exists():
-            user.user_types.remove(role_ut)
-    has_any_active_admin = UserProviderAdmin.objects.filter(user=user, is_active=True).exists()
-    if not has_any_active_admin:
-        pa_ut = UserType.objects.filter(name='provider_admin').first()
-        if pa_ut and user.user_types.filter(name='provider_admin').exists():
-            user.user_types.remove(pa_ut)
+    permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
 
-
-class AcceptProviderOwnerManagerInviteAPIView(APIView):
-    """
-    Принятие инвайта владельца/менеджера организации по 6-значному коду (как AcceptLocationManagerInvite).
-    POST body: { "token": "123456" }. AllowAny: код — секрет.
-    Одной транзакцией: снять роль у текущих владельцев/менеджеров (и их user_types), назначить принимающего.
-    """
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        from users.models import UserType
+    def post(self, request, provider_id):
         from django.db import transaction
+        from invites.services import maybe_remove_role
 
-        try:
-            raw_token = (request.data or {}).get('token') or ''
-        except Exception:
-            raw_token = ''
-        token = str(raw_token).strip().replace('\r', '').replace('\n', '')
-        if not token or len(token) != 6 or not token.isdigit():
+        provider = get_object_or_404(Provider, pk=provider_id)
+        if not _user_is_owner_for_provider(request.user, provider):
+            raise PermissionDenied(_('Only the owner can revoke an organization admin.'))
+        user_id = request.data.get('user_id')
+        if user_id is None:
             return Response(
-                {'token': [_('Enter the 6-digit code from the email.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        invite = ProviderOwnerManagerInvite.objects.filter(token=token).select_related('provider').first()
-        if not invite:
-            return Response(
-                {'token': [_('Invalid or expired code.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if invite.is_expired():
-            invite.delete()
-            return Response(
-                {'token': [_('This invitation has expired. You can ask the administrator to send a new one.')]},
+                {'user_id': [_('This field is required.')]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         try:
-            user = User.objects.get(email__iexact=invite.email)
+            target_user = User.objects.get(pk=user_id)
         except User.DoesNotExist:
-            invite.delete()
             return Response(
-                {'detail': _('User no longer exists.')},
+                {'detail': _('User not found.')},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        ep = EmployeeProvider.objects.filter(
+            provider=provider,
+            employee__user=target_user,
+        ).filter(_active_employee_provider_q()).first()
+        if not ep:
+            return Response(
+                {'detail': _('This user is not linked to this provider.')},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        if ep.is_owner:
+            return Response(
+                {'detail': _('Cannot revoke the owner. Owner role can only be changed via support.')},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        provider = invite.provider
-        role = invite.role
-        try:
-            with transaction.atomic():
-                # 1. Снять роль у текущих владельцев/менеджеров и убрать у них user_types (owner/provider_admin при отсутствии других активных записей).
-                if role == ProviderOwnerManagerInvite.ROLE_OWNER:
-                    prev_list = list(UserProviderAdmin.objects.filter(
-                        provider=provider, role=UserProviderAdmin.ROLE_OWNER, is_active=True
-                    ).select_related('user'))
-                    for prev in prev_list:
-                        prev.deactivate()
-                        _remove_provider_role_user_types_if_needed(prev.user, provider, role)
-                elif role == ProviderOwnerManagerInvite.ROLE_PROVIDER_MANAGER:
-                    prev_list = list(UserProviderAdmin.objects.filter(
-                        provider=provider, role=UserProviderAdmin.ROLE_PROVIDER_MANAGER, is_active=True
-                    ).select_related('user'))
-                    for prev in prev_list:
-                        prev.deactivate()
-                        _remove_provider_role_user_types_if_needed(prev.user, provider, role)
-                # 2. Назначить принимающего.
-                existing = UserProviderAdmin.objects.filter(user=user, provider=provider).first()
-                if existing:
-                    existing.role = role
-                    existing.is_active = True
-                    existing.save()
-                else:
-                    UserProviderAdmin.objects.create(user=user, provider=provider, role=role, is_active=True)
-                ut, _ = UserType.objects.get_or_create(name='provider_admin')
-                if not user.user_types.filter(name='provider_admin').exists():
-                    user.user_types.add(ut)
-                role_ut, _ = UserType.objects.get_or_create(name=role)
-                if not user.user_types.filter(name=role).exists():
-                    user.user_types.add(role_ut)
-                invite.delete()
-        except Exception as e:
-            logger.exception('AcceptProviderOwnerManagerInvite failed: %s', e)
+        if not ep.is_provider_admin:
             return Response(
-                {'detail': _('Invalid or expired code.')},
+                {'detail': _('This user is not an organization admin.')},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        role_label = 'owner' if role == ProviderOwnerManagerInvite.ROLE_OWNER else 'manager'
-        return Response({
-            'detail': _('You have been set as %(role)s of this organization. You can now log in to the admin app.') % {'role': role_label},
-        })
+        with transaction.atomic():
+            ep.is_provider_admin = False
+            if ep.role == EmployeeProvider.ROLE_PROVIDER_ADMIN:
+                ep.role = EmployeeProvider.ROLE_SERVICE_WORKER
+            ep.save(update_fields=['is_provider_admin', 'role', 'updated_at'])
+            maybe_remove_role(target_user, 'provider_admin')
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class EmployeeListCreateAPIView(generics.ListCreateAPIView):
@@ -743,19 +608,105 @@ class EmployeeProviderUpdateAPIView(generics.UpdateAPIView):
     lookup_url_kwarg = 'employee_id'
 
 
-class EmployeeDeactivateAPIView(APIView):
+class LocationStaffDeactivateAPIView(APIView):
     """
-    API для деактивации сотрудника.
+    API для деактивации сотрудника (soft delete) в конкретном филиале.
     
-    Основные возможности:
-    - Деактивация сотрудника
-    - Завершение всех активных связей с провайдерами
+    Если нет resolution_action (dry run):
+    - При наличии будущих бронирований вернет 409 Conflict со списком бронирований.
+    - Иначе деактивирует (soft-delete).
     
-    Права доступа:
-    - Требуется аутентификация
-    - Требуются права администратора провайдера
+    С resolution_action ('reassign' или 'cancel'):
+    - При 'reassign' переназначает брони на target_employee_id.
+    - При 'cancel' отменяет бронирования.
+    - Затем деактивирует.
     """
-    permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, location_pk, employee_id):
+        from rest_framework import status
+        from rest_framework.response import Response
+        from booking.reassignment_service import BookingReassignmentService
+
+        location = get_object_or_404(_location_manager_queryset(request), pk=location_pk)
+        employee = get_object_or_404(Employee, pk=employee_id)
+
+        # Get future bookings
+        future_bookings = BookingReassignmentService.get_future_bookings(
+            employee_id=employee_id,
+            location_id=location_pk
+        )
+
+        # Поддержка обоих вариантов имён из ТЗ: resolution/resolution_action, cancel_reason/cancellation_reason
+        resolution_action = request.data.get('resolution_action') or request.data.get('resolution')
+        cancellation_reason = request.data.get('cancellation_reason') or request.data.get('cancel_reason', '')
+        target_employee_id = request.data.get('target_employee_id')
+
+        future_count = future_bookings.count()
+        # Определяем, нужен ли resolution (есть будущие записи и не передан способ решения)
+        if future_count and not resolution_action:
+            bookings_payload = BookingReassignmentService.serialize_bookings_for_response(future_bookings)
+            return Response({
+                'error': 'has_future_bookings',
+                'future_bookings_count': future_count,
+                'message': _(
+                    'Employee has future bookings. Please choose an action: cancel them or reassign to another specialist.'
+                ),
+                'bookings': bookings_payload,
+                # Совместимость с текущим фронтом
+                'conflict_type': 'future_bookings',
+                'bookings_count': future_count,
+            }, status=status.HTTP_409_CONFLICT)
+
+        try:
+            result = BookingReassignmentService.deactivate_staff(
+                provider_location=location,
+                employee=employee,
+                resolution=resolution_action or 'cancel',
+                target_employee_id=target_employee_id,
+                reason=cancellation_reason,
+                performed_by=request.user
+            )
+            return Response({'detail': _('Employee successfully deactivated at this location.'), 'result': result})
+        
+        except ValidationError as e:
+            return Response({
+                'detail': e.message if hasattr(e, 'message') else str(e),
+                'conflicts': e.error_dict if hasattr(e, 'error_dict') else (getattr(e, 'params', {}) or {}).get('conflicts', [])
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error("Deactivation failed: %s", e)
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class LocationStaffReactivateAPIView(APIView):
+    """
+    API для реактивации (восстановления) сотрудника в филиале.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, location_pk, employee_id):
+        from rest_framework import status
+        from rest_framework.response import Response
+        
+        location = get_object_or_404(_location_manager_queryset(request), pk=location_pk)
+        employee = get_object_or_404(Employee, pk=employee_id)
+
+        try:
+            role_obj = EmployeeLocationRole.objects.get(
+                employee=employee,
+                provider_location=location,
+            )
+            role_obj.is_active = True
+            role_obj.end_date = None
+            role_obj.save(update_fields=['is_active', 'end_date'])
+            return Response({'detail': _('Employee successfully reactivated at this location.')})
+        except EmployeeLocationRole.DoesNotExist:
+            return Response(
+                {'detail': _('Employee role not found at this location.')},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
 
 
 class EmployeeWorkSlotViewSet(viewsets.ModelViewSet):
@@ -773,43 +724,6 @@ class EmployeeWorkSlotViewSet(viewsets.ModelViewSet):
     queryset = EmployeeWorkSlot.objects.all()
     serializer_class = EmployeeWorkSlotSerializer
     permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
-
-
-class EmployeeJoinRequestCreateAPIView(APIView):
-    """
-    API для создания заявки на вступление в учреждение.
-    
-    Основные возможности:
-    - Создание заявки
-    - Автоматическое уведомление администраторов по email
-    
-    Права доступа:
-    - Требуется аутентификация
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-
-class EmployeeJoinRequestApproveAPIView(APIView):
-    """
-    API для подтверждения или отклонения заявки админом учреждения.
-    
-    Основные возможности:
-    - Подтверждение/отклонение заявки
-    - Автоматическое создание связи сотрудник-провайдер при подтверждении
-    - Уведомление пользователя по email
-    
-    Права доступа:
-    - Требуется аутентификация
-    - Требуются права администратора провайдера
-    """
-    permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
-
-
-class EmployeeProviderConfirmAPIView(APIView):
-    """
-    API для подтверждения сотрудником своей роли.
-    """
-    permission_classes = [permissions.IsAuthenticated]
 
 
 class EmployeeAccountDeleteNotifyAPIView(APIView):
@@ -2223,7 +2137,7 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
         ).prefetch_related('available_services', 'served_pet_types')
         
         # Provider admin видит только локации своей организации
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             queryset = queryset.filter(provider__in=managed_providers)
         
@@ -2234,7 +2148,7 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
         Создает локацию с проверкой прав доступа.
         """
         # Проверяем права доступа - только provider_admin и system_admin могут создавать локации
-        if not (_user_has_role(self.request.user, 'provider_admin') or _user_has_role(self.request.user, 'system_admin')):
+        if not (self.request.user.get_managed_providers().exists() or _user_has_role(self.request.user, 'system_admin')):
             raise PermissionDenied(
                 _('You do not have permission to create locations.')
             )
@@ -2242,14 +2156,26 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
         provider = serializer.validated_data.get('provider')
         
         # Проверяем права доступа для provider_admin
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             if provider not in managed_providers:
                 raise PermissionDenied(
                     _('You can only create locations for your own organization.')
                 )
+        # Автоматически назначаем владельца организации менеджером филиала
+        from providers.models import EmployeeProvider
+        owner_ep = EmployeeProvider.objects.filter(
+            provider=provider,
+            is_owner=True
+        ).first()
         
-        serializer.save()
+        manager = None
+        if owner_ep and owner_ep.employee and hasattr(owner_ep.employee, 'user'):
+            manager = owner_ep.employee.user
+            if not manager.has_role('branch_manager'):
+                manager.add_role('branch_manager')
+                
+        serializer.save(manager=manager)
 
 
 class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -2272,7 +2198,7 @@ class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
         ).prefetch_related('available_services', 'served_pet_types')
         
         # Provider admin видит только локации своей организации
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             queryset = queryset.filter(provider__in=managed_providers)
         
@@ -2285,7 +2211,7 @@ class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
         provider = serializer.validated_data.get('provider', serializer.instance.provider)
         
         # Проверяем права доступа
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             if provider not in managed_providers:
                 raise PermissionDenied(
@@ -2299,7 +2225,7 @@ class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
         Удаляет локацию с проверкой прав доступа.
         """
         # Проверяем права доступа
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             if instance.provider not in managed_providers:
                 raise PermissionDenied(
@@ -2312,7 +2238,7 @@ class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
 def _location_manager_queryset(request):
     """Queryset локаций, которыми может управлять текущий пользователь (для установки/снятия руководителя)."""
     qs = ProviderLocation.objects.select_related('provider', 'manager')
-    if _user_has_role(request.user, 'provider_admin'):
+    if request.user.get_managed_providers().exists():
         managed = request.user.get_managed_providers()
         qs = qs.filter(provider__in=managed)
     else:
@@ -2344,229 +2270,77 @@ class SetLocationManagerAPIView(APIView):
                 {'email': [_('No user with this email address was found.')]},
                 status=status.HTTP_404_NOT_FOUND
             )
+        old_manager = location.manager
         if user.id == request.user.id:
             location.manager = user
             location.save(update_fields=['manager'])
+            user.add_role('branch_manager')
+            if old_manager and old_manager.pk != user.pk:
+                from invites.services import maybe_remove_role
+                maybe_remove_role(old_manager, 'branch_manager')
             ser = ProviderLocationSerializer(location)
             return Response(ser.data)
-        import random
+        from invites.models import Invite
+        from invites.email import send_invite_email
         from django.utils import timezone
-        from django.core.mail import send_mail
-        from django.conf import settings
-        token = ''.join(random.choices('0123456789', k=6))
-        expires_at = timezone.now() + timezone.timedelta(days=7)
-        LocationManagerInvite.objects.filter(provider_location=location).delete()
-        LocationManagerInvite.objects.create(
+        # Отменяем старые pending инвайты руководителя этой локации
+        Invite.objects.filter(
             provider_location=location,
-            email=user.email,
-            token=token,
-            expires_at=expires_at,
-        )
-        # Пока инвайт не принят — сбрасываем текущего менеджера, чтобы в UI не показывался старый
-        location.manager = None
-        location.save(update_fields=['manager'])
-
-        # Язык письма: явно переданный в теле (язык UI админа) надёжнее Accept-Language
-        lang = (request.data.get('language') or '').strip().lower() or None
-        if lang not in ('en', 'ru', 'de', 'me'):
-            lang = translation.get_language() or getattr(request, 'LANGUAGE_CODE', None) or 'en'
-        translation.activate(lang)
-        base_url = getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173').rstrip('/')
-        accept_full_url = f'{base_url}/accept-location-manager-invite'
-        provider_name = location.provider.name if location.provider_id else ''
-        location_name = location.name or ''
-        subject = _('Invitation to become the manager of a service location')
-        body_plain = _(
-            'You have been invited to become the manager of the service location "%(location)s" (%(provider)s). '
-            'Open the link and enter the activation code. Link: %(url)s Activation code: %(code)s. Valid for 7 days. '
-            'If you received this message by mistake, please ignore it.'
-        ) % {'location': location_name, 'provider': provider_name, 'url': accept_full_url, 'code': token}
-        body_html = (
-            f'<p>{subject}</p>'
-            f'<p>{provider_name} — {location_name}</p>'
-            f'<p><a href="{accept_full_url}">{accept_full_url}</a></p>'
-            f'<p>{_("Activation code:")} <strong>{token}</strong>. {_("Valid for 7 days.")}</p>'
-            f'<p><em>{_("If you received this message by mistake, please ignore it.")}</em></p>'
-        )
+            invite_type=Invite.TYPE_BRANCH_MANAGER,
+            status=Invite.STATUS_PENDING,
+        ).update(status=Invite.STATUS_CANCELLED)
         try:
-            send_mail(
-                subject,
-                body_plain,
-                getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'noreply@example.com',
-                [user.email],
-                fail_silently=False,
-                html_message=body_html,
-            )
+            token = Invite.generate_token()
         except Exception:
-            LocationManagerInvite.objects.filter(provider_location=location).delete()
-            return Response(
-                {'detail': _('Failed to send invitation email.')},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE
-            )
-        ser = ProviderLocationSerializer(location)
-        return Response(ser.data)
-
-
-class RemoveLocationManagerAPIView(APIView):
-    """
-    Снятие руководителя точки.
-    DELETE provider-locations/<pk>/manager/
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def delete(self, request, pk):
-        location = get_object_or_404(_location_manager_queryset(request), pk=pk)
-        location.manager = None
-        location.save(update_fields=['manager'])
-        LocationManagerInvite.objects.filter(provider_location=location).delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class AcceptLocationManagerInviteAPIView(APIView):
-    """
-    Принятие инвайта по 6-значному коду (из письма).
-    POST body: { "token": "123456" }
-    Не требует аутентификации: код является секретом.
-    """
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        token = (request.data.get('token') or '').strip()
-        if not token or len(token) != 6 or not token.isdigit():
-            return Response(
-                {'token': [_('Enter the 6-digit code from the email.')]},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        invite = LocationManagerInvite.objects.filter(token=token).first()
-        if not invite:
-            return Response(
-                {'token': [_('Invalid or expired code.')]},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        if invite.is_expired():
-            invite.delete()
-            return Response(
-                {'token': [_('This invitation has expired. You can ask the administrator to send a new one.')]},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        try:
-            user = User.objects.get(email__iexact=invite.email)
-        except User.DoesNotExist:
-            invite.delete()
-            return Response(
-                {'detail': _('User no longer exists.')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        invite.provider_location.manager = user
-        invite.provider_location.save(update_fields=['manager'])
-        invite.delete()
-        return Response({'detail': _('You have been set as the manager of this location.')})
-
-
-class InviteLocationStaffAPIView(APIView):
-    """
-    Приглашение пользователя в персонал филиала.
-    POST provider-locations/<pk>/invite-staff/
-    Body: { "email": "...", "language": "en" }
-    Создаёт LocationStaffInvite и отправляет письмо с 6-значным кодом.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, pk):
-        import random
-        from django.utils import timezone
-        from django.core.mail import send_mail
-        from django.conf import settings
-
-        location = get_object_or_404(_location_manager_queryset(request), pk=pk)
-        email = (request.data.get('email') or '').strip().lower()
-        if not email:
-            return Response(
-                {'email': [_('This field is required.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            user = User.objects.get(email__iexact=email)
-        except User.DoesNotExist:
-            return Response(
-                {'email': [_('No user with this email address was found.')]},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-        provider = location.provider
-        if not provider:
-            return Response(
-                {'detail': _('Location has no provider.')},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if location.employees.filter(user_id=user.id).exists():
-            return Response(
-                {'email': [_('This user is already a staff member at this location.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        from django.db import IntegrityError
-        expires_at = timezone.now() + timezone.timedelta(days=7)
-        invite = None
-        for _attempt in range(10):
-            token = ''.join(random.choices('0123456789', k=6))
-            try:
-                invite, created = LocationStaffInvite.objects.update_or_create(
-                    provider_location=location,
-                    email=user.email,
-                    defaults={'token': token, 'expires_at': expires_at},
-                )
-                break
-            except IntegrityError as e:
-                if 'token' in str(e).lower() or 'unique' in str(e).lower():
-                    continue
-                raise
-        if invite is None:
             return Response(
                 {'detail': _('Could not generate a unique activation code. Please try again.')},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-
-        lang = (request.data.get('language') or '').strip().lower() or None
-        if lang not in ('en', 'ru', 'de', 'me'):
-            lang = translation.get_language() or getattr(request, 'LANGUAGE_CODE', None) or 'en'
-        translation.activate(lang)
-        base_url = getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173').rstrip('/')
-        accept_full_url = f'{base_url}/accept-location-staff-invite'
-        provider_name = provider.name or ''
-        location_name = location.name or ''
-        subject = _('Invitation to join staff at a service location')
-        body_plain = _(
-            'You have been invited to join the staff of the service location "%(location)s" (%(provider)s). '
-            'Open the link and enter the activation code. Link: %(url)s Activation code: %(code)s. Valid for 7 days. '
-            'If you received this message by mistake, please ignore it.'
-        ) % {'location': location_name, 'provider': provider_name, 'url': accept_full_url, 'code': token}
-        body_html = (
-            f'<p>{subject}</p>'
-            f'<p>{provider_name} — {location_name}</p>'
-            f'<p><a href="{accept_full_url}">{accept_full_url}</a></p>'
-            f'<p>{_("Activation code:")} <strong>{token}</strong>. {_("Valid for 7 days.")}</p>'
-            f'<p><em>{_("If you received this message by mistake, please ignore it.")}</em></p>'
+        expires_at = timezone.now() + timezone.timedelta(days=7)
+        invite = Invite.objects.create(
+            invite_type=Invite.TYPE_BRANCH_MANAGER,
+            email=user.email,
+            token=token,
+            expires_at=expires_at,
+            created_by=request.user,
+            provider_location=location,
+            provider=location.provider,
         )
+        # We do not modify location.manager here so that the location always has a manager
+        # It will be updated when the invite is accepted.
+        lang = (request.data.get('language') or '').strip().lower() or 'en'
+        if lang not in ('en', 'ru', 'de', 'me'):
+            lang = translation.get_language() or getattr(request, 'LANGUAGE_CODE', 'en')
         try:
-            send_mail(
-                subject,
-                body_plain,
-                getattr(settings, 'DEFAULT_FROM_EMAIL', None) or 'noreply@example.com',
-                [user.email],
-                fail_silently=False,
-                html_message=body_html,
-            )
+            send_invite_email(invite, lang)
         except Exception:
             invite.delete()
             return Response(
                 {'detail': _('Failed to send invitation email.')},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
-        return Response({
-            'detail': _('Invitation sent.'),
-            'invite_id': invite.id,
-            'email': invite.email,
-            'expires_at': invite.expires_at,
-        }, status=status.HTTP_201_CREATED)
+        ser = ProviderLocationSerializer(location)
+        return Response(ser.data)
+
+class CancelLocationManagerInviteAPIView(APIView):
+    """
+    Отмена отправленного приглашения руководителю точки.
+    DELETE provider-locations/<pk>/manager-invite/
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        from invites.models import Invite
+        location = get_object_or_404(_location_manager_queryset(request), pk=pk)
+        Invite.objects.filter(
+            provider_location=location,
+            invite_type=Invite.TYPE_BRANCH_MANAGER,
+            status=Invite.STATUS_PENDING,
+        ).update(status=Invite.STATUS_CANCELLED)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+
 
 
 class LocationStaffListAPIView(APIView):
@@ -2577,27 +2351,46 @@ class LocationStaffListAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
+        from invites.models import Invite
         location = get_object_or_404(_location_manager_queryset(request), pk=pk)
         provider = location.provider
+        
+        # Determine location-specific active status via EmployeeLocationRole
+        from providers.models import EmployeeLocationRole
+        location_roles = {
+            r.employee_id: r
+            for r in EmployeeLocationRole.objects.filter(provider_location=location)
+        }
+
         employees = []
         for ep in EmployeeProvider.objects.filter(
             provider=provider,
             employee__locations=location,
             end_date__isnull=True,
         ).select_related('employee', 'employee__user').distinct():
+            
+            # Default to active if role record doesn't exist
+            role_obj = location_roles.get(ep.employee_id)
+            is_active_loc = role_obj.is_active if role_obj else True
+            
             employees.append({
                 'type': 'employee',
                 'id': ep.employee_id,
                 'email': ep.employee.user.email,
                 'first_name': ep.employee.user.first_name,
                 'last_name': ep.employee.user.last_name,
-                'is_confirmed': ep.is_confirmed,
-                'confirmed_at': ep.confirmed_at,
+                'is_owner': ep.is_owner,
+                'is_provider_manager': ep.is_provider_manager,
+                'is_provider_admin': ep.is_provider_admin,
                 'is_manager': ep.is_manager,
+                'is_active': is_active_loc,
             })
         invites = []
-        for inv in LocationStaffInvite.objects.filter(provider_location=location).filter(
-            expires_at__gt=timezone.now()
+        for inv in Invite.objects.filter(
+            provider_location=location,
+            invite_type=Invite.TYPE_SPECIALIST,
+            status=Invite.STATUS_PENDING,
+            expires_at__gt=timezone.now(),
         ).order_by('-created_at'):
             invites.append({
                 'type': 'invite',
@@ -2612,102 +2405,13 @@ class LocationStaffListAPIView(APIView):
         })
 
 
-class LocationStaffInviteDestroyAPIView(APIView):
-    """
-    Отмена приглашения в персонал.
-    DELETE provider-locations/<pk>/staff-invites/<invite_id>/
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def delete(self, request, pk, invite_id):
-        location = get_object_or_404(_location_manager_queryset(request), pk=pk)
-        invite = get_object_or_404(
-            LocationStaffInvite.objects.filter(provider_location=location),
-            pk=invite_id,
-        )
-        invite.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class AcceptLocationStaffInviteAPIView(APIView):
-    """
-    Принятие инвайта в персонал по 6-значному коду.
-    POST location-staff-invite/accept/
-    Body: { "token": "123456" }
-    Не требует аутентификации.
-    """
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request):
-        from django.utils import timezone
-
-        token = (request.data.get('token') or '').strip()
-        if not token or len(token) != 6 or not token.isdigit():
-            return Response(
-                {'token': [_('Enter the 6-digit code from the email.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        invite = LocationStaffInvite.objects.select_related('provider_location', 'provider_location__provider').filter(
-            token=token
-        ).first()
-        if not invite:
-            return Response(
-                {'token': [_('Invalid or expired code.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        if invite.is_expired():
-            invite.delete()
-            return Response(
-                {'token': [_('This invitation has expired. You can ask the administrator to send a new one.')]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        try:
-            user = User.objects.get(email__iexact=invite.email)
-        except User.DoesNotExist:
-            invite.delete()
-            return Response(
-                {'detail': _('User no longer exists.')},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        location = invite.provider_location
-        provider = location.provider
-        employee, created = Employee.objects.get_or_create(
-            user=user,
-            defaults={'is_active': True},
-        )
-        ep = EmployeeProvider.objects.filter(
-            employee=employee,
-            provider=provider,
-            end_date__isnull=True,
-        ).first()
-        if ep:
-            if not ep.is_confirmed:
-                ep.is_confirmed = True
-                ep.confirmed_at = timezone.now()
-                ep.save(update_fields=['is_confirmed', 'confirmed_at'])
-        else:
-            EmployeeProvider.objects.create(
-                employee=employee,
-                provider=provider,
-                start_date=timezone.now().date(),
-                end_date=None,
-                is_manager=False,
-                is_confirmed=True,
-                confirmed_at=timezone.now(),
-            )
-        if not employee.locations.filter(pk=location.pk).exists():
-            employee.locations.add(location)
-        invite.delete()
-        return Response({'detail': _('You have been added as staff at this location.')})
-
-
 def _get_location_and_staff_employee(request, location_pk, employee_id):
     """
     Возвращает (location, employee) если пользователь может управлять локацией
     и сотрудник привязан к этой локации. Иначе raises 404 или PermissionDenied.
     """
     location = get_object_or_404(_location_manager_queryset(request), pk=location_pk)
-    employee = get_object_or_404(Employee.objects.filter(is_active=True), pk=employee_id)
+    employee = get_object_or_404(Employee, pk=employee_id)
     if not employee.locations.filter(pk=location.pk).exists():
         raise PermissionDenied(_('This employee is not assigned to this location.'))
     return location, employee
@@ -2734,11 +2438,30 @@ class LocationStaffServicesAPIView(APIView):
     def patch(self, request, location_pk, employee_id):
         from django.db import transaction
         location, employee = _get_location_and_staff_employee(request, location_pk, employee_id)
+        # Услуги филиала (из прайса)
         allowed_ids = set(
             ProviderLocationService.objects.filter(
                 location=location, is_active=True
             ).values_list('service_id', flat=True).distinct()
         )
+        # Технические услуги (is_client_facing=False) из глобального каталога — разрешены для назначения любому сотруднику
+        tech_root_ids = set(
+            Service.objects.filter(parent__isnull=True, is_active=True, is_client_facing=False)
+            .values_list('id', flat=True)
+        )
+        tech_all_ids = set(tech_root_ids)
+        tech_frontier = set(tech_root_ids)
+        while tech_frontier:
+            tech_children = set(
+                Service.objects.filter(parent_id__in=tech_frontier, is_active=True)
+                .values_list('id', flat=True)
+            ) - tech_all_ids
+            if not tech_children:
+                break
+            tech_all_ids.update(tech_children)
+            tech_frontier = tech_children
+        # Добавляем все технические услуги (включая подкатегории)
+        allowed_ids |= tech_all_ids
         service_ids = request.data.get('service_ids')
         if not isinstance(service_ids, list):
             return Response(
@@ -2957,22 +2680,28 @@ class LocationStaffSchedulePatternAPIView(APIView):
                 break_start = parse_time(day_data.get('break_start'))
                 break_end = parse_time(day_data.get('break_end'))
                 if not is_working:
-                    start_time = dt_time(0, 0)
-                    end_time = dt_time(0, 0)
+                    start_time = None
+                    end_time = None
                     break_start = None
                     break_end = None
-                Schedule.objects.update_or_create(
-                    employee=employee,
-                    provider_location=location,
-                    day_of_week=dow,
-                    defaults={
-                        'start_time': start_time,
-                        'end_time': end_time,
-                        'break_start': break_start,
-                        'break_end': break_end,
-                        'is_working': is_working,
-                    },
-                )
+                try:
+                    Schedule.objects.update_or_create(
+                        employee=employee,
+                        provider_location=location,
+                        day_of_week=dow,
+                        defaults={
+                            'start_time': start_time,
+                            'end_time': end_time,
+                            'break_start': break_start,
+                            'break_end': break_end,
+                            'is_working': is_working,
+                        },
+                    )
+                except ValidationError as e:
+                    return Response(
+                        {'days': e.messages if hasattr(e, 'messages') else [str(e)]},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
         schedules = Schedule.objects.filter(
             employee=employee,
             provider_location=location,
@@ -3002,7 +2731,7 @@ class LocationScheduleListCreateAPIView(generics.ListCreateAPIView):
     def get_queryset(self):
         location_pk = self.kwargs.get('location_pk')
         queryset = LocationSchedule.objects.filter(provider_location_id=location_pk).order_by('weekday')
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed = self.request.user.get_managed_providers()
             queryset = queryset.filter(provider_location__provider__in=managed)
         return queryset
@@ -3015,7 +2744,7 @@ class LocationScheduleListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         location_pk = self.kwargs.get('location_pk')
         location = get_object_or_404(ProviderLocation.objects.filter(pk=location_pk))
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed = self.request.user.get_managed_providers()
             if location.provider not in managed:
                 raise PermissionDenied(_('You can only manage schedules of your organization locations.'))
@@ -3033,7 +2762,7 @@ class LocationScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
     def get_queryset(self):
         location_pk = self.kwargs.get('location_pk')
         queryset = LocationSchedule.objects.filter(provider_location_id=location_pk)
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed = self.request.user.get_managed_providers()
             queryset = queryset.filter(provider_location__provider__in=managed)
         return queryset
@@ -3051,7 +2780,7 @@ class HolidayShiftListCreateAPIView(generics.ListCreateAPIView):
         from .models import HolidayShift
         location_pk = self.kwargs.get('location_pk')
         queryset = HolidayShift.objects.filter(provider_location_id=location_pk).order_by('date')
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed = self.request.user.get_managed_providers()
             queryset = queryset.filter(provider_location__provider__in=managed)
         return queryset
@@ -3064,7 +2793,7 @@ class HolidayShiftListCreateAPIView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         location_pk = self.kwargs.get('location_pk')
         location = get_object_or_404(ProviderLocation.objects.filter(pk=location_pk))
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed = self.request.user.get_managed_providers()
             if location.provider not in managed:
                 raise PermissionDenied(_('You can only manage holiday shifts of your organization locations.'))
@@ -3083,7 +2812,7 @@ class HolidayShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPI
         from .models import HolidayShift
         location_pk = self.kwargs.get('location_pk')
         queryset = HolidayShift.objects.filter(provider_location_id=location_pk)
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed = self.request.user.get_managed_providers()
             queryset = queryset.filter(provider_location__provider__in=managed)
         return queryset
@@ -3117,7 +2846,7 @@ class ProviderLocationServiceListCreateAPIView(generics.ListCreateAPIView):
         )
         
         # Provider admin видит только услуги локаций своей организации
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             queryset = queryset.filter(location__provider__in=managed_providers)
         
@@ -3128,12 +2857,16 @@ class ProviderLocationServiceListCreateAPIView(generics.ListCreateAPIView):
         Создаёт одну запись услуги локации (location + service + pet_type + size_code) с проверкой прав.
         """
         location = serializer.validated_data.get('location')
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             if location.provider not in managed_providers:
                 raise PermissionDenied(
                     _('You can only create services for locations of your own organization.')
                 )
+        service = serializer.validated_data.get('service')
+        if service and not service.is_client_facing:
+            from rest_framework.exceptions import ValidationError
+            raise ValidationError({'service': [_('Cannot add technical (non-client-facing) services to the location price matrix.')]})
         serializer.save()
 
 
@@ -3157,7 +2890,7 @@ class ProviderLocationServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdat
         )
         
         # Provider admin видит только услуги локаций своей организации
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             queryset = queryset.filter(location__provider__in=managed_providers)
         
@@ -3170,7 +2903,7 @@ class ProviderLocationServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdat
         location = serializer.validated_data.get('location', serializer.instance.location)
         
         # Проверяем права доступа
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             if location.provider not in managed_providers:
                 raise PermissionDenied(
@@ -3183,7 +2916,7 @@ class ProviderLocationServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdat
         """
         Удаляет одну запись услуги локации (одна комбинация тип+размер) с проверкой прав.
         """
-        if _user_has_role(self.request.user, 'provider_admin'):
+        if self.request.user.get_managed_providers().exists():
             managed_providers = self.request.user.get_managed_providers()
             if instance.location.provider not in managed_providers:
                 raise PermissionDenied(
@@ -3201,10 +2934,16 @@ class LocationPriceMatrixAPIView(APIView):
 
     def get(self, request, pk):
         location = get_object_or_404(ProviderLocation.objects.prefetch_related('served_pet_types'), pk=pk)
-        if _user_has_role(request.user, 'provider_admin'):
+        if request.user.get_managed_providers().exists():
             managed = request.user.get_managed_providers()
             if location.provider not in managed:
                 raise PermissionDenied(_('You can only view locations of your own organization.'))
+        # Определяем язык из Accept-Language (как в каталоге)
+        lang = translation.get_language() or 'en'
+        accept_lang = request.headers.get('Accept-Language', '')
+        if accept_lang:
+            lang = accept_lang.split(',')[0].split('-')[0].strip()
+        lang = 'me' if lang == 'cnr' else lang
         served_ids = set(location.served_pet_types.values_list('id', flat=True))
         rows = ProviderLocationService.objects.filter(
             location=location
@@ -3218,7 +2957,7 @@ class LocationPriceMatrixAPIView(APIView):
                 by_service[row.service_id] = {
                     'location_service_id': row.id,
                     'service_id': row.service_id,
-                    'service_name': getattr(row.service, 'name', '') or '',
+                    'service_name': row.service.get_localized_name(lang) if hasattr(row.service, 'get_localized_name') else (getattr(row.service, 'name', '') or ''),
                     'prices': {},
                 }
             s = by_service[row.service_id]
@@ -3226,7 +2965,7 @@ class LocationPriceMatrixAPIView(APIView):
                 s['prices'][row.pet_type_id] = {
                     'pet_type_id': row.pet_type_id,
                     'pet_type_code': row.pet_type.code,
-                    'pet_type_name': getattr(row.pet_type, 'name', None) or row.pet_type.code,
+                    'pet_type_name': row.pet_type.get_localized_name(lang) if hasattr(row.pet_type, 'get_localized_name') else (getattr(row.pet_type, 'name', None) or row.pet_type.code),
                     'base_price': str(row.price),
                     'base_duration_minutes': row.duration_minutes,
                     'variants': [],
@@ -3261,7 +3000,7 @@ class LocationServicePricesUpdateAPIView(APIView):
             ProviderLocation.objects.prefetch_related('served_pet_types'),
             pk=location_pk
         )
-        if _user_has_role(request.user, 'provider_admin'):
+        if request.user.get_managed_providers().exists():
             managed = request.user.get_managed_providers()
             if location.provider not in managed:
                 raise PermissionDenied(_('You can only edit locations of your own organization.'))
@@ -3270,6 +3009,11 @@ class LocationServicePricesUpdateAPIView(APIView):
             pk=location_service_id,
             location=location,
         )
+        if not location_service.service.is_client_facing:
+            return Response(
+                {'detail': [_('Cannot update technical (non-client-facing) services in the location price matrix.')]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         served_ids = set(location.served_pet_types.values_list('id', flat=True))
         ser = LocationServicePricesUpdateSerializer(data=request.data)
         if not ser.is_valid():
@@ -3301,19 +3045,85 @@ class LocationServicePricesUpdateAPIView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class LocationCatalogServicePricesUpdateAPIView(APIView):
+    """
+    POST/PUT: полная замена матрицы цен по одной услуге из глобального каталога (по service_id).
+    Тело: { "prices": [ { "pet_type_id", "base_price", "base_duration_minutes", "variants": [ { "size_code", "price", "duration_minutes" } ] } ] }.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, location_pk, service_id):
+        return self._update(request, location_pk, service_id)
+        
+    def put(self, request, location_pk, service_id):
+        return self._update(request, location_pk, service_id)
+
+    def _update(self, request, location_pk, service_id):
+        from django.db import transaction
+        from catalog.models import Service
+        location = get_object_or_404(
+            ProviderLocation.objects.prefetch_related('served_pet_types'),
+            pk=location_pk
+        )
+        if request.user.get_managed_providers().exists():
+            managed = request.user.get_managed_providers()
+            if location.provider not in managed:
+                raise PermissionDenied(_('You can only edit locations of your own organization.'))
+        service = get_object_or_404(Service, pk=service_id)
+        if not service.is_client_facing:
+            return Response(
+                {'detail': [_('Cannot add technical (non-client-facing) services to the location price matrix.')]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        served_ids = set(location.served_pet_types.values_list('id', flat=True))
+        ser = LocationServicePricesUpdateSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+            
+        for item in ser.validated_data['prices']:
+            if item['pet_type_id'] not in served_ids:
+                return Response(
+                    {'prices': [_('Each pet_type_id must be one of the location\'s served pet types.')]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+                
+        with transaction.atomic():
+            ProviderLocationService.objects.filter(
+                location=location,
+                service=service,
+            ).delete()
+            for item in ser.validated_data['prices']:
+                pet_type_id = item['pet_type_id']
+                base_price = item['base_price']
+                base_duration = item['base_duration_minutes']
+                for v in item.get('variants', []):
+                    ProviderLocationService.objects.create(
+                        location=location,
+                        service=service,
+                        pet_type_id=pet_type_id,
+                        size_code=v['size_code'],
+                        price=v.get('price', base_price),
+                        duration_minutes=v.get('duration_minutes', base_duration),
+                    )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
 class ProviderAvailableCatalogServicesAPIView(APIView):
     """
     Список услуг каталога, доступных для выбора провайдером (ветви из available_category_levels).
     Для вкладки «Услуги и цены»: быстрый поиск и выбор только из разрешённых для организации услуг.
     Если передан location_id — возвращаются только услуги, доступные хотя бы одному типу животных филиала
     (услуга без allowed_pet_types или с пересечением allowed_pet_types с location.served_pet_types).
-    GET /api/v1/providers/<provider_id>/available-catalog-services/?q=...&location_id=...
+    Если передан include_technical=1 — включаются также технические услуги (is_client_facing=False),
+    которые не добавляются в прайс филиала, но могут назначаться сотрудникам.
+    GET /api/v1/providers/<provider_id>/available-catalog-services/?q=...&location_id=...&include_technical=1
     """
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, provider_id):
         provider = get_object_or_404(Provider, pk=provider_id)
-        if _user_has_role(request.user, 'provider_admin'):
+        if request.user.get_managed_providers().exists():
             managed = request.user.get_managed_providers()
             if provider not in managed:
                 raise PermissionDenied(_('You can only view services for your own organization.'))
@@ -3321,8 +3131,6 @@ class ProviderAvailableCatalogServicesAPIView(APIView):
             provider.available_category_levels.filter(level=0, parent__isnull=True)
             .values_list('id', flat=True)
         )
-        if not root_ids:
-            return Response([])
         # Собираем все дочерние узлы рекурсивно: уровень вложенности не ограничен.
         allowed_ids = set(root_ids)
         frontier_ids = set(root_ids)
@@ -3335,6 +3143,33 @@ class ProviderAvailableCatalogServicesAPIView(APIView):
                 break
             allowed_ids.update(child_ids)
             frontier_ids = child_ids
+
+        # Если include_technical — добавляем все технические услуги из глобального каталога
+        # (они общие для всех организаций и не привязаны к available_category_levels)
+        include_technical = request.query_params.get('include_technical') in ('1', 'true')
+        if include_technical:
+            tech_root_ids = set(
+                Service.objects.filter(parent__isnull=True, is_active=True, is_client_facing=False)
+                .values_list('id', flat=True)
+            )
+            # Также собираем потомков технических корней
+            tech_all_ids = set(tech_root_ids)
+            tech_frontier = set(tech_root_ids)
+            while tech_frontier:
+                tech_children = set(
+                    Service.objects.filter(parent_id__in=tech_frontier, is_active=True)
+                    .values_list('id', flat=True)
+                ) - tech_all_ids
+                if not tech_children:
+                    break
+                tech_all_ids.update(tech_children)
+                tech_frontier = tech_children
+            if tech_all_ids:
+                allowed_ids.update(tech_all_ids)
+                
+        if not allowed_ids:
+            return Response([])
+
         qs = Service.objects.filter(id__in=allowed_ids, is_active=True).order_by('hierarchy_order', 'name')
         # Фильтр по типам животных филиала: только услуги без ограничения или с пересечением с served_pet_types
         location_id_param = request.query_params.get('location_id')
@@ -3348,9 +3183,16 @@ class ProviderAvailableCatalogServicesAPIView(APIView):
             served_ids = list(loc.served_pet_types.values_list('id', flat=True))
             if not served_ids:
                 return Response([])
-            qs = qs.annotate(_n_apt=Count('allowed_pet_types')).filter(
-                Q(_n_apt=0) | Q(allowed_pet_types__in=served_ids)
-            ).distinct().order_by('hierarchy_order', 'name')
+            if include_technical:
+                # Клиентские услуги фильтруем по типам животных, технические — включаем все
+                qs = qs.annotate(_n_apt=Count('allowed_pet_types')).filter(
+                    Q(is_client_facing=False) |
+                    Q(_n_apt=0) | Q(allowed_pet_types__in=served_ids)
+                ).distinct().order_by('hierarchy_order', 'name')
+            else:
+                qs = qs.annotate(_n_apt=Count('allowed_pet_types')).filter(
+                    Q(_n_apt=0) | Q(allowed_pet_types__in=served_ids)
+                ).distinct().order_by('hierarchy_order', 'name')
         q = (request.query_params.get('q') or '').strip()
         if q:
             qs = qs.filter(
@@ -3369,5 +3211,6 @@ class ProviderAvailableCatalogServicesAPIView(APIView):
                 'parent_id': s.parent_id,
                 'level': s.level,
                 'has_children': s.id in parent_ids,
+                'is_client_facing': s.is_client_facing,
             })
         return Response(out) 

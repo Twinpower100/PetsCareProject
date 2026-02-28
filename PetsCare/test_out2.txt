@@ -1,0 +1,57 @@
+Using existing test database for alias 'default'...
+
+..FF...E.F
+======================================================================
+ERROR: test_user_is_pet_sitter (users.tests.UserModelTest.test_user_is_pet_sitter)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 81, in test_user_is_pet_sitter
+    user.user_types.add(UserType.objects.get(name='pet_sitter'))
+                        ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\db\models\manager.py", line 87, in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\db\models\query.py", line 635, in get
+    raise self.model.DoesNotExist(
+        "%s matching query does not exist." % self.model._meta.object_name
+    )
+users.models.UserType.DoesNotExist: UserType matching query does not exist.
+
+======================================================================
+FAIL: test_profile_form_valid (users.tests.UserFormTest.test_profile_form_valid)
+Тест валидной формы профиля.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 122, in test_profile_form_valid
+    self.assertTrue(serializer.is_valid())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_registration_form_valid (users.tests.UserFormTest.test_registration_form_valid)
+Тест валидной формы регистрации.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 112, in test_registration_form_valid
+    self.assertTrue(serializer.is_valid())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_user_registration (users.tests.UserRegistrationTest.test_user_registration)
+Тест успешной регистрации пользователя
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 148, in test_user_registration
+    self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 400 != 201
+
+----------------------------------------------------------------------
+Ran 10 tests in 7.473s
+
+FAILED (failures=3, errors=1)
+Preserving test database for alias 'default'...
+
+Found 10 test(s).
+System check identified no issues (0 silenced).

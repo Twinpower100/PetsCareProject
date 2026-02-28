@@ -11,13 +11,13 @@ Serializers для API поставщиков.
 
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
-from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, HolidayShift, EmployeeWorkSlot, EmployeeJoinRequest, ProviderLocation, ProviderLocationService
+from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, HolidayShift, EmployeeWorkSlot, ProviderLocation, ProviderLocationService
 from .contact_validators import validate_phone_contact, validate_email_contact
 from catalog.serializers import ServiceSerializer
 from catalog.models import Service
 from pets.models import PetType
 from users.serializers import UserSerializer
-from users.models import EmployeeSpecialization, User, ProviderAdmin as UserProviderAdmin
+from users.models import EmployeeSpecialization, User
 from django.db.models import Q
 from geopy.distance import geodesic
 from django.utils import timezone
@@ -401,19 +401,13 @@ class EmployeeProviderSerializer(serializers.ModelSerializer):
             'provider',
             'start_date',
             'end_date',
+            'role',
+            'is_owner',
+            'is_provider_manager',
+            'is_provider_admin',
             'is_manager',
-            'is_confirmed',
-            'confirmation_requested_at',
-            'confirmed_at'
         ]
-        read_only_fields = [
-            'id',
-            'employee',
-            'provider',
-            'is_confirmed',
-            'confirmation_requested_at',
-            'confirmed_at'
-        ]
+        read_only_fields = ['id']
 
     def validate(self, data):
         """
@@ -637,25 +631,6 @@ class EmployeeWorkSlotSerializer(serializers.ModelSerializer):
     class Meta:
         model = EmployeeWorkSlot
         fields = '__all__'
-
-
-class EmployeeJoinRequestSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для заявки на вступление в учреждение.
-    """
-    class Meta:
-        model = EmployeeJoinRequest
-        fields = ['id', 'user', 'provider', 'position', 'comment', 'status', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'status', 'created_at', 'updated_at', 'user']
-
-
-class EmployeeProviderConfirmSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для подтверждения сотрудником своей роли.
-    """
-    class Meta:
-        model = EmployeeProvider
-        fields = ['is_confirmed']
 
 
 class ProviderLocationSerializer(serializers.ModelSerializer):
@@ -1069,13 +1044,16 @@ class HolidayShiftSerializer(serializers.ModelSerializer):
 
 class ProviderAdminListSerializer(serializers.ModelSerializer):
     """
-    Сериализатор списка админов провайдера для страницы персонала.
-    Возвращает пользователя и роль (owner / provider_admin), чтобы отображать владельца учреждения.
+    Сериализатор списка админов провайдера для страницы персонала (источник — EmployeeProvider).
+    Возвращает пользователя и флаги ролей: is_owner, is_provider_manager, is_provider_admin.
     """
-    user = UserSerializer(read_only=True)
+    user = serializers.SerializerMethodField()
     role = serializers.CharField(read_only=True)
 
     class Meta:
-        model = UserProviderAdmin
-        fields = ['id', 'user', 'role', 'is_active', 'created_at']
-        read_only_fields = ['id', 'user', 'role', 'is_active', 'created_at']
+        model = EmployeeProvider
+        fields = ['id', 'user', 'role', 'is_owner', 'is_provider_manager', 'is_provider_admin', 'start_date', 'end_date', 'created_at']
+        read_only_fields = ['id', 'user', 'role', 'is_owner', 'is_provider_manager', 'is_provider_admin', 'start_date', 'end_date', 'created_at']
+
+    def get_user(self, obj):
+        return UserSerializer(obj.employee.user).data

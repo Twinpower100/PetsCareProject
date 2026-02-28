@@ -9,29 +9,25 @@ from datetime import timedelta
 from users.models import User
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction
-from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetOwnershipInvite, PetRecordFile, DocumentType
+from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, DocumentType
 from .serializers import (
     PetSerializer,
     MedicalRecordSerializer,
     PetRecordSerializer,
     PetAccessSerializer,
     PetRecordFileSerializer,
-    PetOwnershipInviteSerializer,
     DocumentTypeSerializer,
     PetOwnerIncapacitySerializer,
     PetIncapacityNotificationSerializer,
     PetTypeSerializer,
     BreedSerializer
 )
-from providers.models import EmployeeProvider, Employee, ProviderLocation
+from providers.models import EmployeeProvider, Employee, Provider, ProviderLocation
 from catalog.models import Service
 from catalog.serializers import ServiceSerializer as CatalogServiceSerializer
 from django.core.mail import send_mail
 from django.conf import settings
 import uuid
-import qrcode
-from io import BytesIO
-import base64
 from django.core.exceptions import ValidationError
 from .services import PetOwnerIncapacityService
 from .models import PetOwnerIncapacity, PetIncapacityNotification
@@ -275,14 +271,11 @@ class PetRecordViewSet(viewsets.ModelViewSet):
             from providers.models import Employee, EmployeeProvider
             try:
                 employee = Employee.objects.get(pk=employee_id)
-                # Проверяем, что этот сотрудник — текущий пользователь
+                # Проверяем, что этот сотрудник — текущий пользователь и может проводить приёмы (не technical_worker)
                 if employee.user == user:
-                    # Проверяем, что сотрудник активен в этом провайдере
-                    is_employee_for_provider = EmployeeProvider.objects.filter(
-                        employee=employee,
-                        provider_id=provider_id,
-                        end_date__isnull=True
-                    ).exists()
+                    ep = EmployeeProvider.get_active_ep_for_user_provider(user, get_object_or_404(Provider, pk=provider_id))
+                    if ep and ep.can_conduct_visits():
+                        is_employee_for_provider = True
             except Employee.DoesNotExist:
                 pass
 
@@ -561,43 +554,14 @@ class PetRecordFileUploadAPIView(APIView):
         if user in record.pet.owners.all():
             return True
         
-        # Сотрудник может загружать в записи где он исполнитель или своего учреждения
-        if user.has_role('employee'):
-            from providers.models import Employee, EmployeeProvider
-            
-            try:
-                employee = Employee.objects.get(user=user)
-                # Проверяем, что сотрудник является исполнителем записи
-                if record.employee == employee:
-                    return True
-                
-                # Проверяем, что сотрудник работает в учреждении записи
-                is_employee_for_provider = EmployeeProvider.objects.filter(
-                    employee=employee,
-                    provider=record.provider,
-                    status__in=['active', 'temporary']
-                ).exists()
-                
-                if is_employee_for_provider:
-                    return True
-            except Employee.DoesNotExist:
-                pass
-        
-        # Администратор учреждения может загружать в записи своего учреждения
-        if user.has_role('provider_admin'):
-            from providers.models import EmployeeProvider
-            
-            # Проверяем, что пользователь является админом учреждения записи
-            is_admin_for_provider = EmployeeProvider.objects.filter(
-                employee__user=user,
-                provider=record.provider,
-                is_manager=True,
-                status__in=['active', 'temporary']
-            ).exists()
-            
-            if is_admin_for_provider:
+        # Сотрудник с правом приёмов (service_worker, provider_admin, provider_manager, owner) может загружать в записи, где он исполнитель или в записи своего учреждения
+        ep = EmployeeProvider.get_active_ep_for_user_provider(user, record.provider)
+        if ep and ep.can_conduct_visits():
+            if record.employee_id == ep.employee_id:
                 return True
-        
+            if ep.provider_id == record.provider_id:
+                return True
+
         return False
 
     def post(self, request, record_id):
@@ -678,106 +642,6 @@ class PetRecordFileUploadAPIView(APIView):
                 {'error': _('Error saving document')},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-
-
-class PetInviteAPIView(APIView):
-    """
-    API for generating an invite (email/QR) for adding a co-owner or transferring the main owner's rights.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request, pet_id):
-        """Генерирует инвайт"""
-        pet = get_object_or_404(Pet, id=pet_id)
-        invite_type = request.data.get('type')  # 'invite' или 'transfer'
-        email = request.data.get('email')
-        expires_in = int(request.data.get('expires_in', 24))  # часов
-        if pet.main_owner != request.user:
-            return Response({'error': _('Only main owner can invite or transfer ownership')}, status=403)
-        if invite_type not in ['invite', 'transfer']:
-            return Response({'error': _('Invalid invite type')}, status=400)
-        if not email:
-            return Response({'error': _('Email is required')}, status=400)
-        token = uuid.uuid4()
-        expires_at = timezone.now() + timezone.timedelta(hours=expires_in)
-        invite = PetOwnershipInvite.objects.create(
-            pet=pet,
-            email=email,
-            token=token,
-            expires_at=expires_at,
-            type=invite_type,
-            invited_by=request.user
-        )
-        # Email отправка (stub)
-        link = f"{settings.FRONTEND_URL}/pet-invite/{token}/"
-        send_mail(
-            subject=_('Pet ownership invitation'),
-            message=_('You have been invited to become an owner of pet "{pet}". Use this link: {link}').format(pet=pet.name, link=link),
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[email],
-            fail_silently=True
-        )
-        serializer = PetOwnershipInviteSerializer(invite)
-        return Response(serializer.data)
-
-
-class PetAcceptInviteAPIView(APIView):
-    """
-    API for confirming an invite (by token).
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def post(self, request):
-        """Подтверждает инвайт"""
-        token = request.data.get('token')
-        if not token:
-            return Response({'error': _('Token is required')}, status=400)
-        try:
-            invite = PetOwnershipInvite.objects.get(token=token, is_used=False)
-        except PetOwnershipInvite.DoesNotExist:
-            return Response({'error': _('Invalid or expired invite')}, status=404)
-        if invite.is_expired():
-            return Response({'error': _('Invite expired')}, status=400)
-        pet = invite.pet
-        user = request.user
-        if invite.type == 'invite':
-            pet.owners.add(user)
-        elif invite.type == 'transfer':
-            pet.main_owner = user
-            if user not in pet.owners.all():
-                pet.owners.add(user)
-        pet.save()
-        invite.is_used = True
-        invite.save()
-        return Response({'status': 'success'})
-
-
-class PetInviteQRCodeAPIView(APIView):
-    """
-    API for generating a QR code by invite token (transfer rights or adding a co-owner).
-    Returns base64 PNG.
-    """
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get(self, request, token):
-        """Генерирует QR-код по токену"""
-        try:
-            invite = PetOwnershipInvite.objects.get(token=token, is_used=False)
-        except PetOwnershipInvite.DoesNotExist:
-            return Response({'error': _('Invalid or expired invite')}, status=404)
-        if invite.is_expired():
-            return Response({'error': _('Invite expired')}, status=400)
-        # Генерируем ссылку для подтверждения
-        link = f"{settings.FRONTEND_URL}/pet-invite/{token}/"
-        qr = qrcode.QRCode(box_size=10, border=2)
-        qr.add_data(link)
-        qr.make(fit=True)
-        img = qr.make_image(fill_color="black", back_color="white")
-        buffer = BytesIO()
-        img.save(buffer, format="PNG")
-        img_bytes = buffer.getvalue()
-        img_base64 = base64.b64encode(img_bytes).decode('utf-8')
-        return Response({'qr_code_base64': img_base64, 'link': link})
 
 
 class PetDocumentDownloadAPIView(APIView):

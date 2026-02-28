@@ -234,77 +234,6 @@ def send_password_reset_task(user_id: int, reset_token: str):
 
 
 @shared_task
-def send_role_invite_task(invite_id: int):
-    """
-    Задача для отправки уведомления о приглашении роли.
-    
-    Args:
-        invite_id: ID приглашения
-    """
-    try:
-        from users.models import RoleInvite
-        
-        invite = RoleInvite.objects.get(id=invite_id)
-        
-        notification_service = NotificationService()
-        
-        # Отправляем уведомление получателю
-        notification = notification_service.send_notification(
-            user=invite.invitee,
-            notification_type='role_invite',
-            title=_('New Role Invitation'),
-            message=_('You have been invited to join as ') + invite.role.name,
-            channels=['email', 'push', 'in_app'],
-            priority='high',
-            data={'invite_id': invite.id, 'role_name': invite.role.name}
-        )
-        
-        logger.info(f"Role invite notification sent to user {invite.invitee.id}")
-        
-    except Exception as e:
-        logger.error(f"Failed to send role invite notification for invite {invite_id}: {e}")
-
-
-@shared_task
-def send_role_invite_response_task(invite_id: int, accepted: bool):
-    """
-    Задача для отправки уведомления о принятии/отклонении приглашения роли.
-    
-    Args:
-        invite_id: ID приглашения
-        accepted: Принято ли приглашение
-    """
-    try:
-        from users.models import RoleInvite
-        
-        invite = RoleInvite.objects.get(id=invite_id)
-        
-        notification_service = NotificationService()
-        
-        if accepted:
-            title = _('Role Invitation Accepted')
-            message = f"{invite.invitee.get_full_name()} accepted your invitation to join as {invite.role.name}"
-        else:
-            title = _('Role Invitation Declined')
-            message = f"{invite.invitee.get_full_name()} declined your invitation to join as {invite.role.name}"
-        
-        notification = notification_service.send_notification(
-            user=invite.inviter,
-            notification_type='role_invite',
-            title=title,
-            message=message,
-            channels=['email', 'push', 'in_app'],
-            priority='medium',
-            data={'invite_id': invite.id, 'accepted': accepted}
-        )
-        
-        logger.info(f"Role invite response notification sent to user {invite.inviter.id}")
-        
-    except Exception as e:
-        logger.error(f"Failed to send role invite response notification for invite {invite_id}: {e}")
-
-
-@shared_task
 def cleanup_old_notifications_task(days: int = 30):
     """
     Задача для очистки старых уведомлений.
@@ -513,40 +442,103 @@ def send_new_review_notification_task(review_id: int):
 
 
 @shared_task
-def send_role_invite_expired_task(invite_id: int):
+def send_invite_created_task(invite_id: int):
     """
-    Задача для отправки уведомления об истечении инвайта роли.
-    
-    Args:
-        invite_id: ID инвайта
+    Универсальная задача: уведомление о создании инвайта (invites.Invite).
+    Отправляется приглашённому (по email).
     """
     try:
-        from users.models import RoleInvite
-        
-        invite = RoleInvite.objects.get(id=invite_id)
-        
+        from invites.models import Invite
+        from users.models import User
+        invite = Invite.objects.select_related('provider', 'provider_location', 'pet', 'created_by').get(id=invite_id)
+        try:
+            invitee = User.objects.get(email__iexact=invite.email)
+        except User.DoesNotExist:
+            logger.info(f"Invite {invite_id} for non-existing user {invite.email}, skip in-app notification")
+            return
         notification_service = NotificationService()
-        
-        # Отправляем уведомление создателю инвайта об истечении
-        notification = notification_service.send_notification(
-            user=invite.inviter,
+        title = _('New Invitation')
+        message = _('You have been invited. Check your email for the activation code.')
+        notification_service.send_notification(
+            user=invitee,
             notification_type='role_invite',
-            title=_('Role Invitation Expired'),
-            message=_('A role invitation you sent has expired.'),
+            title=title,
+            message=message,
+            channels=['email', 'push', 'in_app'],
+            priority='high',
+            data={'invite_id': invite.id, 'invite_type': invite.invite_type}
+        )
+        logger.info(f"Invite created notification sent for invite {invite_id}")
+    except Invite.DoesNotExist:
+        logger.warning(f"Invite {invite_id} not found for send_invite_created_task")
+    except Exception as e:
+        logger.error(f"Failed to send invite created notification for invite {invite_id}: {e}")
+
+
+@shared_task
+def send_invite_response_task(invite_id: int, accepted: bool):
+    """
+    Универсальная задача: уведомление создателю о принятии/отклонении инвайта (invites.Invite).
+    """
+    try:
+        from invites.models import Invite
+        from users.models import User
+        invite = Invite.objects.select_related('provider', 'created_by').get(id=invite_id)
+        if not invite.created_by_id:
+            return
+        notification_service = NotificationService()
+        try:
+            accepted_user = User.objects.get(email__iexact=invite.email)
+            name = accepted_user.get_full_name() or invite.email
+        except User.DoesNotExist:
+            name = invite.email
+        if accepted:
+            title = _('Invitation Accepted')
+            message = _('%(email)s accepted your invitation.') % {'email': name}
+        else:
+            title = _('Invitation Declined')
+            message = _('%(email)s declined your invitation.') % {'email': name}
+        notification_service.send_notification(
+            user=invite.created_by,
+            notification_type='role_invite',
+            title=title,
+            message=message,
             channels=['email', 'push', 'in_app'],
             priority='medium',
-            data={
-                'invite_id': invite.id,
-                'invitee_name': invite.invitee.get_full_name() or invite.invitee.email,
-                'role_name': invite.role.name,
-                'provider_name': invite.provider.name
-            }
+            data={'invite_id': invite.id, 'accepted': accepted}
         )
-        
-        logger.info(f"Role invite expired notification sent for invite {invite_id}")
-        
+        logger.info(f"Invite response notification sent for invite {invite_id}")
+    except Invite.DoesNotExist:
+        pass
     except Exception as e:
-        logger.error(f"Failed to send role invite expired notification for invite {invite_id}: {e}")
+        logger.error(f"Failed to send invite response notification for invite {invite_id}: {e}")
+
+
+@shared_task
+def send_invite_expired_task(invite_id: int):
+    """
+    Универсальная задача: уведомление создателю об истечении инвайта (invites.Invite).
+    """
+    try:
+        from invites.models import Invite
+        invite = Invite.objects.select_related('created_by').get(id=invite_id)
+        if not invite.created_by_id:
+            return
+        notification_service = NotificationService()
+        notification_service.send_notification(
+            user=invite.created_by,
+            notification_type='role_invite',
+            title=_('Invitation Expired'),
+            message=_('An invitation you sent has expired.'),
+            channels=['email', 'push', 'in_app'],
+            priority='medium',
+            data={'invite_id': invite.id}
+        )
+        logger.info(f"Invite expired notification sent for invite {invite_id}")
+    except Invite.DoesNotExist:
+        pass
+    except Exception as e:
+        logger.error(f"Failed to send invite expired notification for invite {invite_id}: {e}")
 
 
 @shared_task

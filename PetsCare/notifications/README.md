@@ -47,7 +47,7 @@
 - `send_debt_reminder_task`
 
 - `send_new_review_notification_task`
-- `send_role_invite_expired_task`
+- `send_invite_expired_task` (унифицированные инвайты invites.Invite)
 - `send_pet_sitting_notification_task`
 - `send_payment_failed_notification_task`
 - `send_refund_notification_task`

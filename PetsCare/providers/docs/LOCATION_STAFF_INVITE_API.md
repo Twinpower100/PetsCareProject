@@ -46,7 +46,7 @@
   - `POST provider-locations/<id>/invite-staff/` — тело `{ "email": "...", "language": "en" }`. Создаёт/обновляет инвайт, отправляет письмо с 6-значным кодом.
   - `GET provider-locations/<id>/staff/` — список сотрудников (employees) и ожидающих инвайтов (invites).
   - `DELETE provider-locations/<id>/staff-invites/<invite_id>/` — отменить инвайт.
-  - `POST location-staff-invite/accept/` — тело `{ "token": "123456" }`. Без авторизации. При успехе: создаётся/обновляется Employee, EmployeeProvider (is_confirmed=True), employee.locations добавляется локация.
+  - `POST location-staff-invite/accept/` — тело `{ "token": "123456" }`. Без авторизации. При успехе: создаётся/обновляется Employee, при необходимости одна запись EmployeeProvider (связь с провайдером), employee.locations добавляется локация.
 - Письмо приглашения в персонал отправляется через `send_mail` (как у manager invite).
 
 ## Услуги и расписание сотрудника (per location)

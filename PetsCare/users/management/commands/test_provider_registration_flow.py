@@ -38,7 +38,7 @@ Management команда для тестирования упрощенного
      * Создается Provider (организация) с реквизитами из заявки
      * Копируются реквизиты из ProviderForm в Provider
   * Создается DocumentAcceptance (если оферта принята)
-     * Создается ProviderAdmin (связь Owner → Provider)
+     * Создается EmployeeProvider (связь Owner → Provider)
      * Owner получает роль 'provider_admin'
      * Owner получает доступ к админке (is_staff=True)
      * Автоматически назначается биллинг-менеджер (первый доступный)
@@ -58,8 +58,8 @@ from django.utils import timezone
 from decimal import Decimal
 import random
 
-from users.models import User, UserType, ProviderForm, ProviderAdmin
-from providers.models import Provider
+from users.models import User, UserType, ProviderForm
+from providers.models import Provider, Employee, EmployeeProvider
 from billing.models import Currency, BillingManagerProvider
 from legal.models import LegalDocumentType, LegalDocument, DocumentAcceptance
 from catalog.models import Service
@@ -99,7 +99,7 @@ class Command(BaseCommand):
         self.stdout.write('     * Создается Provider (организация) с реквизитами из заявки\n')
         self.stdout.write('     * Копируются реквизиты из ProviderForm в Provider\n')
         self.stdout.write('     * Создается DocumentAcceptance (если оферта принята)\n')
-        self.stdout.write('     * Создается ProviderAdmin (связь Owner → Provider)\n')
+        self.stdout.write('     * Создается EmployeeProvider (связь Owner → Provider)\n')
         self.stdout.write('     * Owner получает роль provider_admin\n')
         self.stdout.write('     * Owner получает доступ к админке (is_staff=True)\n')
         self.stdout.write('     * Автоматически назначается биллинг-менеджер (первый доступный)\n')
@@ -138,12 +138,16 @@ class Command(BaseCommand):
         else:
             self.stdout.write(self.style.WARNING('⚠️  DocumentAcceptance не создан'))
         
-        # Проверяем создание ProviderAdmin
-        provider_admin = ProviderAdmin.objects.filter(provider=provider, user=owner).first()
-        if provider_admin:
-            self.stdout.write(f'✅ Создан ProviderAdmin: {owner.email} → {provider.name}')
+        # Проверяем создание EmployeeProvider (роль админа у owner)
+        today = timezone.now().date()
+        from django.db.models import Q
+        ep = EmployeeProvider.objects.filter(
+            provider=provider, employee__user=owner,
+        ).filter(Q(end_date__isnull=True) | Q(end_date__gte=today)).first()
+        if ep:
+            self.stdout.write(f'✅ Создан EmployeeProvider: {owner.email} → {provider.name} (роль {ep.role})')
         else:
-            self.stdout.write(self.style.WARNING('⚠️  ProviderAdmin не создан'))
+            self.stdout.write(self.style.WARNING('⚠️  EmployeeProvider не создан'))
         
         # Проверяем роль provider_admin
         owner.refresh_from_db()
@@ -163,12 +167,13 @@ class Command(BaseCommand):
         # Шаг 4: Проверка финального состояния
         self.stdout.write(self.style.SUCCESS('--- Шаг 8: Проверка финального состояния ---\n'))
         
-        # Проверяем ProviderAdmin
-        provider_admin = ProviderAdmin.objects.filter(provider=provider, user=owner, is_active=True).first()
-        if provider_admin:
-            self.stdout.write(f'✅ ProviderAdmin активен: {owner.email} → {provider.name}')
+        # Проверяем EmployeeProvider (активная связь owner/manager/admin)
+        from providers.models import EmployeeProvider
+        admin_link = EmployeeProvider.get_active_admin_links(provider).filter(employee__user=owner).first()
+        if admin_link:
+            self.stdout.write(f'✅ EmployeeProvider активен: {owner.email} → {provider.name} (роль {admin_link.role})')
         else:
-            self.stdout.write(self.style.WARNING('⚠️  ProviderAdmin не активен'))
+            self.stdout.write(self.style.WARNING('⚠️  EmployeeProvider не активен для owner'))
         
         # Проверяем роль
         if owner.user_types.filter(name='provider_admin').exists():
@@ -207,7 +212,7 @@ class Command(BaseCommand):
         self.stdout.write('  ✅ Создание заявки провайдера (ProviderForm) с реквизитами и принятием оферты')
         self.stdout.write('  ✅ Автоматическое создание Provider с копированием реквизитов')
         self.stdout.write('  ✅ Создание DocumentAcceptance')
-        self.stdout.write('  ✅ Создание ProviderAdmin и назначение роли provider_admin')
+        self.stdout.write('  ✅ Создание EmployeeProvider и назначение роли provider_admin')
         self.stdout.write('  ✅ Автоматическое назначение биллинг-менеджера (первый доступный)')
         self.stdout.write('  ✅ Автоматическая активация провайдера при создании заявки')
         
@@ -399,11 +404,14 @@ class Command(BaseCommand):
                 invoice_currency=currency
             )
             
-            # Создаем ProviderAdmin
-            ProviderAdmin.objects.create(
-                user=provider_form.created_by,
+            # Создаем EmployeeProvider (роль provider_admin)
+            employee, _ = Employee.objects.get_or_create(user=provider_form.created_by)
+            EmployeeProvider.objects.create(
+                employee=employee,
                 provider=provider,
-                is_active=True
+                role=EmployeeProvider.ROLE_PROVIDER_ADMIN,
+                start_date=timezone.now().date(),
+                end_date=None,
             )
             
             # Назначаем роль

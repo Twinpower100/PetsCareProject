@@ -6,7 +6,7 @@ from .api_views import (
     MedicalRecordListCreateAPIView, MedicalRecordRetrieveUpdateDestroyAPIView,
     PetRecordListCreateAPIView, PetRecordRetrieveUpdateDestroyAPIView,
     PetAccessListCreateAPIView, PetAccessRetrieveUpdateDestroyAPIView,
-    PetDeleteAPIView, PetInviteAPIView, PetAcceptInviteAPIView, PetInviteQRCodeAPIView,
+    PetDeleteAPIView,
     PetRecordFileUploadAPIView, PetDocumentDownloadAPIView, PetDocumentPreviewAPIView,
     PetSearchAPIView, PetTypeSearchAPIView, BreedSearchAPIView,
     PetRecommendationsAPIView, PetStatisticsAPIView,
@@ -40,11 +40,6 @@ urlpatterns = [
     # Pet access endpoints
     path('access/', PetAccessListCreateAPIView.as_view(), name='pet-access-list-create'),
     path('access/<int:pk>/', PetAccessRetrieveUpdateDestroyAPIView.as_view(), name='pet-access-retrieve-update-destroy'),
-
-    # Pet invite endpoints
-    path('pets/<int:pet_id>/invite/', PetInviteAPIView.as_view(), name='pet-invite'),
-    path('pets/accept-invite/', PetAcceptInviteAPIView.as_view(), name='pet-accept-invite'),
-    path('pets/invite/<uuid:token>/qr/', PetInviteQRCodeAPIView.as_view(), name='pet-invite-qr'),
 
     # Document endpoints
     path('documents/<int:document_id>/download/', PetDocumentDownloadAPIView.as_view(), name='document-download'),

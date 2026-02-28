@@ -119,8 +119,8 @@ def send_provider_activation_email(sender, instance, created, **kwargs):
     - Этот сигнал нужен для случая, когда провайдер переводится в `activation_status='active'` вручную (например, через админку).
     """
     # Импортируем здесь, чтобы избежать циклических импортов
-    from users.models import ProviderAdmin
-    
+    from providers.models import EmployeeProvider
+
     # Пропускаем создание нового провайдера
     if created:
         return
@@ -140,23 +140,21 @@ def send_provider_activation_email(sender, instance, created, **kwargs):
         # Статус уже был 'active' или провайдер только что создан
         return
     
-    # Статус изменился на 'active' - отправляем письмо
+    # Статус изменился на 'active' — сначала назначаем роли по заявке (вариант A), затем письмо
+    if instance.provider_form_id:
+        from users.signals import assign_provider_staff_from_form
+        assign_provider_staff_from_form(instance, instance.provider_form)
     
-    # Находим администратора провайдера
+    # Находим администратора провайдера (любую активную связь для контекста)
     try:
-        provider_admin = ProviderAdmin.objects.filter(
-            provider=instance,
-            is_active=True
-        ).select_related('user').first()
-        
-        if not provider_admin:
+        admin_links = EmployeeProvider.get_active_admin_links(instance)
+        admin_link = admin_links.first()
+        if not admin_link:
             logger.warning(f"Provider {instance.id} activated but no active admin found")
             return
-        
-        admin_user = provider_admin.user
+        admin_user = admin_link.employee.user
         
         # Убеждаемся, что у админа есть роль provider_admin (на случай, если не назначена при одобрении заявки).
-        # Доступ в приложение «Админка провайдеров» по API; is_staff для Django admin не выставляем.
         from users.models import UserType
         try:
             provider_admin_role = UserType.objects.get(name='provider_admin')
@@ -175,7 +173,7 @@ def send_provider_activation_email(sender, instance, created, **kwargs):
         from users.models import ProviderForm
         User = get_user_model()
         
-        # Собираем получателей (те же 3, что и при автоактивации): владелец заявки, админ провайдера, email провайдера
+        # Собираем получателей
         recipients = []
         seen_emails = set()
         
@@ -185,16 +183,27 @@ def send_provider_activation_email(sender, instance, created, **kwargs):
             seen_emails.add(email.lower())
             recipients.append({'email': email, 'user': user, 'is_admin': is_admin})
         
-        # 1. Владелец заявки (created_by) — подавший заявку
+        # 1. Владелец заявки (created_by)
         provider_form = ProviderForm.objects.filter(
             provider_email=instance.email
         ).order_by('-created_at').select_related('created_by').first()
         if provider_form and provider_form.created_by and provider_form.created_by.email:
             add_recipient(provider_form.created_by.email, provider_form.created_by, is_admin=True)
         
-        # 2. Админ провайдера (admin_user)
-        if admin_user.email:
-            add_recipient(admin_user.email, admin_user, is_admin=True)
+        # 2. Все администраторы, менеджеры и оунеры из ProviderForm и EmployeeProvider
+        if provider_form:
+            for email_attr in ['admin_email', 'provider_manager_email', 'owner_email']:
+                email_val = (getattr(provider_form, email_attr, None) or '').strip()
+                if email_val:
+                    try:
+                        u = User.objects.get(email__iexact=email_val)
+                        add_recipient(u.email, u, is_admin=True)
+                    except User.DoesNotExist:
+                        pass
+        
+        for link in admin_links:
+            if link.employee.user.email:
+                add_recipient(link.employee.user.email, link.employee.user, is_admin=True)
         
         # 3. Email провайдера (provider.email) — если ещё не добавлен
         if instance.email:
@@ -207,7 +216,7 @@ def send_provider_activation_email(sender, instance, created, **kwargs):
             add_recipient(instance.email, provider_email_user, is_admin=False)
         
         for recipient in recipients:
-            _send_activation_email(instance, recipient['user'], recipient_email=recipient['email'], is_admin=recipient['is_admin'])
+            _send_activation_email(instance, recipient['user'] or admin_user, recipient_email=recipient['email'], is_admin=recipient['is_admin'])
         
     except Exception as e:
         logger.error(f"Error sending activation email for provider {instance.id}: {e}", exc_info=True)
@@ -262,21 +271,20 @@ def _send_activation_email(provider, admin_user, recipient_email=None, is_admin=
         logger.error(f"Provider {provider.id} has no email and recipient_email not provided")
         return
     
-    # Получаем информацию об админе провайдера (авторе заявки)
-    # Это нужно для отображения в письме, если получатель не админ
-    from users.models import ProviderAdmin
-    provider_admin_obj = ProviderAdmin.objects.filter(provider=provider, is_active=True).select_related('user').first()
+    # Получаем информацию об админе провайдера (активная связь EmployeeProvider)
+    from providers.models import EmployeeProvider
+    provider_admin_obj = EmployeeProvider.get_active_admin_links(provider).first()
     admin_info = None
     if provider_admin_obj:
+        u = provider_admin_obj.employee.user
         admin_info = {
-            'email': provider_admin_obj.user.email,
-            'name': provider_admin_obj.user.get_full_name() or provider_admin_obj.user.email,
+            'email': u.email,
+            'name': u.get_full_name() or u.email,
         }
-    
     # Для инструкций по входу используем email админа (не получателя, если получатель не админ)
     login_email = admin_info['email'] if (not is_admin and admin_info) else email_to
     # Для определения способа входа используем админа
-    admin_user_for_login = provider_admin_obj.user if (not is_admin and provider_admin_obj) else admin_user
+    admin_user_for_login = (provider_admin_obj.employee.user if provider_admin_obj else None) if (not is_admin and provider_admin_obj) else admin_user
     has_password_for_login = admin_user_for_login.has_usable_password() if admin_user_for_login else False
     login_method_for_display = 'password' if has_password_for_login else 'google'
     

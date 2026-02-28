@@ -13,7 +13,7 @@ URL routes for the users module.
 - /api/login/ - Вход в систему
 - /api/profile/ - Профиль пользователя
 - /api/google-auth/ - Аутентификация через Google
-- /role-invites/ - Управление инвайтами на роли
+- /api/v1/invites/ - Унифицированные инвайты (см. приложение invites)
 - /search/distance/ - Поиск пользователей по расстоянию
 - /search/sitters/distance/ - Поиск ситтеров по расстоянию
 """
@@ -63,15 +63,6 @@ urlpatterns = [
     path('users/bulk-deactivation/', api_views.BulkUserDeactivationAPIView.as_view(), name='bulk-user-deactivation'),
     path('users/bulk-activation/', api_views.BulkUserActivationAPIView.as_view(), name='bulk-user-activation'),
     
-    # Role Invite URLs согласно ФД
-    path('role-invites/', api_views.RoleInviteViewSet.as_view(), name='role-invites'),
-    path('role-invites/<int:pk>/', api_views.RoleInviteDetailView.as_view(), name='role-invite-detail'),
-    path('role-invites/accept/', api_views.RoleInviteAcceptAPIView.as_view(), name='role-invite-accept'),
-    path('role-invites/decline/', api_views.RoleInviteDeclineAPIView.as_view(), name='role-invite-decline'),
-    path('role-invites/token/<str:token>/', api_views.RoleInviteByTokenAPIView.as_view(), name='role-invite-by-token'),
-    path('role-invites/<int:invite_id>/qr-code/', api_views.RoleInviteQRCodeAPIView.as_view(), name='role-invite-qr-code'),
-    path('role-invites/pending/', api_views.RoleInvitePendingAPIView.as_view(), name='role-invites-pending'),
-    path('role-invites/cleanup/', api_views.RoleInviteCleanupAPIView.as_view(), name='role-invites-cleanup'),
     path('role-termination/', api_views.RoleTerminationAPIView.as_view(), name='role-termination'),
     
     # Password reset endpoints

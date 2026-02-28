@@ -1,0 +1,10 @@
+{
+    "venvPath": "c:/Users/andre/OneDrive/Documents/Projects/PetCare/PetsCare-backend",
+    "venv": ".venv",
+    "extraPaths": [
+        "c:/Users/andre/OneDrive/Documents/Projects/PetCare/PetsCare-backend",
+        "c:/Users/andre/OneDrive/Documents/Projects/PetCare/PetsCare-backend/.venv/Lib/site-packages"
+    ],
+    "pythonVersion": "3.13",
+    "typeCheckingMode": "basic"
+}

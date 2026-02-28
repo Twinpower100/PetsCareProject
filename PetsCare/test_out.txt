@@ -1,0 +1,152 @@
+Using existing test database for alias 'default'...
+
+...F.F...E.EFFFFEFEE
+======================================================================
+ERROR: test_user_is_pet_sitter (users.tests.UserModelTest.test_user_is_pet_sitter)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 81, in test_user_is_pet_sitter
+    user.user_types.add(UserType.objects.get(name='pet_sitter'))
+                        ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\db\models\manager.py", line 87, in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\db\models\query.py", line 635, in get
+    raise self.model.DoesNotExist(
+        "%s matching query does not exist." % self.model._meta.object_name
+    )
+users.models.UserType.DoesNotExist: UserType matching query does not exist.
+
+======================================================================
+ERROR: test_user_registration (users.tests.UserRegistrationTest.test_user_registration)
+Тест успешной регистрации пользователя
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 237, in test_user_registration
+    url = reverse('api_register')
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\urls\base.py", line 98, in reverse
+    resolved_url = resolver._reverse_with_prefix(view, prefix, *args, **kwargs)
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\urls\resolvers.py", line 831, in _reverse_with_prefix
+    raise NoReverseMatch(msg)
+django.urls.exceptions.NoReverseMatch: Reverse for 'api_register' not found. 'api_register' is not a valid view function or pattern name.
+
+======================================================================
+ERROR: test_login_view (users.tests.UserViewTest.test_login_view)
+Тест представления входа.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 166, in test_login_view
+    response = self.client.get(reverse('users:login'))
+                               ~~~~~~~^^^^^^^^^^^^^^^
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\urls\base.py", line 98, in reverse
+    resolved_url = resolver._reverse_with_prefix(view, prefix, *args, **kwargs)
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\urls\resolvers.py", line 831, in _reverse_with_prefix
+    raise NoReverseMatch(msg)
+django.urls.exceptions.NoReverseMatch: Reverse for 'login' not found. 'login' is not a valid view function or pattern name.
+
+======================================================================
+ERROR: test_profile_view (users.tests.UserViewTest.test_profile_view)
+Тест представления профиля.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 173, in test_profile_view
+    response = self.client.get(reverse('users:profile'))
+                               ~~~~~~~^^^^^^^^^^^^^^^^^
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\urls\base.py", line 98, in reverse
+    resolved_url = resolver._reverse_with_prefix(view, prefix, *args, **kwargs)
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\urls\resolvers.py", line 831, in _reverse_with_prefix
+    raise NoReverseMatch(msg)
+django.urls.exceptions.NoReverseMatch: Reverse for 'profile' not found. 'profile' is not a valid view function or pattern name.
+
+======================================================================
+ERROR: test_registration_view (users.tests.UserViewTest.test_registration_view)
+Тест представления регистрации.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 160, in test_registration_view
+    response = self.client.get(reverse('users:register'))
+                               ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\urls\base.py", line 98, in reverse
+    resolved_url = resolver._reverse_with_prefix(view, prefix, *args, **kwargs)
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\.venv\Lib\site-packages\django\urls\resolvers.py", line 831, in _reverse_with_prefix
+    raise NoReverseMatch(msg)
+django.urls.exceptions.NoReverseMatch: Reverse for 'register' not found. 'register' is not a valid view function or pattern name.
+
+======================================================================
+FAIL: test_profile_form_valid (users.tests.UserFormTest.test_profile_form_valid)
+Тест валидной формы профиля.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 126, in test_profile_form_valid
+    self.assertTrue(serializer.is_valid())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_registration_form_valid (users.tests.UserFormTest.test_registration_form_valid)
+Тест валидной формы регистрации.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 114, in test_registration_form_valid
+    self.assertTrue(serializer.is_valid())
+    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_login_url (users.tests.UserURLTest.test_login_url)
+Тест URL входа.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 214, in test_login_url
+    self.assertEqual(response.status_code, 200)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 200
+
+======================================================================
+FAIL: test_logout_url (users.tests.UserURLTest.test_logout_url)
+Тест URL выхода.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 226, in test_logout_url
+    self.assertEqual(response.status_code, 200)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 200
+
+======================================================================
+FAIL: test_profile_url (users.tests.UserURLTest.test_profile_url)
+Тест URL профиля.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 220, in test_profile_url
+    self.assertEqual(response.status_code, 200)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 200
+
+======================================================================
+FAIL: test_register_url (users.tests.UserURLTest.test_register_url)
+Тест URL регистрации.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 209, in test_register_url
+    self.assertEqual(response.status_code, 200)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 404 != 200
+
+======================================================================
+FAIL: test_logout_view (users.tests.UserViewTest.test_logout_view)
+Тест представления выхода.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "C:\Users\andre\OneDrive\Documents\Projects\PetCare\PetsCare-backend\PetsCare\users\tests.py", line 181, in test_logout_view
+    self.assertEqual(response.status_code, 200)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 405 != 200
+
+----------------------------------------------------------------------
+Ran 20 tests in 18.004s
+
+FAILED (failures=7, errors=5)
+Preserving test database for alias 'default'...
+
+Found 20 test(s).
+System check identified no issues (0 silenced).

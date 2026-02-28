@@ -1,6 +1,6 @@
 from rest_framework import serializers
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import User, UserType, ProviderForm, EmployeeSpecialization, RoleInvite
+from .models import User, UserType, ProviderForm, EmployeeSpecialization
 from .requisite_normalize import (
     normalize_tax_id,
     normalize_registration_number,
@@ -372,7 +372,7 @@ class ProviderFormSerializer(serializers.ModelSerializer):
         model = ProviderForm
         fields = [
             'id', 'provider_name', 'provider_address',
-            'provider_phone', 'provider_email', 'admin_email', 'documents', 'status',
+            'provider_phone', 'provider_email', 'owner_email', 'provider_manager_email', 'admin_email', 'documents', 'status',
             'selected_categories', 'created_at', 'updated_at', 'approved_at',
             'country', 'organization_type', 'director_name',
             'registration_number', 'tax_id', 'kpp',
@@ -455,167 +455,6 @@ class ProviderAdminRegistrationSerializer(serializers.ModelSerializer):
         return data 
 
 
-class RoleInviteSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для инвайтов на роли.
-    """
-    # Упрощенная версия без проблемных полей для Swagger
-    class Meta:
-        model = RoleInvite
-        fields = [
-            'id', 'email', 'role', 'provider', 'position', 'comment', 'status',
-            'created_by', 'created_at', 'expires_at', 'accepted_at', 'declined_at'
-        ]
-        read_only_fields = [
-            'id', 'token', 'qr_code', 'status', 'created_at', 'expires_at',
-            'accepted_at', 'declined_at', 'accepted_by'
-        ]
-
-
-class RoleInviteCreateSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для создания инвайтов на роли.
-    """
-    class Meta:
-        model = 'users.RoleInvite'
-        fields = ['email', 'role', 'provider', 'position', 'comment']
-    
-    def validate(self, data):
-        """
-        Валидация данных инвайта.
-        """
-        from .models import RoleInvite
-        
-        user = self.context['request'].user
-        email = data['email']
-        role = data['role']
-        provider = data['provider']
-        
-        # Проверяем права на создание инвайта
-        if role == 'employee':
-            # Только менеджер учреждения может приглашать сотрудников
-            if not user.is_employee() or not user.employee_profile.employeeprovider_set.filter(
-                provider=provider, is_manager=True, is_confirmed=True
-            ).exists():
-                raise serializers.ValidationError(
-                    _("Only confirmed managers can invite employees")
-                )
-        elif role == 'billing_manager':
-            # Только системный админ может приглашать менеджеров по биллингу
-            if not user.is_system_admin():
-                raise serializers.ValidationError(
-                    _("Only system administrators can invite billing managers")
-                )
-        
-        # Проверяем, что пользователь с таким email существует
-        if not User.objects.filter(email=email).exists():
-            raise serializers.ValidationError(
-                _("User with this email does not exist")
-            )
-        
-        # Проверяем, что нет активных инвайтов для этого email и роли
-        if RoleInvite.objects.filter(
-            email=email,
-            role=role,
-            provider=provider,
-            status='pending',
-            expires_at__gt=timezone.now()
-        ).exists():
-            raise serializers.ValidationError(
-                _("Active invite already exists for this user and role")
-            )
-        
-        # Проверяем, что пользователь еще не имеет эту роль
-        target_user = User.objects.get(email=email)
-        if role == 'employee':
-            if target_user.is_employee() and target_user.employee_profile.employeeprovider_set.filter(
-                provider=provider, end_date__isnull=True
-            ).exists():
-                raise serializers.ValidationError(
-                    _("User is already an employee at this provider")
-                )
-        elif role == 'billing_manager':
-            if target_user.has_role('billing_manager') and target_user.managed_providers.filter(
-                provider=provider, status__in=['active', 'vacation']
-            ).exists():
-                raise serializers.ValidationError(
-                    _("User is already a billing manager for this provider")
-                )
-        
-        return data
-    
-    def create(self, validated_data):
-        """
-        Создает инвайт на роль.
-        """
-        validated_data['created_by'] = self.context['request'].user
-        return super().create(validated_data)
-
-
-class RoleInviteAcceptSerializer(serializers.Serializer):
-    """
-    Сериализатор для принятия инвайта на роль.
-    """
-    token = serializers.CharField(max_length=64)
-    
-    def validate_token(self, value):
-        """
-        Валидирует токен инвайта.
-        """
-        try:
-            invite = RoleInvite.objects.get(token=value)
-            if not invite.can_be_accepted():
-                raise serializers.ValidationError(_("Invite cannot be accepted"))
-            return value
-        except RoleInvite.DoesNotExist:
-            raise serializers.ValidationError(_("Invalid invite token"))
-    
-    def accept_invite(self, user):
-        """
-        Принимает инвайт пользователем.
-        """
-        token = self.validated_data['token']
-        invite = RoleInvite.objects.get(token=token)
-        
-        try:
-            invite.accept(user)
-            return invite
-        except ValueError as e:
-            raise serializers.ValidationError(str(e))
-
-
-class RoleInviteDeclineSerializer(serializers.Serializer):
-    """
-    Сериализатор для отклонения инвайта на роль.
-    """
-    token = serializers.CharField(max_length=64)
-    
-    def validate_token(self, value):
-        """
-        Валидирует токен инвайта.
-        """
-        try:
-            invite = RoleInvite.objects.get(token=value)
-            if invite.status != 'pending':
-                raise serializers.ValidationError(_("Invite cannot be declined"))
-            return value
-        except RoleInvite.DoesNotExist:
-            raise serializers.ValidationError(_("Invalid invite token"))
-    
-    def decline_invite(self, user):
-        """
-        Отклоняет инвайт пользователем.
-        """
-        token = self.validated_data['token']
-        invite = RoleInvite.objects.get(token=token)
-        
-        try:
-            invite.decline(user)
-            return invite
-        except ValueError as e:
-            raise serializers.ValidationError(str(e))
-
-
 class RoleTerminationSerializer(serializers.Serializer):
     """
     Сериализатор для увольнения пользователя с роли.
@@ -644,10 +483,10 @@ class RoleTerminationSerializer(serializers.Serializer):
         if role == 'employee':
             # Только менеджер учреждения может увольнять сотрудников
             if not user.is_employee() or not user.employee_profile.employeeprovider_set.filter(
-                provider=provider, is_manager=True, is_confirmed=True
+                provider=provider, is_manager=True
             ).exists():
                 raise serializers.ValidationError(
-                    _("Only confirmed managers can terminate employees")
+                    _("Only managers can terminate employees")
                 )
             
             # Проверяем, что пользователь действительно сотрудник
@@ -829,6 +668,8 @@ class ProviderRegistrationStep2Serializer(serializers.Serializer):
     provider_address = serializers.CharField(max_length=200, required=True)
     provider_phone = serializers.CharField(required=True)
     provider_email = serializers.EmailField(required=True)
+    owner_email = serializers.EmailField(required=True)
+    provider_manager_email = serializers.EmailField(required=True)
     admin_email = serializers.EmailField(required=True)
     selected_categories = serializers.ListField(
         child=serializers.IntegerField(),
@@ -873,17 +714,23 @@ class ProviderRegistrationStep2Serializer(serializers.Serializer):
             raise serializers.ValidationError(_('Provider form with this phone already exists'))
         return value
     
-    def validate_admin_email(self, value):
-        """Проверка существования пользователя-администратора"""
-        # Если admin_email указан, проверяем существование пользователя
-        if value:
-            if not User.objects.filter(email=value, is_active=True).exists():
-                raise serializers.ValidationError(
-                    _('User with this email is not registered in the system. Please specify an existing user email or ask the user to register.')
-                )
-        # Если не указан, будет использован email создателя заявки (в модели save())
+    def _validate_email_user_exists(self, value, field_name):
+        """Проверка существования пользователя по email."""
+        if value and not User.objects.filter(email__iexact=value.strip(), is_active=True).exists():
+            raise serializers.ValidationError(
+                _('User with this email is not registered in the system. Please specify an existing user email or ask the user to register.')
+            )
         return value
-    
+
+    def validate_owner_email(self, value):
+        return self._validate_email_user_exists(value, 'owner_email')
+
+    def validate_provider_manager_email(self, value):
+        return self._validate_email_user_exists(value, 'provider_manager_email')
+
+    def validate_admin_email(self, value):
+        return self._validate_email_user_exists(value, 'admin_email')
+
     def validate_selected_categories(self, value):
         """Проверка категорий услуг уровня 0"""
         from catalog.models import Service
@@ -950,7 +797,9 @@ class ProviderRegistrationWizardSerializer(serializers.Serializer):
     provider_address = serializers.CharField(max_length=200, required=True)
     provider_phone = serializers.CharField(required=True)
     provider_email = serializers.EmailField(required=True)
-    admin_email = serializers.EmailField(required=False, allow_blank=True)
+    owner_email = serializers.EmailField(required=True)
+    provider_manager_email = serializers.EmailField(required=True)
+    admin_email = serializers.EmailField(required=True)
     selected_categories = serializers.ListField(
         child=serializers.IntegerField(),
         required=True,
@@ -1217,14 +1066,15 @@ class ProviderRegistrationWizardSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'provider_address': _('Address must be selected from the list. Please choose a suggested address so it can be recognized.')
             })
-        # Если admin_email указан, проверяем существование пользователя
-        # Если не указан, будет использован email создателя заявки (в модели save())
-        if attrs.get('admin_email'):
-            if not User.objects.filter(email=attrs['admin_email'], is_active=True).exists():
+        for field in ('owner_email', 'provider_manager_email', 'admin_email'):
+            email_val = (attrs.get(field) or '').strip()
+            if not email_val:
+                raise serializers.ValidationError({field: _('This field is required.')})
+            if not User.objects.filter(email__iexact=email_val, is_active=True).exists():
                 raise serializers.ValidationError({
-                    'admin_email': _('User with this email is not registered in the system.')
+                    field: _('User with this email is not registered in the system.')
                 })
-        
+
         # Валидация из Step3
         from billing.models import Currency
         if not Currency.objects.filter(id=attrs['invoice_currency'], is_active=True).exists():

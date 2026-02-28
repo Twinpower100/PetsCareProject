@@ -15,7 +15,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.utils.translation import gettext_lazy as _
 from django import forms
-from .models import User, UserType, ProviderForm, ProviderFormDocument, ProviderAdmin  # noqa: F401
+from .models import User, UserType, ProviderForm, ProviderFormDocument  # noqa: F401
 from custom_admin import custom_admin_site
 
 
@@ -83,28 +83,12 @@ class UserAdminForm(forms.ModelForm):
         return cleaned_data
 
 
-class ProviderAdminInline(admin.TabularInline):
-    """
-    Инлайн: управляемые организации пользователя и роли в них.
-    Одна строка = одна роль у одной организации (owner / provider_manager / provider_admin).
-    У одного пользователя может быть несколько строк с одним провайдером — разные роли.
-    """
-    model = ProviderAdmin
-    fk_name = 'user'
-    extra = 0
-    autocomplete_fields = ['provider']
-    fields = ('provider', 'role', 'is_active', 'created_at', 'updated_at')
-    readonly_fields = ('created_at', 'updated_at')
-    verbose_name = _('Managed provider (role)')
-    verbose_name_plural = _('Managed providers')
-
-
 class CustomUserAdmin(UserAdmin):
     """
     Кастомная админка для модели User.
     """
     list_display = ('id', 'username', 'email', 'first_name', 'last_name', 'phone_number', 'get_user_roles', 'get_user_location_roles', 'is_active')
-    inlines = [ProviderAdminInline]
+    inlines = []
     list_filter = ('user_types', 'is_active')
     search_fields = ('email', 'first_name', 'last_name', 'username', 'phone_number', 'user_types__name')
     ordering = ('email',)
@@ -194,7 +178,8 @@ class CustomUserAdmin(UserAdmin):
         """
         qs = super().get_queryset(request)
         return qs.prefetch_related(
-            'user_types', 'pets', 'admin_providers__provider',
+            'user_types', 'pets',
+            'employee_profile__employeeprovider_set__provider',
             'managed_provider_locations',
             'employee_profile__location_roles__provider_location',
         )
@@ -422,7 +407,7 @@ class ProviderFormAdmin(admin.ModelAdmin):
     inlines = [ProviderFormDocumentInline]
     list_display = ('provider_name', 'status', 'get_created_by', 'created_at', 'get_selected_categories', 'has_documents')
     list_filter = ('status', 'selected_categories')
-    search_fields = ('provider_name', 'provider_address', 'created_by__email', 'created_by__first_name', 'created_by__last_name')
+    search_fields = ('provider_name', 'provider_address', 'owner_email', 'provider_manager_email', 'admin_email', 'created_by__email', 'created_by__first_name', 'created_by__last_name')
     readonly_fields = ('created_at', 'updated_at', 'approved_at', 'approved_by', 'created_by')
     filter_horizontal = ('selected_categories',)
     actions = ['approve_and_assign_billing_manager', 'reset_to_pending']
@@ -457,6 +442,14 @@ class ProviderFormAdmin(admin.ModelAdmin):
                 'provider_phone',
                 'provider_email',
             )
+        }),
+        (_('Owner / Manager / Administrator'), {
+            'fields': (
+                'owner_email',
+                'provider_manager_email',
+                'admin_email',
+            ),
+            'description': _('Three required emails. One person can combine roles (same email in several fields). Users must be registered.')
         }),
         (_('Service Categories'), {
             'fields': (
@@ -932,49 +925,6 @@ class ProviderFormAdmin(admin.ModelAdmin):
     
     reset_to_pending.short_description = _('Reset to pending (for testing)')
 
-class ProviderAdministratorAdmin(admin.ModelAdmin):
-    """
-    Админка для администраторов учреждений.
-    """
-    list_display = ('user', 'provider', 'is_active', 'created_at')
-    list_filter = ('provider', 'is_active')
-    search_fields = ('user__email', 'provider__name')
-    readonly_fields = ('created_at', 'updated_at')
-
-    def get_queryset(self, request):
-        qs = super().get_queryset(request)
-        if (request.user.is_authenticated and 
-            hasattr(request.user, 'has_role') and 
-            _has_role(request.user, 'provider_admin')):
-            return qs.filter(provider__in=request.user.get_managed_providers())
-        return qs
-
-    def has_add_permission(self, request):
-        if not request.user.is_authenticated:
-            return False
-        return _has_role(request.user, 'system_admin')
-
-    def has_change_permission(self, request, obj=None):
-        if not request.user.is_authenticated:
-            return False
-        if not obj:
-            return True
-        if _has_role(request.user, 'provider_admin'):
-            return request.user.get_managed_providers().filter(id=obj.provider.id).exists()
-        return _has_role(request.user, 'system_admin')
-
-    def has_delete_permission(self, request, obj=None):
-        if not request.user.is_authenticated:
-            return False
-        return _has_role(request.user, 'system_admin')
-
-    def has_module_permission(self, request):
-        if not request.user.is_authenticated:
-            return False
-        return (hasattr(request.user, 'has_role') and 
-                (_has_role(request.user, 'system_admin') or _has_role(request.user, 'provider_admin')))
-
 custom_admin_site.register(User, CustomUserAdmin)
 custom_admin_site.register(UserType, UserTypeAdmin)
 custom_admin_site.register(ProviderForm, ProviderFormAdmin)
-custom_admin_site.register(ProviderAdmin, ProviderAdministratorAdmin)

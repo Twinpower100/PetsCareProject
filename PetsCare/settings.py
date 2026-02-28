@@ -8,7 +8,8 @@ from decouple import config
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Настройки безопасности
-SECRET_KEY = 'test-secret-key'
+# Используем строго ключ из .env, так как компромиссы и "срезание углов" недопустимы.
+SECRET_KEY = config('SECRET_KEY')
 DEBUG = True
 ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
@@ -67,6 +68,7 @@ INSTALLED_APPS = [
     'security',  # исправлено - ленивая инициализация
     'user_analytics',
     'custom_admin',
+    'invites',
 ]
 
 # Middleware

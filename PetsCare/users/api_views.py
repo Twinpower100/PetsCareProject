@@ -28,7 +28,7 @@ from google.oauth2 import id_token
 from google.auth.transport import requests
 from django.conf import settings
 from .models import UserType, ProviderForm, EmployeeSpecialization, PasswordResetToken
-from providers.models import ManagerTransferInvite, EmployeeProvider
+from providers.models import EmployeeProvider
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext_lazy as _
@@ -38,14 +38,7 @@ from sitters.models import PetSitting
 from pets.models import Pet
 from rest_framework.viewsets import ModelViewSet
 from django.utils import timezone
-from .models import RoleInvite
-from .serializers import (
-    RoleInviteSerializer,
-    RoleInviteCreateSerializer,
-    RoleInviteAcceptSerializer,
-    RoleInviteDeclineSerializer,
-    RoleTerminationSerializer
-)
+from .serializers import RoleTerminationSerializer
 from rest_framework.serializers import ValidationError
 from django.db.models import Q, Count, F, Value
 from django.db.models.functions import Coalesce
@@ -320,272 +313,6 @@ class EmployeeDeactivationAPIView(APIView):
             )
 
 
-class RoleInviteViewSet(APIView):
-    """
-    ViewSet для управления инвайтами на роли.
-    
-    Поддерживает:
-    - Создание инвайтов (только менеджеры и системные админы)
-    - Просмотр списка инвайтов
-    - Детали инвайта
-    - Отмена инвайта
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get(self, request):
-        """Получает список инвайтов."""
-        if getattr(self, 'swagger_fake_view', False):
-            return Response([])
-        try:
-            user = request.user
-            
-            if user.has_role('system_admin') or user.is_superuser:
-                invites = RoleInvite.objects.all()
-            elif user.has_role('employee'):
-                try:
-                    from providers.models import Employee, EmployeeProvider
-                    employee = Employee.objects.get(user=user)
-                    managed_providers = EmployeeProvider.objects.filter(
-                        employee=employee,
-                        is_manager=True,
-                        status='active'
-                    ).values_list('provider_id', flat=True)
-                    invites = RoleInvite.objects.filter(provider_id__in=managed_providers)
-                except Employee.DoesNotExist:
-                    invites = RoleInvite.objects.none()
-            else:
-                invites = RoleInvite.objects.filter(email=user.email)
-            
-            serializer = RoleInviteSerializer(invites, many=True)
-            return Response(serializer.data)
-        except Exception as e:
-            return Response(
-                {'error': _('Failed to get role invites')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    
-    def post(self, request):
-        """Создает новый инвайт."""
-        if getattr(self, 'swagger_fake_view', False):
-            return Response({})
-        try:
-            serializer = RoleInviteSerializer(data=request.data)
-            if serializer.is_valid():
-                serializer.save(created_by=request.user)
-                return Response(serializer.data, status=status.HTTP_201_CREATED)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        except Exception as e:
-            return Response(
-                {'error': 'Failed to create role invite'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-
-class RoleInviteDetailView(APIView):
-    """API для детального управления инвайтом на роль."""
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get(self, request, pk):
-        """Получает детали инвайта."""
-        if getattr(self, 'swagger_fake_view', False):
-            return Response({})
-        try:
-            invite = RoleInvite.objects.get(pk=pk)
-            serializer = RoleInviteSerializer(invite)
-            return Response(serializer.data)
-        except RoleInvite.DoesNotExist:
-            return Response(
-                {'error': _('Role invite not found')},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            return Response(
-                {'error': 'Failed to get role invite'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    
-    def put(self, request, pk):
-        """Обновляет инвайт."""
-        if getattr(self, 'swagger_fake_view', False):
-            return Response({})
-        try:
-            invite = RoleInvite.objects.get(pk=pk)
-            serializer = RoleInviteSerializer(invite, data=request.data)
-            if serializer.is_valid():
-                serializer.save()
-                return Response(serializer.data)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        except RoleInvite.DoesNotExist:
-            return Response(
-                {'error': _('Role invite not found')},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            return Response(
-                {'error': 'Failed to update role invite'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    
-    def delete(self, request, pk):
-        """Удаляет инвайт."""
-        if getattr(self, 'swagger_fake_view', False):
-            return Response({})
-        try:
-            invite = RoleInvite.objects.get(pk=pk)
-            invite.delete()
-            return Response(status=status.HTTP_204_NO_CONTENT)
-        except RoleInvite.DoesNotExist:
-            return Response(
-                {'error': _('Role invite not found')},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            return Response(
-                {'error': 'Failed to delete role invite'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-
-class RoleInviteAcceptAPIView(APIView):
-    """
-    API для принятия инвайта на роль.
-    
-    Поддерживает:
-    - Принятие инвайта по токену
-    - Автоматическое назначение роли
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def post(self, request):
-        """
-        Принимает инвайт на роль.
-        """
-        serializer = RoleInviteAcceptSerializer(data=request.data)
-        if serializer.is_valid():
-            try:
-                invite = serializer.accept_invite(request.user)
-                return Response({
-                    'message': _('Role invite accepted successfully'),
-                    'invite': RoleInviteSerializer(invite).data
-                }, status=status.HTTP_200_OK)
-            except ValidationError as e:
-                return Response({
-                    'error': str(e)
-                }, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class RoleInviteDeclineAPIView(APIView):
-    """
-    API для отклонения инвайта на роль.
-    
-    Поддерживает:
-    - Отклонение инвайта по токену
-    - Уведомление создателя инвайта
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def post(self, request):
-        """
-        Отклоняет инвайт на роль.
-        """
-        serializer = RoleInviteDeclineSerializer(data=request.data)
-        if serializer.is_valid():
-            try:
-                invite = serializer.decline_invite(request.user)
-                return Response({
-                    'message': _('Role invite declined successfully'),
-                    'invite': RoleInviteSerializer(invite).data
-                }, status=status.HTTP_200_OK)
-            except ValidationError as e:
-                return Response({
-                    'error': str(e)
-                }, status=status.HTTP_400_BAD_REQUEST)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class RoleInviteByTokenAPIView(APIView):
-    """
-    API для получения информации об инвайте по токену.
-    
-    Поддерживает:
-    - Получение деталей инвайта по токену
-    - Проверку валидности токена
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get(self, request, token):
-        """
-        Получает информацию об инвайте по токену.
-        """
-        try:
-            invite = RoleInvite.objects.get(token=token)
-            serializer = RoleInviteSerializer(invite)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        except RoleInvite.DoesNotExist:
-            return Response({
-                'error': _('Invalid invite token')
-            }, status=status.HTTP_404_NOT_FOUND)
-
-
-class RoleInviteQRCodeAPIView(APIView):
-    """
-    API для получения QR-кода инвайта.
-    
-    Поддерживает:
-    - Генерацию QR-кода для мобильного приложения
-    - Сканирование QR-кода
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get(self, request, invite_id):
-        """
-        Получает QR-код для инвайта.
-        """
-        try:
-            invite = RoleInvite.objects.get(id=invite_id)
-            
-            # Проверяем права доступа
-            if not self._can_access_invite(request.user, invite):
-                return Response({
-                    'error': _('Access denied')
-                }, status=status.HTTP_403_FORBIDDEN)
-            
-            return Response({
-                'qr_code': invite.qr_code,
-                'token': invite.token,
-                'expires_at': invite.expires_at
-            }, status=status.HTTP_200_OK)
-        except RoleInvite.DoesNotExist:
-            return Response({
-                'error': _('Invite not found')
-            }, status=status.HTTP_404_NOT_FOUND)
-    
-    def _can_access_invite(self, user, invite):
-        """
-        Проверяет права доступа к инвайту.
-        """
-        # Создатель инвайта
-        if invite.created_by == user:
-            return True
-        
-        # Получатель инвайта
-        if invite.email == user.email:
-            return True
-        
-        # Системный админ
-        if user.is_system_admin():
-            return True
-        
-        # Менеджер учреждения
-        if user.is_employee() and user.employee_profile.employeeprovider_set.filter(
-            provider=invite.provider, is_manager=True, is_confirmed=True
-        ).exists():
-            return True
-        
-        return False
-
-
 class RoleTerminationAPIView(APIView):
     """
     API для увольнения пользователя с роли.
@@ -676,58 +403,6 @@ class RoleTerminationAPIView(APIView):
         """
         # TODO: Реализовать отправку уведомления пользователю
         pass
-
-
-class RoleInvitePendingAPIView(APIView):
-    """
-    API для получения активных инвайтов пользователя.
-    
-    Поддерживает:
-    - Получение списка активных инвайтов для текущего пользователя
-    - Фильтрацию по ролям
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get(self, request):
-        """
-        Получает активные инвайты для текущего пользователя.
-        """
-        role = request.query_params.get('role')
-        
-        queryset = RoleInvite.get_pending_for_email(request.user.email)
-        
-        if role:
-            queryset = queryset.filter(role=role)
-        
-        serializer = RoleInviteSerializer(queryset, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-class RoleInviteCleanupAPIView(APIView):
-    """
-    API для очистки истекших инвайтов.
-    
-    Поддерживает:
-    - Автоматическую очистку истекших инвайтов
-    - Отчет о количестве очищенных инвайтов
-    """
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def post(self, request):
-        """
-        Очищает истекшие инвайты.
-        """
-        if not request.user.is_system_admin():
-            return Response({
-                'error': _('Only system administrators can cleanup invites')
-            }, status=status.HTTP_403_FORBIDDEN)
-        
-        cleaned_count = RoleInvite.cleanup_expired()
-        
-        return Response({
-            'message': _('Expired invites cleaned successfully'),
-            'cleaned_count': cleaned_count
-        }, status=status.HTTP_200_OK)
 
 
 class UserSearchByDistanceAPIView(generics.ListAPIView):
@@ -1507,7 +1182,7 @@ class AccountDeactivationView(APIView):
         user_roles = [role.name for role in user.user_types.all()]
         
         # Проверяем служебные роли
-        service_roles = ['system_admin', 'billing_manager', 'booking_manager', 'employee']
+        service_roles = ['system_admin', 'billing_manager', 'booking_manager']
         if any(role in user_roles for role in service_roles):
             return {
                 'can_deactivate': False,
@@ -1575,8 +1250,12 @@ class AccountDeactivationView(APIView):
                 logger.info(f'Step 2: Handling user pets for user {user.id}')
                 self._handle_user_pets(user)
                 
+                # Обрабатываем роли сотрудника (провайдера) если есть
+                logger.info(f'Step 3: Handling employee roles for user {user.id}')
+                self._deactivate_employee_roles(user)
+                
                 # Обрабатываем роли пользователя
-                logger.info(f'Step 3: Handling user roles for user {user.id}')
+                logger.info(f'Step 4: Handling user roles for user {user.id}')
                 self._handle_user_roles(user)
                 
                 # Анонимизируем данные пользователя
@@ -1620,6 +1299,39 @@ class AccountDeactivationView(APIView):
         except SitterProfile.DoesNotExist:
             # У пользователя нет профиля ситтера
             pass
+    
+    def _deactivate_employee_roles(self, user):
+        """
+        Деактивирует профиль сотрудника и его роли в филиалах, 
+        а также отменяет связанные будущие визиты.
+        """
+        try:
+            employee = getattr(user, 'employee_profile', None)
+            if not employee:
+                return
+            
+            from booking.reassignment_service import BookingReassignmentService
+            from providers.models import EmployeeLocationRole
+            
+            # Находим все активные роли сотрудника
+            active_roles = EmployeeLocationRole.objects.filter(employee=employee, is_active=True)
+            for role in active_roles:
+                # Мягкое удаление роли и отмена визитов в рамках этой роли
+                BookingReassignmentService.deactivate_staff(
+                    provider_location=role.provider_location,
+                    employee=employee,
+                    resolution='cancel',
+                    reason="User self-deactivated account."
+                )
+            
+            # Если у сотрудника есть другие данные, которые нужно деактивировать, 
+            # они сейчас лежат в BookingReassignmentService, но сам профиль Employee
+            employee.is_active = False
+            employee.save()
+            
+        except Exception as e:
+            logger.error(f'Error deactivating employee roles for user {user.id}: {e}')
+            raise
     
     def _handle_user_pets(self, user):
         """
@@ -1743,10 +1455,49 @@ class AccountDeactivationView(APIView):
     
     def _send_deactivation_notifications(self, user):
         """
-        Отправляет уведомления о деактивации аккаунта.
+        Отправляет уведомления о деактивации аккаунта (самоудаление).
+        Клиенты уже получили уведомления об отмене визитов из BookingReassignmentService.
+        Здесь отправляем менеджерам локаций явное оповещение о том, что сотрудник удалил аккаунт
+        и все его будущие визиты отменены (для срочного звонка клиентам и предложения переноса).
         """
-        # TODO: Реализовать отправку уведомлений
-        logger.info(f'Deactivation notifications should be sent for user {user.id}')
+        from notifications.models import Notification
+        from providers.models import Employee, EmployeeLocationRole
+
+        employee = getattr(user, 'employee_profile', None)
+        if not employee:
+            return
+
+        # Все локации, где сотрудник был привязан (в т.ч. только что деактивированные)
+        role_locations = set()
+        for role in EmployeeLocationRole.objects.filter(employee=employee).select_related(
+            'provider_location'
+        ):
+            role_locations.add(role.provider_location)
+
+        staff_name = user.get_full_name() or user.email or str(_('Former staff member'))
+        for location in role_locations:
+            managers = EmployeeLocationRole.objects.filter(
+                provider_location=location,
+                role=EmployeeLocationRole.ROLE_LOCATION_MANAGER,
+                is_active=True,
+            ).select_related('employee', 'employee__user')
+            for mgr in managers:
+                if mgr.employee.user_id == user.id:
+                    continue
+                Notification.objects.create(
+                    user=mgr.employee.user,
+                    title=str(_('Staff Account Deleted')),
+                    message=str(
+                        _(
+                            'Staff member {staff} has deleted their account. '
+                            'All their future bookings have been cancelled. '
+                            'Please contact affected clients to offer reassignment.'
+                        ).format(staff=staff_name, location=location.name)
+                    ),
+                    notification_type='system',
+                    priority='high',
+                )
+        logger.info('Deactivation notifications sent for user %s (managers notified)', user.id)
 
 
 class UserRolesView(APIView):
@@ -2371,17 +2122,16 @@ class ProviderRegistrationWizardAPIView(APIView):
         
         data = serializer.validated_data
         
-        # Получаем пользователя-администратора
-        # Если admin_email не указан, используем email создателя заявки
-        admin_email = data.get('admin_email') or request.user.email
-        try:
-            admin_user = User.objects.get(email=admin_email, is_active=True)
-        except User.DoesNotExist:
+        # Три обязательных email проверяются в сериализаторе
+        owner_email = (data.get('owner_email') or '').strip()
+        provider_manager_email = (data.get('provider_manager_email') or '').strip()
+        admin_email = (data.get('admin_email') or '').strip()
+        if not owner_email or not provider_manager_email or not admin_email:
             return Response(
-                {'admin_email': _('User with this email is not registered in the system.')},
+                {'detail': _('owner_email, provider_manager_email and admin_email are required.')},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Получаем валюту
         from billing.models import Currency
         try:
@@ -2427,7 +2177,9 @@ class ProviderRegistrationWizardAPIView(APIView):
             address_components=data.get('address_components'),
             provider_phone=data['provider_phone'],
             provider_email=data['provider_email'],
-            admin_email=admin_email,  # Используем admin_email или email создателя
+            owner_email=owner_email,
+            provider_manager_email=provider_manager_email,
+            admin_email=admin_email,
             country=data['country'],
             language=(data.get('language') or 'en').strip()[:10] or 'en',
             tax_id=data.get('tax_id', ''),

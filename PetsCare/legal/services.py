@@ -419,23 +419,21 @@ class DocumentAcceptanceService:
             dict: Результат отправки письма
         """
         try:
-            from users.models import ProviderAdmin
+            from providers.models import EmployeeProvider
             from django.core.mail import send_mail
             from django.template.loader import render_to_string
             from django.conf import settings
             from billing.models import BillingManagerProvider
             
-            # Получаем админа провайдера (Owner - создатель заявки)
-            provider_admin_obj = ProviderAdmin.objects.filter(
-                provider=provider,
-                is_active=True
-            ).select_related('user').first()
+            # Получаем админа провайдера (owner/manager/admin через EmployeeProvider)
+            admin_links = EmployeeProvider.get_active_admin_links(provider)
+            provider_admin_obj = admin_links.first()
             
             if not provider_admin_obj:
                 self.logger.warning(f"Provider {provider.id} activated but no active admin found")
                 return {'success': False, 'error': 'No active admin found'}
             
-            admin_user = provider_admin_obj.user
+            admin_user = provider_admin_obj.employee.user
             
             # Получаем контакты биллинг-менеджера
             billing_manager_contacts = []

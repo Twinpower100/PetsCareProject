@@ -103,7 +103,7 @@ class ProviderOfferAPIView(APIView):
         # Проверяем, является ли пользователь администратором провайдера
         if hasattr(user, 'is_provider_admin'):
             try:
-                if user.is_provider_admin() and user.provider_admin_providers.filter(id=provider.id).exists():
+                if user.is_provider_admin() and user.get_managed_providers().filter(pk=provider.id).exists():
                     return True
             except:
                 pass
@@ -162,7 +162,7 @@ class ProviderRegionalAddendumsAPIView(APIView):
             return True
         if hasattr(user, 'is_provider_admin'):
             try:
-                if user.is_provider_admin() and user.provider_admin_providers.filter(id=provider.id).exists():
+                if user.is_provider_admin() and user.get_managed_providers().filter(pk=provider.id).exists():
                     return True
             except:
                 pass
@@ -345,7 +345,7 @@ class DocumentAcceptanceAPIView(APIView):
         # Если пользователь - администратор провайдера, принимаем от имени провайдера
         if hasattr(user, 'is_provider_admin') and user.is_provider_admin():
             try:
-                provider = user.provider_admin_providers.first()
+                provider = user.get_managed_providers().first()
             except:
                 pass
         

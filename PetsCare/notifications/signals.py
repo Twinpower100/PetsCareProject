@@ -9,7 +9,7 @@
 """
 
 import logging
-from django.db.models.signals import post_save, post_delete
+from django.db.models.signals import pre_save, post_save, post_delete
 from django.dispatch import receiver
 from django.utils.translation import gettext as _
 from django.contrib.auth import get_user_model
@@ -17,8 +17,6 @@ from django.apps import apps
 from .tasks import (
     send_email_verification_task,
     send_password_reset_task,
-    send_role_invite_task,
-    send_role_invite_response_task,
     send_booking_confirmation_task,
     send_booking_cancellation_task,
     schedule_booking_reminders_task,
@@ -26,8 +24,10 @@ from .tasks import (
     send_pet_sitting_notification_task,
     send_payment_failed_notification_task,
     send_refund_notification_task,
-    send_role_invite_expired_task,
-    send_debt_reminder_task
+    send_debt_reminder_task,
+    send_invite_created_task,
+    send_invite_response_task,
+    send_invite_expired_task,
 )
 from .services import PreferenceService, NotificationService, NotificationRuleService
 from django.utils import timezone
@@ -157,76 +157,40 @@ def handle_booking_cancellation_notification(sender, instance, **kwargs):
         logger.error(_("Error processing booking cancellation notification rules: {}").format(e))
 
 
-# Сигналы для приглашений ролей
-@receiver(post_save, sender='users.RoleInvite')
-def handle_role_invite_notifications(sender, instance, created, **kwargs):
-    """
-    Обрабатывает уведомления о приглашениях ролей через гибкую систему правил.
-    
-    Args:
-        sender: Модель отправителя сигнала
-        instance: Экземпляр приглашения
-        created: Создано ли приглашение
-        **kwargs: Дополнительные аргументы
-    """
+# Сигналы для унифицированных инвайтов (invites.Invite)
+@receiver(post_save, sender='invites.Invite')
+def handle_invite_created(sender, instance, created, **kwargs):
+    """При создании pending-инвайта ставим в очередь уведомление приглашённому."""
     try:
-        if created:
-            # Создаем контекст события
-            context = {
-                'user': instance.invited_user,
-                'invite': instance,
-                'role': instance.role,
-                'invited_by': instance.invited_by,
-            }
-            
-            # Обрабатываем событие через систему правил
-            rule_service = NotificationRuleService()
-            rule_service.process_event('role_invite_sent', context, instance.invited_user)
-            
-            logger.info(f"Processed role_invite_sent event for invite {instance.id}")
-            
+        if created and instance.status == 'pending':
+            send_invite_created_task.delay(instance.id)
+            logger.info(f"Invite created notification queued for invite {instance.id}")
     except Exception as e:
-        logger.error(f"Error processing role invite notification rules: {e}")
+        logger.error(f"Error queuing invite created notification for invite {instance.id}: {e}")
 
 
-@receiver(post_save, sender='users.RoleInvite')
-def handle_role_invite_response_notifications(sender, instance, **kwargs):
-    """
-    Обрабатывает уведомления о принятии/отклонении приглашений ролей через гибкую систему правил.
-    
-    Args:
-        sender: Модель отправителя сигнала
-        instance: Экземпляр приглашения
-        **kwargs: Дополнительные аргументы
-    """
+@receiver(pre_save, sender='invites.Invite')
+def _store_invite_previous_status(sender, instance, **kwargs):
+    """Сохраняем предыдущий статус для post_save."""
+    if instance.pk:
+        try:
+            old = sender.objects.only('status').get(pk=instance.pk)
+            instance._invite_previous_status = old.status
+        except sender.DoesNotExist:
+            instance._invite_previous_status = None
+
+
+@receiver(post_save, sender='invites.Invite')
+def handle_invite_status_changed(sender, instance, **kwargs):
+    """При смене статуса с pending на accepted/declined уведомляем создателя."""
     try:
-        # Проверяем, изменился ли статус приглашения
-        if instance.pk:
-            old_instance = sender.objects.get(pk=instance.pk)
-            if old_instance.status != instance.status and instance.status in ['accepted', 'declined']:
-                # Определяем тип события
-                event_type = 'role_invite_accepted' if instance.status == 'accepted' else 'role_invite_declined'
-                
-                # Создаем контекст события
-                context = {
-                    'user': instance.invited_by,  # Уведомляем того, кто приглашал
-                    'invite': instance,
-                    'role': instance.role,
-                    'invited_user': instance.invited_user,
-                    'status': instance.status,
-                }
-                
-                # Обрабатываем событие через систему правил
-                rule_service = NotificationRuleService()
-                rule_service.process_event(event_type, context, instance.invited_by)
-                
-                logger.info(f"Processed {event_type} event for invite {instance.id}")
-                
-    except sender.DoesNotExist:
-        # Это новое приглашение, обрабатывается в другом сигнале
-        pass
+        if instance.status in ('accepted', 'declined'):
+            prev = getattr(instance, '_invite_previous_status', None)
+            if prev == 'pending':
+                send_invite_response_task.delay(instance.id, accepted=(instance.status == 'accepted'))
+                logger.info(f"Invite response notification queued for invite {instance.id}")
     except Exception as e:
-        logger.error(f"Error processing role invite response notification rules: {e}")
+        logger.error(f"Error queuing invite response notification for invite {instance.id}: {e}")
 
 
 # Сигналы для блокировок учреждений
@@ -435,27 +399,16 @@ def handle_refund_notifications(sender, instance, created, **kwargs):
         logger.error(f"Failed to handle refund notification for refund {instance.id}: {e}")
 
 
-# Сигналы для истечения инвайтов ролей
-@receiver(post_save, sender='users.RoleInvite')
-def handle_role_invite_expiration_notifications(sender, instance, **kwargs):
-    """
-    Обрабатывает уведомления об истечении инвайтов ролей.
-    
-    Args:
-        sender: Модель отправителя сигнала
-        instance: Экземпляр инвайта
-        **kwargs: Дополнительные аргументы
-    """
+# Сигналы для истечения унифицированных инвайтов (invites.Invite)
+@receiver(post_save, sender='invites.Invite')
+def handle_invite_expiration_notifications(sender, instance, **kwargs):
+    """При истечении pending-инвайта уведомляем создателя."""
     try:
-        # Проверяем, истек ли инвайт
         if instance.expires_at and instance.expires_at <= timezone.now() and instance.status == 'pending':
-            # Отправляем уведомление об истечении
-            send_role_invite_expired_task.delay(instance.id)
-            
-            logger.info(f"Role invite expiration notification task queued for invite {instance.id}")
-            
+            send_invite_expired_task.delay(instance.id)
+            logger.info(f"Invite expiration notification queued for invite {instance.id}")
     except Exception as e:
-        logger.error(f"Failed to handle role invite expiration notification for invite {instance.id}: {e}")
+        logger.error(f"Failed to handle invite expiration notification for invite {instance.id}: {e}")
 
 
 # Сигналы для задолженности

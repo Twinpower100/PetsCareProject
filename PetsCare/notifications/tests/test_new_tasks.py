@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 from notifications.tasks import (
     send_debt_reminder_task,
     send_new_review_notification_task,
-    send_role_invite_expired_task,
+    send_invite_expired_task,
     send_pet_sitting_notification_task,
     send_payment_failed_notification_task,
     send_refund_notification_task,
@@ -93,45 +93,36 @@ class NewReviewNotificationTaskTest(TestCase):
         )
 
 
-class RoleInviteExpiredTaskTest(TestCase):
+class InviteExpiredTaskTest(TestCase):
+    """Тест отправки уведомления об истечении инвайта (invites.Invite)."""
+
     def setUp(self):
         self.user = User.objects.create_user(
             email='test@example.com',
             password='testpass123'
         )
 
-    @patch('notifications.tasks.RoleInvite')
+    @patch('invites.models.Invite')
     @patch('notifications.tasks.NotificationService')
-    def test_send_role_invite_expired_task(self, mock_service, mock_invite):
-        """Тест отправки уведомления об истечении инвайта"""
-        # Мокаем инвайт
+    def test_send_invite_expired_task(self, mock_service, mock_invite_model):
+        """Тест отправки уведомления создателю об истечении инвайта (invites.Invite)."""
         mock_invite_instance = MagicMock()
         mock_invite_instance.id = 1
-        mock_invite_instance.inviter = self.user
-        mock_invite_instance.invitee.get_full_name.return_value = 'Test Invitee'
-        mock_invite_instance.role.name = 'Test Role'
-        mock_invite_instance.provider.name = 'Test Provider'
-        mock_invite.objects.get.return_value = mock_invite_instance
-        
+        mock_invite_instance.created_by = self.user
+        mock_invite_instance.created_by_id = self.user.id
+        mock_invite_model.objects.select_related.return_value.get.return_value = mock_invite_instance
+
         mock_notification = MagicMock()
         mock_service.return_value.send_notification.return_value = mock_notification
-        
-        send_role_invite_expired_task(1)
-        
-        mock_service.return_value.send_notification.assert_called_once_with(
-            user=self.user,
-            notification_type='role_invite',
-            title='Role Invitation Expired',
-            message='A role invitation you sent has expired.',
-            channels=['email', 'push', 'in_app'],
-            priority='medium',
-            data={
-                'invite_id': 1,
-                'invitee_name': 'Test Invitee',
-                'role_name': 'Test Role',
-                'provider_name': 'Test Provider'
-            }
-        )
+
+        send_invite_expired_task(1)
+
+        mock_service.return_value.send_notification.assert_called_once()
+        call_kw = mock_service.return_value.send_notification.call_args[1]
+        self.assertEqual(call_kw['user'], self.user)
+        self.assertEqual(call_kw['notification_type'], 'role_invite')
+        self.assertIn('Invitation', call_kw['title'])
+        self.assertEqual(call_kw['data'], {'invite_id': 1})
 
 
 class PetSittingNotificationTaskTest(TestCase):

@@ -495,23 +495,27 @@ class User(AbstractUser):
 
     def get_managed_providers(self):
         """
-        Возвращает queryset учреждений, которыми управляет пользователь.
+        Возвращает queryset учреждений, к которым пользователь привязан через EmployeeProvider
+        (владелец/менеджер/админ/сотрудник). Единственный источник — активные записи EmployeeProvider.
+        Используется для доступа в приложение «Админка провайдеров» и фильтрации данных по своим провайдерам.
         
         Returns:
             QuerySet: Queryset объектов Provider
         """
+        from django.db.models import Q
+        from django.utils import timezone
         from providers.models import Provider
-        
-        if self.has_role('provider_admin'):
-            # Получаем провайдеров через связь ProviderAdmin
-            return Provider.objects.filter(
-                admins__user=self,
-                admins__is_active=True
-            ).distinct()
-        elif self.has_role('billing_manager'):
-            # Менеджер по биллингу имеет доступ ко всем провайдерам
+
+        if self.has_role('billing_manager'):
             return Provider.objects.filter(is_active=True)
-        return Provider.objects.none()
+        today = timezone.now().date()
+        return Provider.objects.filter(
+            employeeprovider_set__employee__user=self,
+            employeeprovider_set__employee__is_active=True,
+        ).filter(
+            Q(employeeprovider_set__end_date__isnull=True)
+            | Q(employeeprovider_set__end_date__gte=today)
+        ).distinct()
     
     def has_active_role(self, role_name):
         """
@@ -611,17 +615,23 @@ class User(AbstractUser):
 
     def is_provider_owner(self, provider=None):
         """
-        Проверяет, является ли пользователь владельцем провайдера (роль owner в ProviderAdmin).
+        Проверяет, является ли пользователь владельцем провайдера (роль owner в EmployeeProvider).
 
         Args:
             provider: Provider или id провайдера. Если None — проверяет, есть ли
                      у пользователя роль владельца хотя бы у одного провайдера.
 
         Returns:
-            bool: True, если пользователь является владельцем (роль owner в ProviderAdmin).
+            bool: True, если пользователь является владельцем (роль owner в EmployeeProvider).
         """
-        from .models import ProviderAdmin
-        qs = ProviderAdmin.objects.filter(user=self, is_active=True, role=ProviderAdmin.ROLE_OWNER)
+        from django.db.models import Q
+        from django.utils import timezone
+        from providers.models import EmployeeProvider
+        today = timezone.now().date()
+        qs = EmployeeProvider.objects.filter(
+            employee__user=self,
+            is_owner=True,
+        ).filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
         if provider is not None:
             provider_id = getattr(provider, 'id', provider)
             qs = qs.filter(provider_id=provider_id)
@@ -852,11 +862,23 @@ class ProviderForm(models.Model):
         verbose_name=_('Provider Email'),
         help_text=_('Email address of the provider (may differ from the applicant email). Login credentials will be sent to this address upon approval.')
     )
-    admin_email = models.EmailField(
-        verbose_name=_('Admin Email'),
-        help_text=_('Email address of the registered user who will be appointed as provider administrator. The user must exist in the system. If not specified, will use the email of the user who created the form.'),
+    owner_email = models.EmailField(
+        verbose_name=_('Owner Email'),
+        help_text=_('Email of the registered user who will be the provider owner. Required. The user must exist in the system.'),
         null=True,
-        blank=True
+        blank=True,
+    )
+    provider_manager_email = models.EmailField(
+        verbose_name=_('Provider Manager Email'),
+        help_text=_('Email of the registered user who will be the provider manager. Required. The user must exist in the system. One person can be both owner and manager (same email).'),
+        null=True,
+        blank=True,
+    )
+    admin_email = models.EmailField(
+        verbose_name=_('Administrator with access to provider admin panel'),
+        help_text=_('Email of the registered user who will have access to the provider admin application. Required. The user must exist in the system. One person can combine owner/manager/admin (same email in several fields).'),
+        null=True,
+        blank=True,
     )
     documents = models.FileField(
         upload_to='provider_docs/%Y/%m/%d/',
@@ -1119,9 +1141,14 @@ class ProviderForm(models.Model):
 
     def save(self, *args, **kwargs):
         """
-        Переопределяем save для установки admin_email по умолчанию из created_by.email
-        если admin_email не указан
+        Переопределяем save: подстановка email по умолчанию для обратной совместимости.
         """
+        # Обратная совместимость: если только admin_email задан — дублируем в owner и manager
+        if self.admin_email:
+            if not self.owner_email:
+                self.owner_email = self.admin_email
+            if not self.provider_manager_email:
+                self.provider_manager_email = self.admin_email
         # Если admin_email не указан и есть created_by, используем email создателя
         if not self.admin_email:
             if self.pk and not self.created_by_id:
@@ -1146,10 +1173,14 @@ class ProviderForm(models.Model):
         """Валидация обязательных полей для упрощенного процесса"""
         super().clean()
         
-        # Если admin_email не указан, устанавливаем из created_by
+        # Для обратной совместимости: если одно из полей пусто, подставляем из admin_email или created_by
+        if not self.owner_email and self.admin_email:
+            self.owner_email = self.admin_email
+        if not self.provider_manager_email and self.admin_email:
+            self.provider_manager_email = self.admin_email
         if not self.admin_email and self.created_by:
             self.admin_email = self.created_by.email
-        
+
         # Проверяем обязательные реквизиты
         if not self.tax_id or not self.tax_id.strip():
             raise ValidationError({'tax_id': _('Tax ID is required')})
@@ -1237,381 +1268,6 @@ class ProviderFormDocument(models.Model):
         verbose_name = _('Provider form document')
         verbose_name_plural = _('Provider form documents')
         ordering = ['id']
-
-
-class ProviderAdmin(models.Model):
-    """
-    Модель для связи пользователя с учреждением в роли администратора.
-
-    Роли:
-    - owner: владелец провайдера. У каждого провайдера один владелец; один пользователь может быть владельцем нескольких провайдеров. Назначается системой при активации заявки.
-    - provider_manager: менеджер провайдера (бизнес-менеджер).
-    - provider_admin: админ провайдера (управление персоналом, настройки).
-    Один пользователь может иметь несколько ролей у одного провайдера и/или быть владельцем нескольких провайдеров (несколько бизнесов).
-    """
-    ROLE_OWNER = 'owner'
-    ROLE_PROVIDER_MANAGER = 'provider_manager'
-    ROLE_PROVIDER_ADMIN = 'provider_admin'
-    ROLE_CHOICES = [
-        (ROLE_OWNER, _('Owner')),
-        (ROLE_PROVIDER_MANAGER, _('Provider manager')),
-        (ROLE_PROVIDER_ADMIN, _('Provider admin')),
-    ]
-
-    user = models.ForeignKey(
-        'users.User',
-        on_delete=models.CASCADE,
-        related_name='admin_providers',
-        verbose_name=_('User')
-    )
-    provider = models.ForeignKey(
-        'providers.Provider',
-        on_delete=models.CASCADE,
-        related_name='admins',
-        verbose_name=_('Provider')
-    )
-    role = models.CharField(
-        _('Role'),
-        max_length=20,
-        choices=ROLE_CHOICES,
-        default=ROLE_PROVIDER_ADMIN,
-        help_text=_('Owner / Provider manager / Provider admin. One user can have several roles per provider.')
-    )
-    is_active = models.BooleanField(
-        default=True,
-        verbose_name=_('Is Active')
-    )
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-        verbose_name=_('Created At')
-    )
-    updated_at = models.DateTimeField(
-        auto_now=True,
-        verbose_name=_('Updated At')
-    )
-
-    class Meta:
-        verbose_name = _('Provider Admin')
-        verbose_name_plural = _('Provider Admins')
-        unique_together = [['user', 'provider', 'role']]
-        ordering = ['-created_at']
-
-    def __str__(self):
-        return f"{self.user} - {self.provider}"
-
-    def is_owner(self):
-        """Является ли этот админ владельцем провайдера (единственным на провайдера)."""
-        return self.role == self.ROLE_OWNER
-
-    def deactivate(self):
-        """Деактивирует администратора учреждения"""
-        self.is_active = False
-        self.save()
-
-
-class RoleInvite(models.Model):
-    """
-    Модель для инвайтов на роли (employee, billing_manager).
-    
-    Особенности:
-    - Токен для веб/мобильного приложения
-    - QR-код для сканирования
-    - Email уведомления
-    - Временное ограничение действия
-    - Подтверждение пользователем
-    """
-    ROLE_CHOICES = [
-        ('employee', _('Employee')),
-        ('billing_manager', _('Billing Manager')),
-        ('owner', _('Owner')),
-        ('provider_manager', _('Provider manager')),
-        ('provider_admin', _('Provider admin')),
-    ]
-    
-    STATUS_CHOICES = [
-        ('pending', _('Pending')),
-        ('accepted', _('Accepted')),
-        ('declined', _('Declined')),
-        ('expired', _('Expired')),
-    ]
-    
-    # Кто создает инвайт
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.CASCADE,
-        related_name='sent_role_invites',
-        verbose_name=_('Created By'),
-        help_text=_('User who created this invite')
-    )
-    
-    # Для кого инвайт (по email)
-    email = models.EmailField(
-        _('Email'),
-        help_text=_('Email of the user to invite')
-    )
-    
-    # Роль для назначения
-    role = models.CharField(
-        _('Role'),
-        max_length=20,
-        choices=ROLE_CHOICES,
-        help_text=_('Role to assign')
-    )
-    
-    # Учреждение (для employee) или проект (для billing_manager)
-    provider = models.ForeignKey(
-        'providers.Provider',
-        on_delete=models.CASCADE,
-        verbose_name=_('Provider'),
-        help_text=_('Provider for employee role or project for billing manager')
-    )
-    
-    # Должность (для employee)
-    position = models.CharField(
-        _('Position'),
-        max_length=100,
-        blank=True,
-        help_text=_('Position for employee role')
-    )
-    
-    # Комментарий
-    comment = models.TextField(
-        _('Comment'),
-        blank=True,
-        help_text=_('Additional comment about this invite')
-    )
-    
-    # Токен для подтверждения
-    token = models.CharField(
-        _('Token'),
-        max_length=64,
-        unique=True,
-        help_text=_('Unique token for invite confirmation')
-    )
-    
-    # QR-код (генерируется из токена)
-    qr_code = models.TextField(
-        _('QR Code'),
-        blank=True,
-        help_text=_('QR code data for mobile app scanning')
-    )
-    
-    # Статус инвайта
-    status = models.CharField(
-        _('Status'),
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='pending',
-        help_text=_('Current status of the invite')
-    )
-    
-    # Временные метки
-    created_at = models.DateTimeField(
-        _('Created At'),
-        auto_now_add=True
-    )
-    expires_at = models.DateTimeField(
-        _('Expires At'),
-        help_text=_('When this invite expires')
-    )
-    accepted_at = models.DateTimeField(
-        _('Accepted At'),
-        null=True,
-        blank=True,
-        help_text=_('When the invite was accepted')
-    )
-    declined_at = models.DateTimeField(
-        _('Declined At'),
-        null=True,
-        blank=True,
-        help_text=_('When the invite was declined')
-    )
-    
-    # Пользователь, который принял инвайт
-    accepted_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='accepted_role_invites',
-        verbose_name=_('Accepted By'),
-        help_text=_('User who accepted this invite')
-    )
-    
-    class Meta:
-        verbose_name = _('Role Invite')
-        verbose_name_plural = _('Role Invites')
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['email']),
-            models.Index(fields=['token']),
-            models.Index(fields=['status']),
-            models.Index(fields=['expires_at']),
-            models.Index(fields=['role', 'provider']),
-        ]
-    
-    def __str__(self):
-        return f"{self.email} - {self.get_role_display()} at {self.provider.name}"
-    
-    def save(self, *args, **kwargs):
-        # Генерируем токен при создании
-        if not self.token:
-            self.token = self._generate_token()
-        
-        # Генерируем QR-код
-        if not self.qr_code:
-            self.qr_code = self._generate_qr_code()
-        
-        # Устанавливаем срок действия (7 дней по умолчанию)
-        if not self.expires_at:
-            self.expires_at = timezone.now() + timedelta(days=7)
-        
-        super().save(*args, **kwargs)
-    
-    def _generate_token(self):
-        """Генерирует уникальный токен для инвайта."""
-        import secrets
-        return secrets.token_urlsafe(32)
-    
-    def _generate_qr_code(self):
-        """Генерирует QR-код для мобильного приложения."""
-        # Формат QR-кода: petcare://invite/{token}
-        return f"petcare://invite/{self.token}"
-    
-    def is_expired(self):
-        """Проверяет, истек ли срок действия инвайта."""
-        return timezone.now() > self.expires_at
-    
-    def can_be_accepted(self):
-        """Проверяет, можно ли принять инвайт."""
-        return (
-            self.status == 'pending' and 
-            not self.is_expired()
-        )
-    
-    def accept(self, user):
-        """
-        Принимает инвайт пользователем.
-        
-        Args:
-            user: Пользователь, принимающий инвайт
-        """
-        if not self.can_be_accepted():
-            raise ValueError(_("Invite cannot be accepted"))
-        
-        if user.email != self.email:
-            raise ValueError(_("Email does not match invite"))
-        
-        # Назначаем роль
-        if self.role == 'employee':
-            self._assign_employee_role(user)
-        elif self.role == 'billing_manager':
-            self._assign_billing_manager_role(user)
-        elif self.role in ('owner', 'provider_manager', 'provider_admin'):
-            self._assign_provider_admin_role(user)
-        
-        # Обновляем статус
-        self.status = 'accepted'
-        self.accepted_at = timezone.now()
-        self.accepted_by = user
-        self.save()
-    
-    def decline(self, user):
-        """
-        Отклоняет инвайт пользователем.
-        
-        Args:
-            user: Пользователь, отклоняющий инвайт
-        """
-        if self.status != 'pending':
-            raise ValueError(_("Invite cannot be declined"))
-        
-        if user.email != self.email:
-            raise ValueError(_("Email does not match invite"))
-        
-        self.status = 'declined'
-        self.declined_at = timezone.now()
-        self.accepted_by = user
-        self.save()
-    
-    def _assign_employee_role(self, user):
-        """Назначает роль сотрудника."""
-        from providers.models import Employee, EmployeeProvider
-        
-        # Создаем профиль сотрудника
-        employee, created = Employee.objects.get_or_create(
-            user=user,
-            defaults={
-                'position': self.position or 'Employee',
-                'bio': '',
-            }
-        )
-        
-        # Создаем связь с учреждением
-        EmployeeProvider.objects.create(
-            employee=employee,
-            provider=self.provider,
-            start_date=timezone.now().date(),
-            is_confirmed=True,
-            confirmed_at=timezone.now()
-        )
-    
-    def _assign_billing_manager_role(self, user):
-        """Назначает роль менеджера по биллингу."""
-        from billing.models import BillingManagerProvider
-        
-        # Создаем связь с провайдером
-        BillingManagerProvider.objects.create(
-            billing_manager=user,
-            provider=self.provider,
-            start_date=timezone.now().date(),
-            status='active'
-        )
-
-    def _assign_provider_admin_role(self, user):
-        """
-        Назначает роль владельца/менеджера/админа организации (ProviderAdmin).
-        При принятии инвайта: снимаем роль с предыдущих (один владелец, один менеджер), создаём запись для user.
-        """
-        from . import ProviderAdmin, UserType
-        role = self.role
-        provider = self.provider
-        with transaction.atomic():
-            if role == ProviderAdmin.ROLE_OWNER:
-                for prev in ProviderAdmin.objects.filter(provider=provider, role=ProviderAdmin.ROLE_OWNER, is_active=True):
-                    prev.deactivate()
-            elif role == ProviderAdmin.ROLE_PROVIDER_MANAGER:
-                for prev in ProviderAdmin.objects.filter(
-                    provider=provider, role=ProviderAdmin.ROLE_PROVIDER_MANAGER, is_active=True
-                ):
-                    prev.deactivate()
-            ProviderAdmin.objects.create(user=user, provider=provider, role=role, is_active=True)
-            ut, _ = UserType.objects.get_or_create(name='provider_admin')
-            if not user.user_types.filter(name='provider_admin').exists():
-                user.user_types.add(ut)
-            if role in (ProviderAdmin.ROLE_OWNER, ProviderAdmin.ROLE_PROVIDER_MANAGER):
-                role_ut, _ = UserType.objects.get_or_create(name=role)
-                if not user.user_types.filter(name=role).exists():
-                    user.user_types.add(role_ut)
-    
-    @classmethod
-    def cleanup_expired(cls):
-        """Очищает истекшие инвайты."""
-        expired_invites = cls.objects.filter(
-            status='pending',
-            expires_at__lt=timezone.now()
-        )
-        expired_invites.update(status='expired')
-        return expired_invites.count()
-    
-    @classmethod
-    def get_pending_for_email(cls, email):
-        """Получает активные инвайты для email."""
-        return cls.objects.filter(
-            email=email,
-            status='pending',
-            expires_at__gt=timezone.now()
-        )
 
 
 # Сигналы

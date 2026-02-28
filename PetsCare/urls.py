@@ -9,7 +9,8 @@
 """
 
 from django.contrib import admin
-from django.urls import path, include
+from django.urls import path, include, re_path
+from django.views.generic import RedirectView
 from django.conf import settings
 from django.conf.urls.static import static
 from django.shortcuts import render
@@ -19,6 +20,9 @@ from drf_yasg import openapi
 from rest_framework import permissions
 from custom_admin import custom_admin_site
 from api_root import api_root
+
+# Загружаем admin.py всех приложений, чтобы модели регистрировались в custom_admin_site
+admin.autodiscover()
 
 def api_docs_view(request):
     """Простая HTML документация API"""
@@ -174,6 +178,12 @@ schema_view = get_schema_view(
 )
 
 urlpatterns = [
+    # Редирект со старого URL удалённой модели ManagerTransferInvite на Provider owner/manager invites
+    re_path(
+        r'^admin/providers/managertransferinvite/.*$',
+        RedirectView.as_view(url='/admin/invites/invite/', permanent=True),
+        name='admin-managertransferinvite-redirect',
+    ),
     # Административный интерфейс
     path('admin/', custom_admin_site.urls),  # Используем кастомный админ-сайт
     
@@ -194,6 +204,7 @@ urlpatterns = [
     # API эндпоинты (версионированные v1)
     # ВАЖНО: legal.urls должен быть ПЕРЕД pets.urls, чтобы избежать конфликтов с documents/
     path('api/v1/', include(('users.urls', 'users'), namespace='v1:users')),
+    path('api/v1/invites/', include(('invites.urls', 'invites'), namespace='v1:invites')),
     
     path('api/v1/', include('legal.urls', namespace='v1:legal')),
     path('api/v1/', include(('pets.urls', 'pets'), namespace='v1:pets')),
@@ -201,6 +212,7 @@ urlpatterns = [
     path('api/v1/', include(('billing.urls', 'billing'), namespace='v1:billing')),
     path('api/v1/', include(('booking.urls', 'booking'), namespace='v1:booking')),
     path('api/v1/', include(('catalog.urls', 'catalog'), namespace='v1:catalog')),
+    path('api/v1/', include(('scheduling.urls', 'scheduling'), namespace='v1:scheduling')),
     path('api/v1/', include(('sitters.urls', 'sitters'), namespace='v1:sitters')),
     path('api/v1/', include(('geolocation.urls', 'geolocation'), namespace='v1:geolocation')),
     path('api/v1/', include(('notifications.urls', 'notifications'), namespace='v1:notifications')),

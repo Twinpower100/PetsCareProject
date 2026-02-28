@@ -11,7 +11,7 @@
 """
 
 from rest_framework import serializers
-from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, PetType, Breed, PetOwnershipInvite, DocumentType
+from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, PetType, Breed, DocumentType
 from users.models import User
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
@@ -454,18 +454,6 @@ class BreedSerializer(serializers.ModelSerializer):
             raw = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
             lang = raw.split(',')[0].split('-')[0].strip().lower() if raw else None
         return obj.get_localized_name(lang) if lang else obj.get_localized_name()
-
-
-class PetOwnershipInviteSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для инвайта на добавление совладельца или передачу прав основного владельца.
-    """
-    class Meta:
-        model = PetOwnershipInvite
-        fields = [
-            'id', 'pet', 'email', 'token', 'expires_at', 'type', 'invited_by', 'is_used', 'created_at'
-        ]
-        read_only_fields = ['id', 'token', 'invited_by', 'is_used', 'created_at'] 
 
 
 class PetOwnerIncapacitySerializer(serializers.ModelSerializer):

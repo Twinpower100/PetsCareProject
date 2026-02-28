@@ -1026,41 +1026,6 @@ class PetAccess(models.Model):
         return self.permissions.get('write', False)
 
 
-class PetOwnershipInvite(models.Model):
-    """
-    Инвайт для добавления совладельца или передачи прав основного владельца.
-    type: 'invite' (добавление совладельца) или 'transfer' (передача прав основного владельца)
-    """
-    INVITE = 'invite'
-    TRANSFER = 'transfer'
-    TYPE_CHOICES = [
-        (INVITE, _('Invite Owner')),
-        (TRANSFER, _('Transfer Main Owner')),
-    ]
-    pet = models.ForeignKey('Pet', on_delete=models.CASCADE, related_name='ownership_invites', verbose_name=_('Pet'))
-    email = models.EmailField(_('Email'))
-    token = models.UUIDField(_('Token'), default=uuid.uuid4, unique=True)
-    expires_at = models.DateTimeField(_('Expires At'))
-    type = models.CharField(_('Type'), max_length=16, choices=TYPE_CHOICES)
-    invited_by = models.ForeignKey('users.User', on_delete=models.CASCADE, related_name='sent_pet_invites', verbose_name=_('Invited By'))
-    is_used = models.BooleanField(_('Is Used'), default=False)
-    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
-
-    class Meta:
-        verbose_name = _('Pet Ownership Invite')
-        verbose_name_plural = _('Pet Ownership Invites')
-        indexes = [
-            models.Index(fields=['token']),
-            models.Index(fields=['expires_at']),
-        ]
-
-    def is_expired(self):
-        return timezone.now() > self.expires_at or self.is_used
-
-    def __str__(self):
-        return f"{self.get_type_display()} for {self.email} (pet: {self.pet_id})"
-
-
 class DocumentType(models.Model):
     """
     Тип документа питомца

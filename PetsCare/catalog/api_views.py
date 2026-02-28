@@ -30,12 +30,13 @@ class ServiceViewSet(viewsets.ModelViewSet):
         if level is not None:
             try:
                 level = int(level)
-                # Для level=0 возвращаем только корневые категории (parent=None, есть дети)
+                # Для level=0 возвращаем только корневые категории (parent=None, есть дети), доступные клиенту
                 if level == 0:
                     queryset = Service.objects.filter(
                         parent=None,
                         level=0,
-                        is_active=True
+                        is_active=True,
+                        is_client_facing=True
                     ).annotate(
                         children_count=Count('children')
                     ).filter(
@@ -176,14 +177,14 @@ class ServiceListCreateAPIView(generics.ListCreateAPIView):
         if level is not None:
             try:
                 level = int(level)
-                # Для level=0 возвращаем только корневые категории (parent=None, есть дети)
+                # Для level=0 возвращаем только корневые категории (parent=None, есть дети), доступные клиенту
                 if level == 0:
                     # Получаем только корневые категории, которые являются узлами (имеют детей)
-                    # Используем exists() для проверки наличия детей
                     queryset = Service.objects.filter(
                         parent=None,
                         level=0,
-                        is_active=True
+                        is_active=True,
+                        is_client_facing=True
                     ).annotate(
                         children_count=Count('children')
                     ).filter(
@@ -233,14 +234,16 @@ class ServiceSearchAPIView(generics.ListAPIView):
 class PublicServiceCategoriesAPIView(generics.ListAPIView):
     """
     Публичный API для получения корневых категорий услуг (уровень 0).
-    Доступен без аутентификации для отображения в подвале и навигации.
+    Доступен без аутентификации. Возвращает только категории с is_client_facing=True
+    (клиентские услуги; технические/внутренние не показываются на странице /services).
     """
     serializer_class = ServiceSerializer
     permission_classes = [permissions.AllowAny]  # Публичный доступ
 
     def get_queryset(self):
         """
-        Возвращает только корневые категории услуг (parent=None, level=0).
+        Возвращает только корневые категории услуг (parent=None, level=0),
+        доступные клиенту (is_client_facing=True).
         """
         if getattr(self, 'swagger_fake_view', False):
             return Service.objects.none()
@@ -248,5 +251,6 @@ class PublicServiceCategoriesAPIView(generics.ListAPIView):
         return Service.objects.filter(
             parent=None,
             level=0,
-            is_active=True
+            is_active=True,
+            is_client_facing=True,
         ).order_by('hierarchy_order', 'name')

@@ -45,18 +45,12 @@ urlpatterns = [
     
     # Управление сотрудниками согласно ФД
     path('employees/<int:employee_id>/update/', api_views.EmployeeProviderUpdateAPIView.as_view(), name='employee-update'),
-    path('employees/<int:employee_id>/deactivate/', api_views.EmployeeDeactivateAPIView.as_view(), name='employee-deactivate'),
-    
-    # Заявки на вступление согласно ФД
-    path('join-requests/', api_views.EmployeeJoinRequestCreateAPIView.as_view(), name='join-request-create'),
-    path('join-requests/approve/', api_views.EmployeeJoinRequestApproveAPIView.as_view(), name='join-request-approve'),
-    path('join-requests/confirm/', api_views.EmployeeProviderConfirmAPIView.as_view(), name='join-request-confirm'),
+
     
     # Дополнительные функции провайдеров
     path('providers/<int:provider_id>/admins/', api_views.ProviderAdminListAPIView.as_view(), name='provider-admin-list'),
-    path('providers/<int:provider_id>/admins/invite/', api_views.ProviderAdminInviteAPIView.as_view(), name='provider-admin-invite'),
     path('providers/<int:provider_id>/admins/assign-self/', api_views.ProviderAdminAssignSelfAPIView.as_view(), name='provider-admin-assign-self'),
-    path('provider-owner-manager-invite/accept/', api_views.AcceptProviderOwnerManagerInviteAPIView.as_view(), name='provider-owner-manager-invite-accept'),
+    path('providers/<int:provider_id>/admins/revoke/', api_views.ProviderAdminRevokeAPIView.as_view(), name='provider-admin-revoke'),
     path('providers/<int:provider_id>/availability/', api_views.check_provider_availability, name='check-provider-availability'),
     path('providers/<int:provider_id>/available-catalog-services/', api_views.ProviderAvailableCatalogServicesAPIView.as_view(), name='provider-available-catalog-services'),
     path('providers/<int:provider_id>/prices/', api_views.get_provider_prices, name='get-provider-prices'),
@@ -68,16 +62,14 @@ urlpatterns = [
     path('provider-locations/<int:pk>/', api_views.ProviderLocationRetrieveUpdateDestroyAPIView.as_view(), name='provider-location-detail'),
     # Руководитель филиала: установка по email (свой email — сразу, чужой — инвайт с кодом), снятие, принятие инвайта
     path('provider-locations/<int:pk>/set-manager/', api_views.SetLocationManagerAPIView.as_view(), name='location-set-manager'),
-    path('provider-locations/<int:pk>/manager/', api_views.RemoveLocationManagerAPIView.as_view(), name='location-remove-manager'),
-    path('location-manager-invite/accept/', api_views.AcceptLocationManagerInviteAPIView.as_view(), name='location-manager-invite-accept'),
-    # Персонал филиала: инвайты и список
-    path('provider-locations/<int:pk>/invite-staff/', api_views.InviteLocationStaffAPIView.as_view(), name='location-invite-staff'),
+    path('provider-locations/<int:pk>/manager-invite/', api_views.CancelLocationManagerInviteAPIView.as_view(), name='location-cancel-manager-invite'),
+    # Персонал филиала: список (создание/отмена инвайтов — через POST/DELETE /api/v1/invites/)
     path('provider-locations/<int:pk>/staff/', api_views.LocationStaffListAPIView.as_view(), name='location-staff-list'),
-    path('provider-locations/<int:pk>/staff-invites/<int:invite_id>/', api_views.LocationStaffInviteDestroyAPIView.as_view(), name='location-staff-invite-destroy'),
+    path('provider-locations/<int:location_pk>/staff/<int:employee_id>/deactivate/', api_views.LocationStaffDeactivateAPIView.as_view(), name='location-staff-deactivate'),
+    path('provider-locations/<int:location_pk>/staff/<int:employee_id>/reactivate/', api_views.LocationStaffReactivateAPIView.as_view(), name='location-staff-reactivate'),
     path('provider-locations/<int:location_pk>/staff/<int:employee_id>/services/', api_views.LocationStaffServicesAPIView.as_view(), name='location-staff-services'),
     path('provider-locations/<int:location_pk>/staff/<int:employee_id>/services/add-by-category/', api_views.LocationStaffServicesAddByCategoryAPIView.as_view(), name='location-staff-services-add-by-category'),
     path('provider-locations/<int:location_pk>/staff/<int:employee_id>/schedules/', api_views.LocationStaffSchedulePatternAPIView.as_view(), name='location-staff-schedule-pattern'),
-    path('location-staff-invite/accept/', api_views.AcceptLocationStaffInviteAPIView.as_view(), name='location-staff-invite-accept'),
     # Расписание работы локации (дни, время открытия/закрытия)
     path('provider-locations/<int:location_pk>/schedules/', api_views.LocationScheduleListCreateAPIView.as_view(), name='location-schedule-list-create'),
     path('provider-locations/<int:location_pk>/schedules/<int:pk>/', api_views.LocationScheduleRetrieveUpdateDestroyAPIView.as_view(), name='location-schedule-detail'),
@@ -91,6 +83,7 @@ urlpatterns = [
     # Матрица цен по типу животного и размеру (прайс)
     path('provider-locations/<int:pk>/price-matrix/', api_views.LocationPriceMatrixAPIView.as_view(), name='location-price-matrix'),
     path('provider-locations/<int:location_pk>/services/<int:location_service_id>/prices/', api_views.LocationServicePricesUpdateAPIView.as_view(), name='location-service-prices-update'),
+    path('provider-locations/<int:location_pk>/catalog-service/<int:service_id>/prices/', api_views.LocationCatalogServicePricesUpdateAPIView.as_view(), name='location-catalog-service-prices-update'),
     
     # API для публичной оферты
     path('providers/<int:provider_id>/offer/', offer_api_views.ProviderOfferAPIView.as_view(), name='provider-offer'),

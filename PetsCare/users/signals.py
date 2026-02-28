@@ -142,6 +142,71 @@ def assign_provider_admin_role(sender, instance, created, **kwargs):
         pass
 
 
+def assign_provider_staff_from_form(provider, provider_form):
+    """
+    Назначает роли провайдера (EmployeeProvider и UserTypes) по данным заявки.
+    Вызывается только при активации провайдера (при создании с active или при переходе в active).
+    Идемпотентна: не создаёт дубликатов при повторном вызове.
+    """
+    from django.utils import timezone
+    from django.contrib.auth import get_user_model
+    from providers.models import Employee, EmployeeProvider
+
+    User = get_user_model()
+    today = timezone.now().date()
+    email_to_roles = {}
+    for field_name, role in [
+        ('owner_email', EmployeeProvider.ROLE_OWNER),
+        ('provider_manager_email', EmployeeProvider.ROLE_PROVIDER_MANAGER),
+        ('admin_email', EmployeeProvider.ROLE_PROVIDER_ADMIN),
+    ]:
+        email_val = (getattr(provider_form, field_name, None) or '').strip()
+        if not email_val:
+            logger.error('Provider form %s: missing %s', provider_form.id, field_name)
+            return False
+        key = email_val.lower()
+        email_to_roles.setdefault(key, set()).add(role)
+
+    for norm_email, roles in email_to_roles.items():
+        try:
+            user = User.objects.get(email__iexact=norm_email, is_active=True)
+        except User.DoesNotExist:
+            logger.error('User with email %s not found for provider form %s', norm_email, provider_form.id)
+            return False
+        employee, _ = Employee.objects.get_or_create(user=user)
+        is_owner = EmployeeProvider.ROLE_OWNER in roles
+        is_provider_manager = EmployeeProvider.ROLE_PROVIDER_MANAGER in roles
+        is_provider_admin = EmployeeProvider.ROLE_PROVIDER_ADMIN in roles
+        ep = EmployeeProvider.objects.filter(
+            employee=employee, provider=provider, end_date__isnull=True
+        ).order_by('-start_date').first()
+        if ep:
+            ep.is_owner = is_owner
+            ep.is_provider_manager = is_provider_manager
+            ep.is_provider_admin = is_provider_admin
+            ep.is_manager = is_provider_manager
+            ep.role = EmployeeProvider.ROLE_PROVIDER_ADMIN
+            ep.save(update_fields=['is_owner', 'is_provider_manager', 'is_provider_admin', 'is_manager', 'role', 'updated_at'])
+        else:
+            EmployeeProvider.objects.create(
+                employee=employee,
+                provider=provider,
+                start_date=today,
+                end_date=None,
+                role=EmployeeProvider.ROLE_PROVIDER_ADMIN,
+                is_owner=is_owner,
+                is_provider_manager=is_provider_manager,
+                is_provider_admin=is_provider_admin,
+                is_manager=is_provider_manager,
+            )
+        for ut_name in ('provider_admin', 'owner', 'provider_manager'):
+            if ut_name == 'provider_admin' or (ut_name == 'owner' and is_owner) or (ut_name == 'provider_manager' and is_provider_manager):
+                ut, _ = UserType.objects.get_or_create(name=ut_name)
+                if not user.user_types.filter(name=ut_name).exists():
+                    user.user_types.add(ut)
+    return True
+
+
 @receiver(post_save, sender=ProviderForm)
 def create_provider_on_approval(sender, instance, created, **kwargs):
     """
@@ -169,6 +234,7 @@ def create_provider_on_approval(sender, instance, created, **kwargs):
             from django.db import transaction
             try:
                 with transaction.atomic():
+                    from django.utils import timezone
                     # Создаем структурированный адрес
                     from geolocation.models import Address
                     structured_address = None
@@ -387,7 +453,8 @@ def create_provider_on_approval(sender, instance, created, **kwargs):
                         vat_verification_manual_at=instance.vat_verification_manual_at,
                         # Активация: только при принятой оферте и (VAT ок или проверка не требуется)
                         activation_status='active' if (instance.offer_accepted and _vat_ok_or_not_required) else 'activation_required',
-                        is_active=(instance.offer_accepted and _vat_ok_or_not_required)
+                        is_active=(instance.offer_accepted and _vat_ok_or_not_required),
+                        provider_form=instance,
                     )
                     logger.info(f"Provider created: {provider.name} (ID: {provider.id}), activation_status={provider.activation_status}")
                     
@@ -399,38 +466,9 @@ def create_provider_on_approval(sender, instance, created, **kwargs):
                     elif not created:
                         logger.warning(f"No categories selected for provider form: {instance.id}")
 
-                    # Получаем пользователя-администратора из admin_email
-                    try:
-                        admin_user = User.objects.get(email=instance.admin_email, is_active=True)
-                    except User.DoesNotExist:
-                        logger.error(f'Admin user with email {instance.admin_email} not found for provider form {instance.id}')
-                        return
-                    
-                    # Создаем связь ProviderAdmin как связь «пользователь ↔ провайдер» для доступа.
-                    # Роли owner/provider_manager назначаются через UserType (отдельно, по self-assign).
-                    from .models import ProviderAdmin
-                    ProviderAdmin.objects.create(
-                        user=admin_user,
-                        provider=provider,
-                        role=ProviderAdmin.ROLE_PROVIDER_ADMIN,
-                        is_active=True
-                    )
-
-                    # Назначаем роль provider_admin указанному администратору.
-                    # Доступ в приложение «Админка провайдеров» по API; в Django admin провайдеры не входят.
-                    try:
-                        provider_admin_role = UserType.objects.get(name='provider_admin')
-                        if not admin_user.user_types.filter(name='provider_admin').exists():
-                            admin_user.user_types.add(provider_admin_role)
-                    except UserType.DoesNotExist:
-                        provider_admin_role = UserType.objects.create(
-                            name='provider_admin',
-                            description='Provider administrator role with rights to manage provider settings',
-                            permissions=['providers.add_provider', 'providers.change_provider', 'providers.view_provider',
-                                       'providers.add_employee', 'providers.change_employee', 'providers.view_employee',
-                                       'booking.view_booking', 'notifications.view_notification']
-                        )
-                        admin_user.user_types.add(provider_admin_role)
+                    # Роли (EmployeeProvider и UserTypes) назначаем только при активном провайдере (вариант A).
+                    if provider.activation_status == 'active' and provider.is_active:
+                        assign_provider_staff_from_form(provider, instance)
                     
                     # УПРОЩЕННЫЙ ПРОЦЕСС: создаем DocumentAcceptance, если оферта принята.
                     # Источник оферты тот же, что в мастере регистрации: одна глобальная оферта для всех +
@@ -499,9 +537,7 @@ def create_provider_on_approval(sender, instance, created, **kwargs):
                                         provider.id, addendum.version, region_code
                                     )
                     
-                    # УПРОЩЕННЫЙ ПРОЦЕСС: автоматически назначаем биллинг-менеджера (первый доступный)
                     from billing.models import BillingManagerProvider, BillingManagerEvent
-                    from django.utils import timezone
                     
                     # User уже определен в начале функции
                     
@@ -594,15 +630,15 @@ def create_provider_on_approval(sender, instance, created, **kwargs):
                             logger.error(f"Error creating BillingManagerProvider: {e}", exc_info=True)
                             raise
                     
-                    # Отправляем письма после регистрации
-                    _send_registration_emails(provider, instance, admin_user)
+                    # Отправляем письма: по одному на каждый уникальный email (owner, manager, admin, author, organization).
+                    _send_registration_emails(provider, instance)
                     
             except Exception as e:
                 logger.error(f"Error creating provider from form {instance.id}: {e}", exc_info=True)
                 raise
 
 
-def _send_registration_emails(provider, provider_form, admin_user):
+def _send_registration_emails(provider, provider_form, admin_user=None):
     """
     Отправляет письма после регистрации провайдера по спецификации
     PROVIDER_REGISTRATION_EMAIL_RECIPIENTS.md.
@@ -619,11 +655,13 @@ def _send_registration_emails(provider, provider_form, admin_user):
     from django.contrib.auth import get_user_model
     UserModel = get_user_model()
 
+    # Язык письма: 1) язык из мастера (language), 2) страна регистрации (обязательное поле).
     raw_lang = (getattr(provider_form, 'language', None) or '').strip() or None
-    if not raw_lang and provider_form.created_by:
-        raw_lang = getattr(provider_form.created_by, 'preferred_language', None) or getattr(provider_form.created_by, 'language', None)
     if not raw_lang:
-        raw_lang = translation.get_language() or 'en'
+        country_code = getattr(provider_form, 'country', None)
+        code = getattr(country_code, 'code', None) or (str(country_code).strip().upper() if country_code else None)
+        COUNTRY_TO_LANG = {'RU': 'ru', 'ME': 'me', 'DE': 'de', 'AT': 'de', 'CH': 'de', 'LI': 'de'}
+        raw_lang = COUNTRY_TO_LANG.get((code or '')[:2], 'en')
     language = (raw_lang or 'en').split('-')[0].lower()
     if language not in ['en', 'ru', 'de', 'me']:
         language = 'en'
@@ -659,6 +697,7 @@ def _send_registration_emails(provider, provider_form, admin_user):
     }
     impersonal = IMPERSONAL_GREETING.get(language, IMPERSONAL_GREETING['en'])
 
+    # Кандидаты для author / organization (дедупликация как раньше)
     candidates = []
     if provider_form.created_by and provider_form.created_by.email:
         e = provider_form.created_by.email
@@ -668,24 +707,11 @@ def _send_registration_emails(provider, provider_form, admin_user):
         e = provider.email.strip()
         if e and (not provider_form.created_by or e.lower() != (provider_form.created_by.email or '').lower()):
             candidates.append((e.lower(), e, 'organization', None, impersonal))
-    # Админ добавляется всегда (даже при совпадении с author/org). Дедупликация выберет роль по приоритету.
-    if provider_form.admin_email:
-        e = provider_form.admin_email.strip().lower()
-        if e:
-            try:
-                admin_user_obj = UserModel.objects.get(email__iexact=provider_form.admin_email, is_active=True)
-                name = (admin_user_obj.first_name or _('User')).strip() or _('User')
-                candidates.append((e, provider_form.admin_email.strip(), 'admin', admin_user_obj, name))
-            except UserModel.DoesNotExist:
-                logger.warning(f"Admin email user {provider_form.admin_email} not found for provider {provider.id}")
 
-    # Дедупликация: один email — одна роль. Приоритет: activated → admin > organization > author; submitted → author > organization. В момент submitted админ не получает письма.
-    ROLE_PRIORITY_ACTIVATED = {'admin': 3, 'organization': 2, 'author': 1}
+    ROLE_PRIORITY_ACTIVATED = {'organization': 2, 'author': 1}
     ROLE_PRIORITY_SUBMITTED = {'author': 2, 'organization': 1}
     recipients_by_email = {}
     for email_key, email_orig, role, user, display_name in candidates:
-        if not is_activated and role == 'admin':
-            continue
         prev = recipients_by_email.get(email_key)
         if prev is None:
             recipients_by_email[email_key] = {'email': email_orig, 'role': role, 'user': user, 'display_name': display_name}
@@ -696,7 +722,6 @@ def _send_registration_emails(provider, provider_form, admin_user):
 
     recipients = list(recipients_by_email.values())
 
-    # Тема и шаблон по роли и моменту (все 4 языка, хардкод по спецификации)
     SUBJECTS_SUBMITTED_HARDCODED = {
         'author': {'en': 'Your provider registration request has been submitted', 'ru': 'Ваша заявка на регистрацию провайдера зарегистрирована', 'de': 'Ihr Antrag auf Anbieter-Registrierung wurde eingereicht', 'me': 'Vaš zahtev za registraciju pružaoca usluga je poslat'},
         'organization': {'en': 'Provider registration request received: %(name)s', 'ru': 'Получена заявка на регистрацию: %(name)s', 'de': 'Antrag auf Anbieter-Registrierung eingegangen: %(name)s', 'me': 'Zahtev za registraciju pružaoca primljen: %(name)s'},
@@ -704,36 +729,20 @@ def _send_registration_emails(provider, provider_form, admin_user):
     SUBJECTS_ACTIVATED_HARDCODED = {
         'author': {'en': 'Your provider registration has been confirmed', 'ru': 'Ваша регистрация провайдера подтверждена', 'de': 'Ihre Anbieter-Registrierung wurde bestätigt', 'me': 'Vaša registracija pružaoca usluga je potvrđena'},
         'organization': {'en': 'Provider registration confirmed: %(name)s', 'ru': 'Регистрация организации подтверждена: %(name)s', 'de': 'Anbieter-Registrierung bestätigt: %(name)s', 'me': 'Registracija pružaoca potvrđena: %(name)s'},
-        'admin': {'en': 'Your provider account has been activated', 'ru': 'Ваш аккаунт провайдера активирован', 'de': 'Ihr Anbieter-Konto wurde aktiviert', 'me': 'Vaš nalog pružaoca usluga je aktiviran'},
+        'owner': {'en': 'You have been assigned as organization owner', 'ru': 'Вам назначена роль владельца организации', 'de': 'Sie wurden als Organisationsinhaber zugewiesen', 'me': 'Dodijeljena vam je uloga vlasnika organizacije'},
+        'provider_manager': {'en': 'You have been assigned as organization manager', 'ru': 'Вам назначена роль управляющего организацией', 'de': 'Sie wurden als Organisationsmanager zugewiesen', 'me': 'Dodijeljena vam je uloga menadžera organizacije'},
+        'provider_admin': {'en': 'Your provider account has been activated', 'ru': 'Ваш аккаунт провайдера активирован', 'de': 'Ihr Anbieter-Konto wurde aktiviert', 'me': 'Vaš nalog pružaoca usluga je aktiviran'},
     }
 
     provider_admin_email = (provider_form.admin_email or '').strip()
 
-    for recipient in recipients:
+    def _send_one(recipient, role, template_name, subject):
         try:
             translation.activate(language)
-            role = recipient['role']
-            user_obj = recipient['user']
-            display_name = recipient['display_name']
-
-            if is_activated:
-                subject_map = SUBJECTS_ACTIVATED_HARDCODED.get(role, SUBJECTS_ACTIVATED_HARDCODED['author'])
-                subject = subject_map.get(language, subject_map['en'])
-                if '%(name)s' in subject:
-                    subject = subject % {'name': provider.name}
-                template_map = {'author': 'email/provider_registration_activated_author.html', 'organization': 'email/provider_registration_activated_organization.html', 'admin': 'email/provider_registration_activated_admin.html'}
-                template_name = template_map.get(role, template_map['author'])
-            else:
-                subject_map = SUBJECTS_SUBMITTED_HARDCODED.get(role, SUBJECTS_SUBMITTED_HARDCODED['author'])
-                subject = subject_map.get(language, subject_map['en'])
-                if '%(name)s' in subject:
-                    subject = subject % {'name': provider.name}
-                template_map = {'author': 'email/provider_registration_submitted_author.html', 'organization': 'email/provider_registration_submitted_organization.html'}
-                template_name = template_map.get(role, 'email/provider_registration_submitted_author.html')
-
+            user_obj = recipient.get('user')
             has_password = user_obj.has_usable_password() if user_obj else False
             context = {
-                'display_name': display_name,
+                'display_name': recipient['display_name'],
                 'provider_name': provider.name,
                 'provider_admin_email': provider_admin_email,
                 'admin_login_url': admin_login_url,
@@ -744,7 +753,6 @@ def _send_registration_emails(provider, provider_form, admin_user):
                 'recipient_role': role,
             }
             email_body = render_to_string(template_name, context)
-
             send_mail(
                 subject=subject,
                 message='',
@@ -753,10 +761,49 @@ def _send_registration_emails(provider, provider_form, admin_user):
                 html_message=email_body,
                 fail_silently=False,
             )
-
             logger.info(f"Registration email sent to {recipient['email']} for provider {provider.id} (role={role}, language: {language}, activated: {is_activated})")
-            translation.deactivate()
-
         except Exception as e:
             logger.error(f"Error sending registration email to {recipient['email']} for provider {provider.id}: {e}", exc_info=True)
+        finally:
             translation.deactivate()
+
+    # Письма author / organization (submitted и activated)
+    for recipient in recipients:
+        role = recipient['role']
+        if is_activated:
+            subject_map = SUBJECTS_ACTIVATED_HARDCODED.get(role, SUBJECTS_ACTIVATED_HARDCODED['author'])
+            subject = subject_map.get(language, subject_map['en'])
+            if '%(name)s' in subject:
+                subject = subject % {'name': provider.name}
+            template_map = {'author': 'email/provider_registration_activated_author.html', 'organization': 'email/provider_registration_activated_organization.html'}
+            template_name = template_map.get(role, 'email/provider_registration_activated_author.html')
+        else:
+            subject_map = SUBJECTS_SUBMITTED_HARDCODED.get(role, SUBJECTS_SUBMITTED_HARDCODED['author'])
+            subject = subject_map.get(language, subject_map['en'])
+            if '%(name)s' in subject:
+                subject = subject % {'name': provider.name}
+            template_name = 'email/provider_registration_submitted_author.html' if role == 'author' else 'email/provider_registration_submitted_organization.html'
+        _send_one(recipient, role, template_name, subject)
+
+    # При активации: три отдельных письма по ролям (owner, provider_manager, provider_admin) — каждому свой текст, по таблице рассылки.
+    if is_activated:
+        TEMPLATES_ACTIVATED = {
+            'owner': 'email/provider_registration_activated_owner.html',
+            'provider_manager': 'email/provider_registration_activated_manager.html',
+            'provider_admin': 'email/provider_registration_activated_admin.html',
+        }
+        for email_attr, role in [('owner_email', 'owner'), ('provider_manager_email', 'provider_manager'), ('admin_email', 'provider_admin')]:
+            email_val = (getattr(provider_form, email_attr, None) or '').strip()
+            if not email_val:
+                continue
+            try:
+                user_obj = UserModel.objects.get(email__iexact=email_val, is_active=True)
+                name = (user_obj.first_name or _('User')).strip() or _('User')
+            except UserModel.DoesNotExist:
+                logger.warning(f"User {email_val} ({email_attr}) not found for provider {provider.id}")
+                continue
+            subject_map = SUBJECTS_ACTIVATED_HARDCODED[role]
+            subject = subject_map.get(language, subject_map['en'])
+            template_name = TEMPLATES_ACTIVATED[role]
+            recipient = {'email': email_val, 'role': role, 'user': user_obj, 'display_name': name}
+            _send_one(recipient, role, template_name, subject)

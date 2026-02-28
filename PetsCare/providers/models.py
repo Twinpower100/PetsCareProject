@@ -123,6 +123,17 @@ class Provider(models.Model):
         help_text=_('Whether the organization is currently active. Automatically set to True when activation_status is "active".')
     )
     
+    # Ссылка на заявку, по которой создан провайдер (для назначения ролей при активации)
+    provider_form = models.ForeignKey(
+        'users.ProviderForm',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_provider',
+        verbose_name=_('Provider form'),
+        help_text=_('Application form that created this provider; used to assign staff roles on activation.')
+    )
+    
     # ОБЯЗАТЕЛЬНЫЕ для аппрува (заполняются биллинг-менеджерами)
     # Уникальность в рамках страны: (country, tax_id), см. Meta.constraints
     tax_id = models.CharField(
@@ -1086,17 +1097,11 @@ class Employee(models.Model):
             permissions__contains={'schedule_appointments': True}
         ).exists()
 
-    def has_confirmed_provider(self):
+    def has_active_provider(self):
         """
-        Проверяет, есть ли у сотрудника подтвержденное учреждение.
-        
-        Returns:
-            bool: True, если у сотрудника есть подтвержденное учреждение
+        Проверяет, есть ли у сотрудника активная связь с учреждением.
         """
-        return self.employeeprovider_set.filter(
-            is_confirmed=True,
-            end_date__isnull=True
-        ).exists()
+        return self.employeeprovider_set.filter(end_date__isnull=True).exists()
 
     def get_active_providers(self):
         """
@@ -1205,6 +1210,18 @@ class EmployeeLocationRole(models.Model):
         choices=ROLE_CHOICES,
         help_text=_('Staff role at this location. Only one location_manager per location.'),
     )
+    is_active = models.BooleanField(
+        _('Is Active'),
+        default=True,
+        help_text=_('Whether the employee is currently active at this location. '
+                    'Set to False for soft-delete / deactivation (offboarding).'),
+    )
+    end_date = models.DateTimeField(
+        _('End Date'),
+        null=True,
+        blank=True,
+        help_text=_('Date/time when employee was deactivated at this location.'),
+    )
 
     class Meta:
         verbose_name = _('Employee location role')
@@ -1229,104 +1246,23 @@ class EmployeeLocationRole(models.Model):
         return f"{self.employee} @ {self.provider_location}: {self.get_role_display()}"
 
 
-class EmployeeJoinRequest(models.Model):
-    """
-    Employee join request model.
-    
-    Основные характеристики:
-    - Связь с пользователем и учреждением
-    - Должность и комментарий
-    - Статус заявки
-    - Временные метки
-    
-    Технические особенности:
-    - Автоматическое отслеживание времени создания и обновления
-    - Управление статусом заявки
-    - Связь с пользователем и учреждением через ForeignKey
-    
-    Примечание:
-    Заявка может быть в одном из трех состояний:
-    - pending (ожидает рассмотрения)
-    - approved (одобрена)
-    - rejected (отклонена)
-    """
-    user = models.ForeignKey(
-        'users.User',
-        on_delete=models.CASCADE,
-        related_name='join_requests',
-        verbose_name=_('User')
-    )
-    provider = models.ForeignKey(
-        'Provider',
-        on_delete=models.CASCADE,
-        related_name='join_requests',
-        verbose_name=_('Provider')
-    )
-    position = models.CharField(
-        _('Position'),
-        max_length=255
-    )
-    comment = models.TextField(
-        _('Comment'),
-        blank=True
-    )
-    status = models.CharField(
-        _('Status'),
-        max_length=20,
-        choices=[
-            ('pending', _('Pending')),
-            ('approved', _('Approved')),
-            ('rejected', _('Rejected'))
-        ],
-        default='pending'
-    )
-    created_at = models.DateTimeField(
-        _('Created At'),
-        auto_now_add=True
-    )
-    updated_at = models.DateTimeField(
-        _('Updated At'),
-        auto_now=True
-    )
-
-    class Meta:
-        verbose_name = _('Employee Join Request')
-        verbose_name_plural = _('Employee Join Requests')
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['status']),
-            models.Index(fields=['created_at']),
-        ]
-
-    def __str__(self):
-        """
-        Возвращает строковое представление заявки.
-        
-        Returns:
-            str: Строковое представление заявки
-        """
-        return f"{self.user} - {self.provider} ({self.status})"
-
-
 class EmployeeProvider(models.Model):
     """
-    Employee-Provider relationship model.
-    
-    Основные характеристики:
-    - Связь с сотрудником и учреждением
-    - Период работы
-    - Статус менеджера
-    - Подтверждение сотрудника
-    
-    Технические особенности:
-    - Уникальная связь по сотруднику, учреждению и дате начала
-    - Автоматическое отслеживание времени создания и обновления
-    - Управление подтверждением сотрудника
-    
-    Примечание:
-    Эта модель используется для отслеживания истории работы сотрудника
-    в различных учреждениях.
+    Связь сотрудника (Employee) с провайдером и роль в организации.
+    Единственный источник правды по ролям в провайдере (вместо ProviderAdmin).
     """
+    ROLE_OWNER = 'owner'
+    ROLE_PROVIDER_MANAGER = 'provider_manager'
+    ROLE_PROVIDER_ADMIN = 'provider_admin'
+    ROLE_SERVICE_WORKER = 'service_worker'
+    ROLE_TECHNICAL_WORKER = 'technical_worker'
+    ROLE_CHOICES = [
+        (ROLE_OWNER, _('Owner')),
+        (ROLE_PROVIDER_MANAGER, _('Provider manager')),
+        (ROLE_PROVIDER_ADMIN, _('Provider admin')),
+        (ROLE_SERVICE_WORKER, _('Service worker')),
+        (ROLE_TECHNICAL_WORKER, _('Technical worker')),
+    ]
     employee = models.ForeignKey(
         Employee,
         on_delete=models.CASCADE,
@@ -1338,6 +1274,13 @@ class EmployeeProvider(models.Model):
         on_delete=models.CASCADE,
         verbose_name=_('Provider'),
         related_name='employeeprovider_set'
+    )
+    role = models.CharField(
+        _('Role'),
+        max_length=20,
+        choices=ROLE_CHOICES,
+        default=ROLE_SERVICE_WORKER,
+        help_text=_('Role at this provider: owner, manager, admin, service worker, technical worker'),
     )
     start_date = models.DateField(
         _('Start Date'),
@@ -1352,24 +1295,22 @@ class EmployeeProvider(models.Model):
     is_manager = models.BooleanField(
         _('Is Manager'),
         default=False,
-        help_text=_('Whether this employee is a manager at this provider')
+        help_text=_('Whether this employee is a manager at this provider (aligns with is_provider_manager)')
     )
-    is_confirmed = models.BooleanField(
-        _('Is Confirmed'),
+    is_owner = models.BooleanField(
+        _('Is Owner'),
         default=False,
-        help_text=_('Confirmed by employee')
+        help_text=_('Owner of the organization')
     )
-    confirmation_requested_at = models.DateTimeField(
-        _('Confirmation Requested At'),
-        null=True,
-        blank=True,
-        help_text=_('When the confirmation was requested')
+    is_provider_manager = models.BooleanField(
+        _('Is Provider Manager'),
+        default=False,
+        help_text=_('Provider manager (organization manager)')
     )
-    confirmed_at = models.DateTimeField(
-        _('Confirmed At'),
-        null=True,
-        blank=True,
-        help_text=_('When the confirmation was received')
+    is_provider_admin = models.BooleanField(
+        _('Is Provider Admin'),
+        default=False,
+        help_text=_('Provider admin (organization admin)')
     )
     created_at = models.DateTimeField(
         _('Created At'),
@@ -1383,12 +1324,14 @@ class EmployeeProvider(models.Model):
     class Meta:
         verbose_name = _('Employee Provider')
         verbose_name_plural = _('Employee Providers')
-        unique_together = ['employee', 'provider', 'start_date']
+        unique_together = [['employee', 'provider', 'start_date']]
         ordering = ['-start_date']
         indexes = [
             models.Index(fields=['start_date']),
             models.Index(fields=['end_date']),
-            models.Index(fields=['is_confirmed']),
+            models.Index(fields=['provider', 'is_owner']),
+            models.Index(fields=['provider', 'is_provider_manager']),
+            models.Index(fields=['provider', 'is_provider_admin']),
         ]
 
     def __str__(self):
@@ -1409,35 +1352,45 @@ class EmployeeProvider(models.Model):
         """
         return self.end_date is None
 
-    def request_confirmation(self):
+    @classmethod
+    def get_active_admin_links(cls, provider):
         """
-        Запрашивает подтверждение сотрудника.
-        
-        Примечание:
-        Устанавливает время запроса подтверждения.
+        Активные связи «админ провайдера» (owner / provider_manager / provider_admin) для провайдера.
+        Используется для уведомлений и поиска контактов админа.
         """
-        self.confirmation_requested_at = timezone.now()
-        self.save()
-
-    def confirm(self):
-        """
-        Подтверждает сотрудника.
-        
-        Примечание:
-        Устанавливает время подтверждения и статус подтверждения.
-        """
-        self.is_confirmed = True
-        self.confirmed_at = timezone.now()
-        self.save()
+        from django.db.models import Q
+        from django.utils import timezone
+        today = timezone.now().date()
+        q = Q(end_date__isnull=True) | Q(end_date__gte=today)
+        role_q = Q(is_owner=True) | Q(is_provider_manager=True) | Q(is_provider_admin=True)
+        return cls.objects.filter(provider=provider).filter(role_q).filter(q).select_related('employee', 'employee__user')
 
     def can_work(self):
         """
         Проверяет, может ли сотрудник работать в учреждении.
-        
-        Returns:
-            bool: True, если сотрудник может работать
         """
-        return self.is_currently_employed() and self.is_confirmed
+        return self.is_currently_employed()
+
+    def can_conduct_visits(self):
+        """
+        Может ли сотрудник проводить приёмы и вносить записи в карточку питомца.
+        True для owner, provider_manager, provider_admin, service_worker.
+        False для technical_worker (только доступ к своему расписанию).
+        """
+        return self.role != self.ROLE_TECHNICAL_WORKER
+
+    @classmethod
+    def get_active_ep_for_user_provider(cls, user, provider):
+        """
+        Возвращает активную связь EmployeeProvider (user → provider), если есть.
+        """
+        from django.utils import timezone
+        from django.db.models import Q
+        today = timezone.now().date()
+        return cls.objects.filter(
+            employee__user=user,
+            provider=provider,
+        ).filter(Q(end_date__isnull=True) | Q(end_date__gte=today)).select_related('employee').first()
 
 
 class Schedule(models.Model):
@@ -1489,10 +1442,14 @@ class Schedule(models.Model):
     )
     start_time = models.TimeField(
         _('Start Time'),
+        null=True,
+        blank=True,
         help_text=_('Start time of the working day')
     )
     end_time = models.TimeField(
         _('End Time'),
+        null=True,
+        blank=True,
         help_text=_('End time of the working day')
     )
     break_start = models.TimeField(
@@ -1558,6 +1515,14 @@ class Schedule(models.Model):
         Raises:
             ValidationError: Если время работы некорректно
         """
+        # Нерабочий день — валидация времени не нужна
+        if not self.is_working:
+            return
+
+        # Рабочий день — start_time и end_time обязательны
+        if not self.start_time or not self.end_time:
+            raise ValidationError(_("Start time and end time are required for working days"))
+
         if self.start_time >= self.end_time:
             raise ValidationError(_("Start time must be before end time"))
         
@@ -2204,38 +2169,6 @@ class PatternDay(models.Model):
         return f"{self.pattern} - {self.get_weekday_display()}"
 
 
-class ManagerTransferInvite(models.Model):
-    """
-    Модель приглашения на передачу полномочий менеджера учреждения.
-
-    from_manager — сотрудник, инициирующий передачу прав
-    to_employee — сотрудник, которому передают права
-    provider — учреждение
-    is_accepted — приглашение принято
-    is_declined — приглашение отклонено
-    created_at, accepted_at, declined_at — временные метки
-    """
-    from_manager = models.ForeignKey(
-        'Employee', related_name='sent_manager_invites', on_delete=models.CASCADE,
-        verbose_name=_('From manager')
-    )
-    to_employee = models.ForeignKey(
-        'Employee', related_name='received_manager_invites', on_delete=models.CASCADE,
-        verbose_name=_('To employee')
-    )
-    provider = models.ForeignKey('Provider', on_delete=models.CASCADE, verbose_name=_('Provider'))
-    is_accepted = models.BooleanField(default=False, verbose_name=_('Accepted'))
-    is_declined = models.BooleanField(default=False, verbose_name=_('Declined'))
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name=_('Created at'))
-    accepted_at = models.DateTimeField(null=True, blank=True, verbose_name=_('Accepted at'))
-    declined_at = models.DateTimeField(null=True, blank=True, verbose_name=_('Declined at'))
-
-    class Meta:
-        verbose_name = _('Manager transfer invite')
-        verbose_name_plural = _('Manager transfer invites')
-        unique_together = ('to_employee', 'provider', 'is_accepted', 'is_declined')
-
-
 class ProviderLocationService(models.Model):
     """
     Цена и длительность услуги в локации для одной комбинации (тип животного, размер).
@@ -2484,129 +2417,3 @@ class ProviderLocation(models.Model):
         return None
 
 
-class LocationManagerInvite(models.Model):
-    """
-    Приглашение пользователя стать руководителем филиала (локации).
-    Админ вводит email; система находит пользователя и отправляет письмо с 6-значным кодом.
-    После ввода кода на странице приёма инвайта пользователь назначается manager локации.
-    """
-    provider_location = models.ForeignKey(
-        ProviderLocation,
-        on_delete=models.CASCADE,
-        related_name='manager_invites',
-        verbose_name=_('Provider location'),
-    )
-    email = models.EmailField(_('Email'), help_text=_('Email of the user to invite (must exist in the system)'))
-    token = models.CharField(_('Token'), max_length=6, unique=True, help_text=_('6-digit activation code'))
-    expires_at = models.DateTimeField(_('Expires at'))
-    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
-
-    class Meta:
-        verbose_name = _('Location manager invite')
-        verbose_name_plural = _('Location manager invites')
-        ordering = ['-created_at']
-        indexes = [models.Index(fields=['token']), models.Index(fields=['expires_at'])]
-
-    def __str__(self):
-        return f"{self.provider_location.name} → {self.email}"
-
-    def is_expired(self):
-        return timezone.now() >= self.expires_at
-
-
-class ProviderOwnerManagerInvite(models.Model):
-    """
-    Приглашение пользователя стать владельцем или менеджером организации (как LocationManagerInvite).
-    Админ вводит email; система отправляет письмо с 6-значным кодом. После ввода кода на странице
-    приёма инвайта: снимаются права предыдущего владельца/менеджера, назначается приглашённый.
-    """
-    ROLE_OWNER = 'owner'
-    ROLE_PROVIDER_MANAGER = 'provider_manager'
-    ROLE_CHOICES = [
-        (ROLE_OWNER, _('Owner')),
-        (ROLE_PROVIDER_MANAGER, _('Manager')),
-    ]
-    provider = models.ForeignKey(
-        Provider,
-        on_delete=models.CASCADE,
-        related_name='owner_manager_invites',
-        verbose_name=_('Provider'),
-    )
-    email = models.EmailField(
-        _('Email'),
-        help_text=_('Email of the user to invite (must exist in the system)'),
-    )
-    role = models.CharField(
-        _('Role'),
-        max_length=20,
-        choices=ROLE_CHOICES,
-        help_text=_('Owner or manager of the organization'),
-    )
-    token = models.CharField(
-        _('Token'),
-        max_length=6,
-        unique=True,
-        help_text=_('6-digit activation code'),
-    )
-    expires_at = models.DateTimeField(_('Expires at'))
-    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
-
-    class Meta:
-        verbose_name = _('Provider owner/manager invite')
-        verbose_name_plural = _('Provider owner/manager invites')
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['token']),
-            models.Index(fields=['expires_at']),
-            models.Index(fields=['provider', 'role']),
-        ]
-
-    def __str__(self):
-        return f"{self.provider.name} → {self.email} ({self.role})"
-
-    def is_expired(self):
-        return timezone.now() >= self.expires_at
-
-
-class LocationStaffInvite(models.Model):
-    """
-    Приглашение пользователя в персонал филиала (локации).
-    Админ вводит email; система находит пользователя и отправляет письмо с 6-значным кодом.
-    После ввода кода на странице приёма инвайта пользователь привязывается как сотрудник к провайдеру и локации.
-    """
-    provider_location = models.ForeignKey(
-        ProviderLocation,
-        on_delete=models.CASCADE,
-        related_name='staff_invites',
-        verbose_name=_('Provider location'),
-    )
-    email = models.EmailField(
-        _('Email'),
-        help_text=_('Email of the user to invite (must exist in the system)'),
-    )
-    token = models.CharField(
-        _('Token'),
-        max_length=6,
-        unique=True,
-        help_text=_('6-digit activation code'),
-    )
-    expires_at = models.DateTimeField(_('Expires at'))
-    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
-
-    class Meta:
-        verbose_name = _('Location staff invite')
-        verbose_name_plural = _('Location staff invites')
-        ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['token']),
-            models.Index(fields=['expires_at']),
-            models.Index(fields=['provider_location', 'email']),
-        ]
-        # Один активный инвайт на пару (локация, email)
-        unique_together = [['provider_location', 'email']]
-
-    def __str__(self):
-        return f"{self.provider_location.name} → {self.email} (staff)"
-
-    def is_expired(self):
-        return timezone.now() >= self.expires_at

@@ -454,8 +454,7 @@ class BookingCompletionService:
     def _send_completion_notifications(booking, user):
         """Отправить уведомления о завершении бронирования"""
         from notifications.models import Notification
-        from users.models import ProviderAdmin
-        
+
         provider = booking.provider
         if not provider and booking.provider_location:
             provider = booking.provider_location.provider
@@ -483,7 +482,7 @@ class BookingCompletionService:
     def _send_cancellation_notifications(booking, user):
         """Отправить уведомления об отмене бронирования"""
         from notifications.models import Notification
-        from users.models import ProviderAdmin
+        from providers.models import EmployeeProvider
 
         # Определяем тип отмены
         if user.has_role('pet_owner') and user == booking.user:
@@ -505,13 +504,9 @@ class BookingCompletionService:
             provider = getattr(booking, 'provider', None) or (booking.provider_location.provider if booking.provider_location else None)
             # Уведомляем админа учреждения
             if provider:
-                provider_admins = ProviderAdmin.objects.filter(
-                    provider=provider,
-                    is_active=True
-                ).select_related('user')
-                for provider_admin in provider_admins:
+                for ep in EmployeeProvider.get_active_admin_links(provider):
                     Notification.objects.create(
-                        user=provider_admin.user,
+                        user=ep.employee.user,
                         title=_("Booking Cancelled by Client"),
                         message=_("Client cancelled booking at your facility"),
                         notification_type='appointment',
@@ -546,18 +541,14 @@ class BookingCompletionService:
     def _send_auto_completion_notification(booking):
         """Отправить уведомление о автоматическом завершении"""
         from notifications.models import Notification
-        from users.models import ProviderAdmin
+        from providers.models import EmployeeProvider
 
         provider = getattr(booking, 'provider', None) or (booking.provider_location.provider if booking.provider_location else None)
         # Уведомляем админа учреждения о автоматическом завершении
         if provider:
-            provider_admins = ProviderAdmin.objects.filter(
-                provider=provider,
-                is_active=True
-            ).select_related('user')
-            for provider_admin in provider_admins:
+            for ep in EmployeeProvider.get_active_admin_links(provider):
                 Notification.objects.create(
-                    user=provider_admin.user,
+                    user=ep.employee.user,
                     title=_("Booking Auto-Completed"),
                     message=_("Booking was automatically completed by system"),
                     notification_type='system',
@@ -1111,7 +1102,7 @@ class EmployeeAutoBookingService:
         Returns:
             List[Employee]: Список работников
         """
-        from providers.models import EmployeeProvider, ProviderLocationService, EmployeeLocationService
+        from providers.models import EmployeeProvider, ProviderLocationService, EmployeeLocationService, EmployeeLocationRole
 
         # Проверяем, что провайдер может оказывать эту услугу (через available_category_levels)
         # Услуга должна быть в категориях уровня 0 провайдера или их потомках
@@ -1130,11 +1121,21 @@ class EmployeeAutoBookingService:
                 return []
 
         # Сотрудники, оказывающие эту услугу в какой-либо локации провайдера
+        # И при этом АКТИВНЫЕ в этой локации
+        employee_ids = set(
+            EmployeeLocationRole.objects.filter(
+                provider_location__provider=provider,
+                is_active=True,
+            ).values_list('employee_id', flat=True)
+        )
+        
+        # Дополнительно фильтруем тех, кто оказывает услугу
         employee_ids = set(
             EmployeeLocationService.objects.filter(
                 provider_location__provider=provider,
                 provider_location__is_active=True,
                 service=service,
+                employee_id__in=employee_ids,
             ).values_list('employee_id', flat=True).distinct()
         )
         if not employee_ids:

@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.admin import widgets as admin_widgets
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
-from .models import Provider, Employee, Schedule, SchedulePattern, PatternDay, EmployeeWorkSlot, EmployeeJoinRequest, EmployeeProvider, LocationSchedule, HolidayShift, ManagerTransferInvite, ProviderOwnerManagerInvite, ProviderLocation, ProviderLocationService, EmployeeLocationService
+from .models import Provider, Employee, Schedule, SchedulePattern, PatternDay, EmployeeWorkSlot, EmployeeProvider, LocationSchedule, HolidayShift, ProviderLocation, ProviderLocationService, EmployeeLocationService
 from django import forms
 from django.shortcuts import render, redirect
 from django.urls import path, reverse
@@ -978,44 +978,22 @@ class EmployeeWorkSlotAdmin(admin.ModelAdmin):
     )
 
 
-class EmployeeJoinRequestAdmin(admin.ModelAdmin):
-    """
-    Админка для заявок на вступление в учреждение.
-    """
-    list_display = ('user', 'provider', 'position', 'status', 'created_at')
-    list_filter = ('status', 'created_at', 'provider')
-    search_fields = ('user__email', 'user__first_name', 'user__last_name', 'provider__name', 'position')
-    readonly_fields = ('created_at', 'updated_at')
-    
-    fieldsets = (
-        (_('Basic Information'), {
-            'fields': ('user', 'provider', 'position', 'comment')
-        }),
-        (_('Status'), {
-            'fields': ('status',)
-        }),
-        (_('Metadata'), {
-            'fields': ('created_at', 'updated_at'),
-            'classes': ('collapse',)
-        })
-    )
-
-
 class EmployeeProviderAdmin(admin.ModelAdmin):
     """
-    Админка для связей сотрудник-учреждение.
+    Админка для связей сотрудник-учреждение. Одна связь на пару (сотрудник, провайдер), роли — атрибуты.
     """
-    list_display = ('employee', 'provider', 'start_date', 'end_date', 'is_manager', 'is_confirmed')
-    list_filter = ('is_manager', 'is_confirmed', 'start_date', 'end_date', 'provider')
+    list_display = ('employee', 'provider', 'start_date', 'end_date', 'is_owner', 'is_provider_manager', 'is_provider_admin', 'is_manager')
+    list_filter = ('is_owner', 'is_provider_manager', 'is_provider_admin', 'is_manager', 'start_date', 'end_date', 'provider')
     search_fields = ('employee__user__email', 'employee__user__first_name', 'employee__user__last_name', 'provider__name')
     readonly_fields = ('created_at', 'updated_at')
-    
+
     fieldsets = (
         (_('Basic Information'), {
             'fields': ('employee', 'provider', 'start_date', 'end_date')
         }),
-        (_('Status'), {
-            'fields': ('is_manager', 'is_confirmed', 'confirmation_requested_at', 'confirmed_at')
+        (_('Organization roles'), {
+            'fields': ('is_owner', 'is_provider_manager', 'is_provider_admin', 'is_manager'),
+            'description': _('Owner / Manager / Admin of the organization. Is Manager aligns with Provider Manager.')
         }),
         (_('Metadata'), {
             'fields': ('created_at', 'updated_at'),
@@ -1056,54 +1034,6 @@ class HolidayShiftAdmin(admin.ModelAdmin):
     search_fields = ('provider_location__name',)
     date_hierarchy = 'date'
     ordering = ('-date', 'provider_location')
-
-
-class ManagerTransferInviteAdmin(admin.ModelAdmin):
-    """
-    Админка для приглашений на передачу полномочий менеджера (старый поток: from_manager → to_employee).
-    """
-    list_display = ('from_manager', 'to_employee', 'provider', 'is_accepted', 'is_declined', 'created_at')
-    list_filter = ('is_accepted', 'is_declined', 'created_at', 'provider')
-    search_fields = ('from_manager__user__email', 'to_employee__user__email', 'provider__name')
-    readonly_fields = ('created_at',)
-    
-    fieldsets = (
-        (_('Basic Information'), {
-            'fields': ('from_manager', 'to_employee', 'provider')
-        }),
-        (_('Status'), {
-            'fields': ('is_accepted', 'is_declined', 'accepted_at', 'declined_at')
-        }),
-        (_('Metadata'), {
-            'fields': ('created_at',),
-            'classes': ('collapse',)
-        })
-    )
-
-
-class ProviderOwnerManagerInviteAdmin(admin.ModelAdmin):
-    """
-    Админка для приглашений владельца/менеджера по email (6-значный код).
-    Создаются через API; после принятия инвайт удаляется.
-    """
-    list_display = ('provider', 'email', 'role', 'expires_at', 'created_at')
-    list_filter = ('role', 'created_at', 'provider')
-    search_fields = ('email', 'provider__name')
-    readonly_fields = ('created_at', 'token', 'expires_at')
-    ordering = ['-created_at']
-    fieldsets = (
-        (_('Basic Information'), {
-            'fields': ('provider', 'email', 'role')
-        }),
-        (_('Token'), {
-            'fields': ('token', 'expires_at'),
-            'description': _('6-digit code sent by email. Invite is deleted after accept.')
-        }),
-        (_('Metadata'), {
-            'fields': ('created_at',),
-            'classes': ('collapse',)
-        })
-    )
 
 
 class ProviderLocationServiceInline(admin.TabularInline):
@@ -1394,12 +1324,9 @@ custom_admin_site.register(Schedule, ScheduleAdmin)
 custom_admin_site.register(SchedulePattern, SchedulePatternAdmin)
 custom_admin_site.register(PatternDay, PatternDayAdmin)
 custom_admin_site.register(EmployeeWorkSlot, EmployeeWorkSlotAdmin)
-custom_admin_site.register(EmployeeJoinRequest, EmployeeJoinRequestAdmin)
 custom_admin_site.register(EmployeeProvider, EmployeeProviderAdmin)
 custom_admin_site.register(LocationSchedule, LocationScheduleAdmin)
 custom_admin_site.register(HolidayShift, HolidayShiftAdmin)
-custom_admin_site.register(ManagerTransferInvite, ManagerTransferInviteAdmin)
-custom_admin_site.register(ProviderOwnerManagerInvite, ProviderOwnerManagerInviteAdmin)
 custom_admin_site.register(ProviderLocation, ProviderLocationAdmin)
 custom_admin_site.register(ProviderLocationService, ProviderLocationServiceAdmin)
 
