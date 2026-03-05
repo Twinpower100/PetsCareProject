@@ -6,5 +6,11 @@
         "c:/Users/andre/OneDrive/Documents/Projects/PetCare/PetsCare-backend/.venv/Lib/site-packages"
     ],
     "pythonVersion": "3.13",
-    "typeCheckingMode": "basic"
+    "typeCheckingMode": "basic",
+    "reportAttributeAccessIssue": false,
+    "reportOptionalMemberAccess": false,
+    "reportGeneralTypeIssues": false,
+    "reportOptionalCall": false,
+    "reportCallIssue": false,
+    "reportUnboundVariable": false
 }

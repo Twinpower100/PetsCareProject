@@ -174,12 +174,6 @@ class PetFilter(django_filters.FilterSet):
         help_text=_('Filter by owner ID')
     )
     
-    main_owner = django_filters.NumberFilter(
-        field_name='main_owner',
-        lookup_expr='exact',
-        help_text=_('Filter by main owner ID')
-    )
-    
     # Фильтрация по статусу (убрано - поле is_active не существует в модели Pet)
     # is_active = django_filters.BooleanFilter(
     #     method='filter_active_status',
@@ -190,7 +184,7 @@ class PetFilter(django_filters.FilterSet):
         model = Pet
         fields = [
             'pet_type', 'breed', 'weight', 'created_at', 'updated_at',
-            'owners', 'main_owner'
+            'owners'
         ]
     
     def filter_age_min(self, queryset, name, value):

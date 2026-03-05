@@ -11,10 +11,11 @@
 """
 
 from rest_framework import serializers
-from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, PetType, Breed, DocumentType
+from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, PetType, Breed, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
 from users.models import User
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
+from django.db import transaction
 
 from .models import PetOwnerIncapacity, PetIncapacityNotification
 from .constants import (
@@ -145,10 +146,79 @@ class PetAccessSerializer(serializers.ModelSerializer):
         valid_permissions = {'read', 'write', 'book'}
         invalid_permissions = set(value.keys()) - valid_permissions
         if invalid_permissions:
+            message = str(_('Invalid permissions: {}')).format(', '.join(invalid_permissions))
             raise serializers.ValidationError(
-                _('Invalid permissions: {}').format(', '.join(invalid_permissions))
+                message
             )
         return value
+
+
+class ChronicConditionSerializer(serializers.ModelSerializer):
+    """Справочник хронических заболеваний. name_display — по языку запроса (Accept-Language или ?lang=)."""
+    name_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChronicCondition
+        fields = ['id', 'code', 'name', 'name_display', 'name_en', 'name_ru', 'name_de', 'name_me', 'category', 'order']
+        read_only_fields = ['id', 'code', 'name', 'name_en', 'name_ru', 'name_de', 'name_me', 'category', 'order']
+
+    def get_name_display(self, obj):
+        request = self.context.get('request')
+        lang = request.GET.get('lang') if request else None
+        if not lang and request and request.META.get('HTTP_ACCEPT_LANGUAGE'):
+            raw = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+            lang = raw.split(',')[0].split('-')[0].strip().lower() if raw else None
+        return obj.get_localized_name(lang) if lang else obj.get_localized_name()
+
+
+class PhysicalFeatureSerializer(serializers.ModelSerializer):
+    """Справочник физических особенностей. name_display — по языку запроса."""
+    name_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PhysicalFeature
+        fields = ['id', 'code', 'name', 'name_display', 'name_en', 'name_ru', 'name_de', 'name_me', 'order']
+        read_only_fields = ['id', 'code', 'name', 'name_en', 'name_ru', 'name_de', 'name_me', 'order']
+
+    def get_name_display(self, obj):
+        request = self.context.get('request')
+        lang = request.GET.get('lang') if request else None
+        if not lang and request and request.META.get('HTTP_ACCEPT_LANGUAGE'):
+            raw = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+            lang = raw.split(',')[0].split('-')[0].strip().lower() if raw else None
+        return obj.get_localized_name(lang) if lang else obj.get_localized_name()
+
+
+class BehavioralTraitSerializer(serializers.ModelSerializer):
+    """Справочник поведенческих особенностей. name_display — по языку запроса."""
+    name_display = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BehavioralTrait
+        fields = ['id', 'code', 'name', 'name_display', 'name_en', 'name_ru', 'name_de', 'name_me', 'order']
+        read_only_fields = ['id', 'code', 'name', 'name_en', 'name_ru', 'name_de', 'name_me', 'order']
+
+    def get_name_display(self, obj):
+        request = self.context.get('request')
+        lang = request.GET.get('lang') if request else None
+        if not lang and request and request.META.get('HTTP_ACCEPT_LANGUAGE'):
+            raw = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+            lang = raw.split(',')[0].split('-')[0].strip().lower() if raw else None
+        return obj.get_localized_name(lang) if lang else obj.get_localized_name()
+
+
+class PetOwnerSerializer(serializers.ModelSerializer):
+    """Сериализатор для PetOwner through-модели."""
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    user_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PetOwner
+        fields = ['id', 'user', 'user_email', 'user_name', 'role', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+    def get_user_name(self, obj):
+        return obj.user.get_full_name() or obj.user.email
 
 
 class PetSerializer(serializers.ModelSerializer):
@@ -163,9 +233,20 @@ class PetSerializer(serializers.ModelSerializer):
     - Управление доступом
     - Поддержка расширенного поиска
     """
+    # Backward-compatible input alias: external clients send `owner` (user PK)
     owner = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.all(),
-        default=serializers.CurrentUserDefault()
+        required=False,
+        write_only=True
+    )
+    # Выходные поля для владельцев
+    main_owner = serializers.SerializerMethodField()
+    main_owner_id = serializers.SerializerMethodField()
+    owners = PetOwnerSerializer(source='petowner_set', many=True, read_only=True)
+    chronic_conditions = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=ChronicCondition._default_manager.all(),
+        required=False
     )
     description = serializers.CharField(required=False, allow_blank=True, allow_null=True, default='')
     age = serializers.SerializerMethodField()
@@ -176,8 +257,8 @@ class PetSerializer(serializers.ModelSerializer):
     # Дополнительные поля для поиска
     pet_type_name = serializers.CharField(source='pet_type.name', read_only=True)
     breed_name = serializers.CharField(source='breed.name', read_only=True)
-    main_owner_name = serializers.CharField(source='main_owner.get_full_name', read_only=True)
-    main_owner_email = serializers.CharField(source='main_owner.email', read_only=True)
+    main_owner_name = serializers.SerializerMethodField()
+    main_owner_email = serializers.SerializerMethodField()
     records_count = serializers.SerializerMethodField()
     last_visit_date = serializers.SerializerMethodField()
     has_medical_conditions = serializers.SerializerMethodField()
@@ -188,6 +269,9 @@ class PetSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'owner',
+            'main_owner',
+            'main_owner_id',
+            'owners',
             'name',
             'pet_type',
             'pet_type_name',
@@ -196,9 +280,16 @@ class PetSerializer(serializers.ModelSerializer):
             'birth_date',
             'age',
             'weight',
+            'gender',
+            'is_neutered',
+            'rabies_vaccination_expiry',
+            'core_vaccination_expiry',
+            'identifier',
             'description',
+            'behavioral_traits',
             'special_needs',
             'medical_conditions',
+            'chronic_conditions',
             'photo',
             'medical_records',
             'records',
@@ -209,18 +300,39 @@ class PetSerializer(serializers.ModelSerializer):
             'last_visit_date',
             'has_medical_conditions',
             'has_special_needs',
+            'is_active',
             'created_at',
             'updated_at'
         ]
         read_only_fields = [
-            'id', 'created_at', 'updated_at', 'pet_type_name', 'breed_name',
+            'id', 'main_owner', 'main_owner_id', 'owners', 'created_at', 'updated_at', 'pet_type_name', 'breed_name',
             'main_owner_name', 'main_owner_email', 'records_count', 'last_visit_date',
             'has_medical_conditions', 'has_special_needs'
         ]
         extra_kwargs = {
             'special_needs': {'required': False},
             'medical_conditions': {'required': False},
+            'behavioral_traits': {'required': False},
+            'chronic_conditions': {'required': False},
         }
+
+    def get_main_owner(self, obj):
+        """Возвращает данные основного владельца."""
+        mo = obj.main_owner
+        if mo:
+            return {'id': mo.id, 'email': mo.email, 'name': mo.get_full_name() or mo.email}
+        return None
+
+    def get_main_owner_id(self, obj):
+        return obj.main_owner_id
+
+    def get_main_owner_name(self, obj):
+        mo = obj.main_owner
+        return mo.get_full_name() if mo else None
+
+    def get_main_owner_email(self, obj):
+        mo = obj.main_owner
+        return mo.email if mo else None
 
     def get_age(self, obj):
         """Возвращает возраст питомца"""
@@ -245,6 +357,61 @@ class PetSerializer(serializers.ModelSerializer):
     def get_has_special_needs(self, obj):
         """Возвращает True если у питомца есть особые потребности"""
         return bool(obj.special_needs and obj.special_needs != {})
+
+    def create(self, validated_data):
+        """
+        Создаёт питомца и привязывает основного владельца через PetOwner.
+        `owner` (входной PK) извлекается из validated_data.
+        M2M chronic_conditions задаётся после создания.
+        """
+        request = self.context.get('request')
+        # owner — write_only, не маппится на model field
+        main_owner = validated_data.pop('owner', None) or getattr(request, 'user', None)
+        if not main_owner:
+            raise serializers.ValidationError({'owner': _('Owner is required')})
+
+        chronic_conditions = validated_data.pop('chronic_conditions', [])
+
+        with transaction.atomic():
+            pet = Pet.objects.create(**validated_data)
+            PetOwner.objects.create(pet=pet, user=main_owner, role='main')
+            if chronic_conditions is not None:
+                pet.chronic_conditions.set(chronic_conditions)
+        return pet
+
+    def update(self, instance, validated_data):
+        """
+        Обновляет питомца.
+        Смена основного владельца через owner:
+        - старый main → coowner
+        - новый → main
+        """
+        new_main_owner = validated_data.pop('owner', None)
+        chronic_conditions = validated_data.pop('chronic_conditions', None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        if chronic_conditions is not None:
+            instance.chronic_conditions.set(chronic_conditions)
+
+        if new_main_owner is not None and new_main_owner != instance.main_owner:
+            with transaction.atomic():
+                # Понижаем текущего main → coowner
+                PetOwner.objects.filter(
+                    pet=instance, role='main'
+                ).update(role='coowner')
+                # Повышаем нового или создаём
+                po, created = PetOwner.objects.get_or_create(
+                    pet=instance, user=new_main_owner,
+                    defaults={'role': 'main'},
+                )
+                if not created:
+                    po.role = 'main'
+                    PetOwner.objects.filter(pk=po.pk).update(role='main')
+
+        return instance
 
     def validate_description(self, value):
         """Пустое значение и null приводим к пустой строке."""
@@ -422,7 +589,7 @@ class DocumentTypeSerializer(serializers.ModelSerializer):
 
     def validate_code(self, value):
         """Проверяет уникальность кода"""
-        if DocumentType.objects.filter(code=value).exists():
+        if DocumentType._default_manager.filter(code=value).exists():
             raise serializers.ValidationError(_('Document type code must be unique'))
         return value
 

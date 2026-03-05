@@ -281,6 +281,231 @@ class SizeRule(models.Model):
                 )
 
 
+class ChronicCondition(models.Model):
+    """
+    Справочник хронических заболеваний питомцев.
+    Влияет на протоколы провайдеров (фиксация, сушка, лакомства и т.д.).
+    Категория задаётся choices без отдельной модели типов.
+    """
+    CATEGORY_ORTHOPAEDIC = 'orthopaedic'
+    CATEGORY_CARDIO_RESPIRATORY = 'cardio_respiratory'
+    CATEGORY_NEUROLOGICAL = 'neurological'
+    CATEGORY_DERMATOLOGICAL_IMMUNE = 'dermatological_immune'
+    CATEGORY_ENDOCRINE_SYSTEMIC = 'endocrine_systemic'
+
+    CATEGORY_CHOICES = [
+        (CATEGORY_ORTHOPAEDIC, _('Orthopaedic')),
+        (CATEGORY_CARDIO_RESPIRATORY, _('Cardiological and respiratory')),
+        (CATEGORY_NEUROLOGICAL, _('Neurological')),
+        (CATEGORY_DERMATOLOGICAL_IMMUNE, _('Dermatological and immune')),
+        (CATEGORY_ENDOCRINE_SYSTEMIC, _('Endocrine and systemic')),
+    ]
+
+    code = models.CharField(
+        _('Code'),
+        max_length=50,
+        unique=True,
+        help_text=_('Unique code for API and i18n (e.g. osteoarthritis, asthma)')
+    )
+    name = models.CharField(
+        _('Name'),
+        max_length=200,
+        help_text=_('Default display name')
+    )
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Name in English')
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Name in Russian')
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Name in German')
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrin)'),
+        max_length=200,
+        blank=True,
+        help_text=_('Name in Montenegrin')
+    )
+    category = models.CharField(
+        _('Category'),
+        max_length=30,
+        choices=CATEGORY_CHOICES,
+        help_text=_('Type of chronic condition')
+    )
+    order = models.PositiveSmallIntegerField(
+        _('Order'),
+        default=0,
+        help_text=_('Display order within category')
+    )
+
+    class Meta:
+        verbose_name = _('Chronic Condition')
+        verbose_name_plural = _('Chronic Conditions')
+        ordering = ['category', 'order', 'code']
+
+    def get_localized_name(self, language_code=None):
+        """Возвращает локализованное название по коду языка (en, ru, de, me)."""
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        if language_code:
+            language_code = language_code.split('-')[0].lower()
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        if language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        if language_code == 'de' and self.name_de:
+            return self.name_de
+        if language_code == 'me' and self.name_me:
+            return self.name_me
+        return self.name
+
+    def __str__(self):
+        return f"{self.get_category_display()}: {self.name}"
+
+
+class PhysicalFeature(models.Model):
+    """
+    Справочник физических особенностей питомцев (отсутствие конечностей, слепота и т.д.).
+    Используется в medical_conditions.physical_features как список кодов.
+    """
+    code = models.CharField(
+        _('Code'),
+        max_length=50,
+        unique=True,
+        help_text=_('Unique code (e.g. featureAmputee, featureBlindness)')
+    )
+    name = models.CharField(
+        _('Name'),
+        max_length=100,
+        help_text=_('Default display name')
+    )
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=100,
+        blank=True,
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=100,
+        blank=True,
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=100,
+        blank=True,
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrin)'),
+        max_length=100,
+        blank=True,
+    )
+    order = models.PositiveSmallIntegerField(
+        _('Order'),
+        default=0,
+    )
+
+    class Meta:
+        verbose_name = _('Physical Feature')
+        verbose_name_plural = _('Physical Features')
+        ordering = ['order', 'code']
+
+    def get_localized_name(self, language_code=None):
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        if language_code:
+            language_code = language_code.split('-')[0].lower()
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        if language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        if language_code == 'de' and self.name_de:
+            return self.name_de
+        if language_code == 'me' and self.name_me:
+            return self.name_me
+        return self.name
+
+    def __str__(self):
+        return self.name
+
+
+class BehavioralTrait(models.Model):
+    """
+    Справочник поведенческих особенностей питомцев.
+    Используется в Pet.behavioral_traits как список кодов (JSONField).
+    """
+    code = models.CharField(
+        _('Code'),
+        max_length=50,
+        unique=True,
+        help_text=_('Unique code (e.g. traitFlightRisk, traitWaterFear)')
+    )
+    name = models.CharField(
+        _('Name'),
+        max_length=100,
+        help_text=_('Default display name')
+    )
+    name_en = models.CharField(
+        _('Name (English)'),
+        max_length=100,
+        blank=True,
+    )
+    name_ru = models.CharField(
+        _('Name (Russian)'),
+        max_length=100,
+        blank=True,
+    )
+    name_de = models.CharField(
+        _('Name (German)'),
+        max_length=100,
+        blank=True,
+    )
+    name_me = models.CharField(
+        _('Name (Montenegrin)'),
+        max_length=100,
+        blank=True,
+    )
+    order = models.PositiveSmallIntegerField(
+        _('Order'),
+        default=0,
+    )
+
+    class Meta:
+        verbose_name = _('Behavioral Trait')
+        verbose_name_plural = _('Behavioral Traits')
+        ordering = ['order', 'code']
+
+    def get_localized_name(self, language_code=None):
+        if language_code is None:
+            from django.utils import translation
+            language_code = translation.get_language()
+        if language_code:
+            language_code = language_code.split('-')[0].lower()
+        if language_code == 'en' and self.name_en:
+            return self.name_en
+        if language_code == 'ru' and self.name_ru:
+            return self.name_ru
+        if language_code == 'de' and self.name_de:
+            return self.name_de
+        if language_code == 'me' and self.name_me:
+            return self.name_me
+        return self.name
+
+    def __str__(self):
+        return self.name
+
+
 class Pet(models.Model):
     """
     Модель питомца.
@@ -291,21 +516,53 @@ class Pet(models.Model):
     - Медицинские данные
     - Особенности ухода
     """
-    main_owner = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='main_pets',
-        verbose_name=_('Main Owner'),
-        help_text=_('Main owner of the pet')
-    )
+    GENDER_CHOICES = [
+        ('M', _('Male')),
+        ('F', _('Female')),
+        ('U', _('Unknown')),
+    ]
+
+    NEUTERED_CHOICES = [
+        ('Y', _('Yes')),
+        ('N', _('No')),
+        ('U', _('Unknown')),
+    ]
+
     owners = models.ManyToManyField(
         User,
+        through='PetOwner',
         related_name='pets',
         verbose_name=_('Owners'),
         help_text=_('All owners of the pet')
     )
+
+    @property
+    def main_owner(self):
+        """Возвращает основного владельца питомца.
+
+        Оптимизация: если petowner_set уже подгружен через
+        prefetch_related, фильтруем в памяти; иначе — один SQL-запрос.
+        """
+        # Пробуем использовать prefetched данные
+        if 'petowner_set' in getattr(self, '_prefetched_objects_cache', {}):
+            for po in self.petowner_set.all():
+                if po.role == 'main':
+                    return po.user
+            return None
+        # Fallback: запрос к БД
+        po = self.petowner_set.filter(role='main').select_related('user').first()
+        return po.user if po else None
+
+    @property
+    def main_owner_id(self):
+        """ID основного владельца (для обратной совместимости)."""
+        if 'petowner_set' in getattr(self, '_prefetched_objects_cache', {}):
+            for po in self.petowner_set.all():
+                if po.role == 'main':
+                    return po.user_id
+            return None
+        po = self.petowner_set.filter(role='main').values_list('user_id', flat=True).first()
+        return po
     name = models.CharField(
         _('Name'),
         max_length=100,
@@ -329,9 +586,9 @@ class Pet(models.Model):
     )
     birth_date = models.DateField(
         _('Birth Date'),
-        null=False,
-        blank=False,
-        help_text=_('Pet birth date (mandatory for weight-driven pricing)')
+        null=True,
+        blank=True,
+        help_text=_('Pet birth date. Null = unknown (e.g. adopted without papers).')
     )
     weight = models.DecimalField(
         _('Weight'),
@@ -341,10 +598,49 @@ class Pet(models.Model):
         blank=False,
         help_text=_('Pet weight in kg (mandatory for size-based pricing)')
     )
+    gender = models.CharField(
+        _('Gender'),
+        max_length=1,
+        choices=GENDER_CHOICES,
+        default='U',
+        help_text=_('Gender of the pet (Male, Female, Unknown)')
+    )
+    is_neutered = models.CharField(
+        _('Is Neutered'),
+        max_length=1,
+        choices=NEUTERED_CHOICES,
+        default='U',
+        help_text=_('Neutering status (Yes, No, Unknown)')
+    )
+    rabies_vaccination_expiry = models.DateField(
+        _('Rabies vaccination expiry'),
+        null=True,
+        blank=True,
+        help_text=_('Date when rabies vaccination expires (next revaccination). Null = unknown.')
+    )
+    core_vaccination_expiry = models.DateField(
+        _('Core vaccination expiry'),
+        null=True,
+        blank=True,
+        help_text=_('Date when core/complex vaccination expires. Null = unknown.')
+    )
+    identifier = models.CharField(
+        _('Identifier'),
+        max_length=50,
+        null=True,
+        blank=True,
+        help_text=_('Microchip number (15 digits) or tattoo. Format depends on country.')
+    )
     description = models.TextField(
         _('Description'),
         blank=True,
         help_text=_('Additional information about the pet')
+    )
+    behavioral_traits = models.JSONField(
+        _('Behavioral Traits'),
+        default=list,
+        blank=True,
+        help_text=_('List of behavioral tags (e.g. flight_risk, water_fear)')
     )
     special_needs = models.JSONField(
         _('Special Needs'),
@@ -358,7 +654,14 @@ class Pet(models.Model):
         default=dict,
         blank=True,
         null=True,
-        help_text=_('Medical conditions and history')
+        help_text=_('Medical conditions and history (allergies, etc.). Chronic conditions use chronic_conditions M2M.')
+    )
+    chronic_conditions = models.ManyToManyField(
+        ChronicCondition,
+        related_name='pets',
+        verbose_name=_('Chronic conditions'),
+        blank=True,
+        help_text=_('Standardized chronic conditions from reference list')
     )
     photo = models.ImageField(
         _('Photo'),
@@ -432,17 +735,11 @@ class Pet(models.Model):
         return max(rules, key=lambda r: SIZE_CATEGORY_ORDER.get(r.size_code, -1)).size_code
 
     def clean(self):
-        # Основной владелец не может быть пустым
-        if not self.main_owner:
-            raise ValidationError({'main_owner': _('Main owner must be set.')})
-        
-        # Для ManyToMany полей валидация будет в админке
-        # чтобы избежать проблем с несохраненными объектами
+        # Валидация основного владельца перенесена в PetOwner
+        # (проверка наличия ровно одного 'main' владельца)
+        pass
 
     def save(self, *args, **kwargs):
-        # Валидируем основные поля
-        self.clean()
-        
         # Сохраняем объект
         super().save(*args, **kwargs)
 
@@ -477,6 +774,80 @@ class Pet(models.Model):
                 resized.save(path, format=img.format or 'JPEG', quality=88, optimize=True)
         except Exception as e:
             logger.warning('Pet photo resize failed for pk=%s: %s', self.pk, e)
+
+
+class PetOwner(models.Model):
+    """
+    Явная through-модель для связи Pet ↔ User.
+
+    Роли:
+    - 'main'     — основной владелец (ровно один на питомца)
+    - 'coowner'  — совладелец (может быть несколько)
+
+    Ограничения:
+    - UniqueConstraint на (pet, user) — один пользователь не может
+      быть дважды привязан к одному питомцу.
+    - Бизнес-правило: у каждого питомца ровно один PetOwner с role='main'.
+    """
+    ROLE_CHOICES = [
+        ('main', _('Main Owner')),
+        ('coowner', _('Co-owner')),
+    ]
+
+    pet = models.ForeignKey(
+        Pet,
+        on_delete=models.CASCADE,
+        verbose_name=_('Pet'),
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        verbose_name=_('Owner'),
+    )
+    role = models.CharField(
+        _('Role'),
+        max_length=10,
+        choices=ROLE_CHOICES,
+        default='coowner',
+        help_text=_('Owner role: main or co-owner'),
+    )
+    created_at = models.DateTimeField(
+        _('Created At'),
+        auto_now_add=True,
+    )
+
+    class Meta:
+        verbose_name = _('Pet Owner')
+        verbose_name_plural = _('Pet Owners')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['pet', 'user'],
+                name='unique_pet_owner_rel',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['pet', 'role']),
+        ]
+
+    def __str__(self):
+        return f"{self.user} → {self.pet.name} ({self.get_role_display()})"
+
+    def clean(self):
+        """Проверяет, что не создаётся второй main-владелец."""
+        super().clean()
+        if self.role == 'main':
+            qs = PetOwner.objects.filter(pet=self.pet, role='main')
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                raise ValidationError(
+                    _('This pet already has a main owner. '
+                      'Change the existing main owner\'s role first.')
+                )
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class MedicalRecord(models.Model):
@@ -773,7 +1144,7 @@ class PetRecord(models.Model):
         self.full_clean()
         
         # Если это новая запись и услуга периодическая, устанавливаем дату следующей процедуры
-        if not self.pk and self.service.is_periodic:
+        if not self.pk and self.service.is_periodic and self.service.period_days is not None:
             self.next_date = self.date + timedelta(days=self.service.period_days)
         super().save(*args, **kwargs)
 
@@ -1323,13 +1694,20 @@ class PetOwnerIncapacity(models.Model):
                 return True
                 
             elif settings.should_auto_assign_coowner_as_main():
-                # Назначаем совладельца основным
+                # Назначаем совладельца основным через PetOwner
+                from pets.models import PetOwner
                 coowners = self.pet.owners.exclude(id=self.main_owner.id)
                 if coowners.exists():
                     new_main = self._select_coowner_by_priority(coowners, settings)
                     if new_main:
-                        self.pet.main_owner = new_main
-                        self.pet.save()
+                        # Снимаем роль main у текущего главного
+                        PetOwner.objects.filter(
+                            pet=self.pet, role='main'
+                        ).update(role='coowner')
+                        # Назначаем нового main
+                        PetOwner.objects.filter(
+                            pet=self.pet, user=new_main
+                        ).update(role='main')
                         
                         self.status = 'coowner_assigned'
                         self.auto_action_taken = 'coowner_assigned'

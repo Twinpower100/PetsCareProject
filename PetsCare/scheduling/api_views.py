@@ -10,6 +10,7 @@ from providers.models import Employee, ProviderLocation, EmployeeLocationRole, S
 from booking.reassignment_service import BookingReassignmentService
 from datetime import datetime
 from django.db.models import Q
+from collections import defaultdict
 
 class AbsenceCreateAPIView(APIView):
     """
@@ -184,75 +185,97 @@ class LocationAggregatedScheduleAPIView(APIView):
 
         location = get_object_or_404(ProviderLocation, pk=location_id)
         
-        # Get employees for this location
-        from providers.models import EmployeeProvider, EmployeeLocationRole
-        
+        # Bulk-retrieval to avoid N+1 queries on each employee.
+        from providers.models import EmployeeLocationRole
+
         provider = location.provider
-        
-        # Get employee IDs assigned to this location from EmployeeProvider
-        # (matching the logic in LocationStaffListAPIView)
-        employees = Employee.objects.filter(
+        today = timezone.now().date()
+
+        role_activity = dict(
+            EmployeeLocationRole.objects.filter(provider_location=location).values_list('employee_id', 'is_active')
+        )
+
+        employees_qs = Employee.objects.filter(
             locations=location,
             employeeprovider_set__provider=provider,
-            employeeprovider_set__end_date__isnull=True,
+        ).filter(
+            Q(employeeprovider_set__end_date__isnull=True) |
+            Q(employeeprovider_set__end_date__gte=today)
         ).select_related('user').distinct()
-        
+
+        employees = [e for e in employees_qs if role_activity.get(e.id, True)]
+        if not employees:
+            return Response([])
+
+        employee_ids = [e.id for e in employees]
+        absences_scope = Q(provider_location=location) | Q(provider_location__isnull=True)
+
+        vacations = Vacation.objects.filter(
+            employee_id__in=employee_ids,
+        ).filter(
+            absences_scope,
+            start_date__lte=end_date,
+            end_date__gte=start_date,
+        ).only('id', 'employee_id', 'start_date', 'end_date', 'vacation_type', 'is_approved')
+
+        sick_leaves = SickLeave.objects.filter(
+            employee_id__in=employee_ids,
+        ).filter(
+            absences_scope,
+            start_date__lte=end_date,
+        ).filter(
+            Q(end_date__isnull=True) | Q(end_date__gte=start_date)
+        ).only('id', 'employee_id', 'start_date', 'end_date', 'sick_leave_type', 'is_confirmed')
+
+        schedules = Schedule.objects.filter(
+            employee_id__in=employee_ids,
+            provider_location=location,
+            is_working=True,
+        ).only('employee_id', 'day_of_week', 'start_time', 'end_time', 'break_start', 'break_end')
+
+        vacations_by_emp = defaultdict(list)
+        for v in vacations:
+            vacations_by_emp[v.employee_id].append({
+                'id': v.id,
+                'type': 'vacation',
+                'start_date': v.start_date.isoformat(),
+                'end_date': v.end_date.isoformat(),
+                'vacation_type': v.vacation_type,
+                'is_approved': v.is_approved,
+            })
+
+        sick_by_emp = defaultdict(list)
+        for s in sick_leaves:
+            sick_by_emp[s.employee_id].append({
+                'id': s.id,
+                'type': 'sick_leave',
+                'start_date': s.start_date.isoformat(),
+                'end_date': s.end_date.isoformat() if s.end_date else None,
+                'sick_leave_type': s.sick_leave_type,
+                'is_confirmed': s.is_confirmed,
+            })
+
+        schedules_by_emp = defaultdict(list)
+        for sch in schedules:
+            schedules_by_emp[sch.employee_id].append({
+                'type': 'schedule',
+                'day_of_week': sch.day_of_week,
+                'start_time': sch.start_time.isoformat() if sch.start_time else None,
+                'end_time': sch.end_time.isoformat() if sch.end_time else None,
+                'break_start': sch.break_start.isoformat() if sch.break_start else None,
+                'break_end': sch.break_end.isoformat() if sch.break_end else None,
+            })
+
         result = []
         for employee in employees:
-            emp_data = {
+            items = []
+            items.extend(vacations_by_emp.get(employee.id, []))
+            items.extend(sick_by_emp.get(employee.id, []))
+            items.extend(schedules_by_emp.get(employee.id, []))
+            result.append({
                 'id': employee.id,
                 'full_name': employee.user.get_full_name(),
-                'items': []
-            }
-            
-            # Get absences
-            absences_query = Q(employee=employee) & Q(Q(provider_location=location) | Q(provider_location__isnull=True))
-            
-            vacations = Vacation.objects.filter(
-                absences_query,
-                start_date__lte=end_date,
-                end_date__gte=start_date
-            )
-            for v in vacations:
-                emp_data['items'].append({
-                    'id': v.id,
-                    'type': 'vacation',
-                    'start_date': v.start_date.isoformat(),
-                    'end_date': v.end_date.isoformat(),
-                    'vacation_type': v.vacation_type,
-                    'is_approved': v.is_approved
-                })
-                
-            sick_leaves = SickLeave.objects.filter(
-                absences_query,
-                start_date__lte=end_date
-            ).filter(Q(end_date__isnull=True) | Q(end_date__gte=start_date))
-            for s in sick_leaves:
-                emp_data['items'].append({
-                    'id': s.id,
-                    'type': 'sick_leave',
-                    'start_date': s.start_date.isoformat(),
-                    'end_date': s.end_date.isoformat() if s.end_date else None,
-                    'sick_leave_type': s.sick_leave_type,
-                    'is_confirmed': s.is_confirmed
-                })
-                
-            # Get recurring schedule
-            schedules = Schedule.objects.filter(
-                employee=employee,
-                provider_location=location,
-                is_working=True
-            )
-            for sch in schedules:
-                 emp_data['items'].append({
-                     'type': 'schedule',
-                     'day_of_week': sch.day_of_week,
-                     'start_time': sch.start_time.isoformat() if sch.start_time else None,
-                     'end_time': sch.end_time.isoformat() if sch.end_time else None,
-                     'break_start': sch.break_start.isoformat() if sch.break_start else None,
-                     'break_end': sch.break_end.isoformat() if sch.break_end else None
-                 })
-            
-            result.append(emp_data)
-            
+                'items': items,
+            })
+
         return Response(result)

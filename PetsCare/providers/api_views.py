@@ -40,7 +40,8 @@ from .serializers import (
     EmployeeRegistrationSerializer,
     EmployeeProviderUpdateSerializer,
     EmployeeWorkSlotSerializer,
-    ProviderLocationSerializer, ProviderLocationServiceSerializer,
+    ProviderBriefSerializer, ProviderDetailLiteSerializer,
+    ProviderLocationSerializer, ProviderLocationListSerializer, ProviderLocationServiceSerializer,
     LocationScheduleSerializer, HolidayShiftSerializer,
     LocationServicePricesUpdateSerializer,
     ProviderAdminListSerializer,
@@ -196,6 +197,15 @@ from ratings.models import Rating
 logger = logging.getLogger(__name__)
 
 
+def _is_brief_mode(request):
+    """
+    Облегчённый ответ для админки: исключаем тяжелые вложенные поля.
+    Поддерживаем ?brief=1 и ?compact=1.
+    """
+    v = (request.query_params.get('brief') or request.query_params.get('compact') or '').strip().lower()
+    return v in ('1', 'true', 'yes')
+
+
 class ProviderListCreateAPIView(generics.ListCreateAPIView):
     """
     API для просмотра списка и создания провайдеров услуг.
@@ -217,12 +227,19 @@ class ProviderListCreateAPIView(generics.ListCreateAPIView):
     filterset_fields = ['is_active']
     search_fields = ['name', 'description', 'structured_address__formatted_address']
     ordering_fields = ['name']
+
+    def get_serializer_class(self):
+        if self.request.method == 'GET' and _is_brief_mode(self.request):
+            return ProviderBriefSerializer
+        return ProviderSerializer
     
     def get_queryset(self):
         """Возвращает queryset с проверкой swagger_fake_view. Для provider_admin — только управляемые организации."""
         if getattr(self, 'swagger_fake_view', False):
             return Provider.objects.none()
         queryset = self.queryset
+        if self.request.method == 'GET' and _is_brief_mode(self.request):
+            queryset = queryset.select_related('structured_address')
         if self.request.user.get_managed_providers().exists():
             queryset = queryset.filter(id__in=self.request.user.get_managed_providers())
         return queryset
@@ -245,9 +262,16 @@ class ProviderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
     serializer_class = ProviderSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_serializer_class(self):
+        if self.request.method == 'GET' and _is_brief_mode(self.request):
+            return ProviderDetailLiteSerializer
+        return ProviderSerializer
+
     def get_queryset(self):
         """Для provider_admin — только управляемые организации."""
         queryset = self.queryset
+        if self.request.method == 'GET' and _is_brief_mode(self.request):
+            queryset = queryset.select_related('structured_address')
         if self.request.user.get_managed_providers().exists():
             queryset = queryset.filter(id__in=self.request.user.get_managed_providers())
         return queryset
@@ -2123,10 +2147,17 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
     """
     serializer_class = ProviderLocationSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['provider', 'is_active']
     search_fields = ['name', 'phone_number', 'email']
     ordering_fields = ['name', 'created_at']
+
+    def get_serializer_class(self):
+        # Для списка используем облегчённый сериализатор без тяжёлых массивов услуг/цен.
+        if self.request.method == 'GET':
+            return ProviderLocationListSerializer
+        return ProviderLocationSerializer
     
     def get_queryset(self):
         """
@@ -2134,7 +2165,14 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
         """
         queryset = ProviderLocation.objects.select_related(
             'provider', 'provider__invoice_currency', 'structured_address', 'manager'
-        ).prefetch_related('available_services', 'served_pet_types')
+        )
+        if self.request.method == 'GET':
+            queryset = queryset.prefetch_related(
+                'served_pet_types',
+                'employees', 'schedules', 'location_schedules', 'location_services'
+            )
+        else:
+            queryset = queryset.prefetch_related('served_pet_types')
         
         # Provider admin видит только локации своей организации
         if self.request.user.get_managed_providers().exists():
@@ -2195,7 +2233,11 @@ class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
         """
         queryset = ProviderLocation.objects.select_related(
             'provider', 'provider__invoice_currency', 'structured_address', 'manager'
-        ).prefetch_related('available_services', 'served_pet_types')
+        ).prefetch_related(
+            'available_services', 'served_pet_types',
+            'employees', 'schedules', 'location_schedules', 'location_services',
+            'location_services__service', 'location_services__pet_type'
+        )
         
         # Provider admin видит только локации своей организации
         if self.request.user.get_managed_providers().exists():
@@ -2827,16 +2869,20 @@ class ProviderLocationServiceListCreateAPIView(generics.ListCreateAPIView):
     - Создание новой услуги в локации
     - Фильтрация по локации и статусу активности
     
+    Пагинация отключена, чтобы админка провайдера получала все услуги филиала за один запрос
+    (иначе при PAGE_SIZE=20 часть услуг не отображается и не скрывается из справочника «Добавить»).
+    
     Права доступа:
     - Требуется аутентификация
     - Provider admin может управлять только услугами локаций своей организации
     """
     serializer_class = ProviderLocationServiceSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = None
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ['location', 'service', 'pet_type', 'size_code', 'is_active']
     ordering_fields = ['price', 'duration_minutes', 'created_at']
-    
+
     def get_queryset(self):
         """
         Возвращает queryset записей услуг локаций (локация + услуга + тип + размер) с учётом прав.
@@ -3081,6 +3127,11 @@ class LocationCatalogServicePricesUpdateAPIView(APIView):
         if not ser.is_valid():
             return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
             
+        if not ser.validated_data['prices']:
+            return Response(
+                {'prices': [_('At least one price row (pet type and size) is required.')]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         for item in ser.validated_data['prices']:
             if item['pet_type_id'] not in served_ids:
                 return Response(

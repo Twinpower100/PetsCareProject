@@ -1337,23 +1337,21 @@ class AccountDeactivationView(APIView):
         """
         Обрабатывает питомцев пользователя при деактивации.
         """
+        from pets.models import PetOwner
         # Получаем питомцев, где пользователь основной владелец
-        owned_pets = Pet.objects.filter(main_owner=user)
+        main_owner_rels = PetOwner.objects.filter(user=user, role='main').select_related('pet')
         
-        for pet in owned_pets:
+        for po in main_owner_rels:
+            pet = po.pet
             # Сохраняем совладельцев для уведомлений
             co_owners = list(pet.owners.all())
-            
-            # Питомец остается как есть - это не личная информация владельца
             
             # Деактивируем питомца
             pet.is_active = False
             pet.save()
             
-            # Оставляем всех владельцев для истории, но деактивируем питомца
-            # Совладельцы остаются в owners для возможности восстановления
-            # pet.owners остается как есть - все владельцы сохраняются
-            # pet.main_owner остается как есть - для истории
+            # Оставляем всех владельцев для истории
+            # PetOwner записи сохраняются для возможности восстановления
     
     def _check_co_owner_roles(self, co_owner):
         """
@@ -1572,13 +1570,14 @@ class UserPetsView(APIView):
         """
         Возвращает информацию о питомцах пользователя.
         """
+        from pets.models import PetOwner
         user = request.user
         
         # Проверяем, является ли пользователь основным владельцем
-        owned_pets = Pet.objects.filter(main_owner=user).count()
+        owned_pets = PetOwner.objects.filter(user=user, role='main', pet__is_active=True).count()
         
         # Проверяем, является ли пользователь совладельцем
-        co_owned_pets = Pet.objects.filter(owners=user).count()
+        co_owned_pets = PetOwner.objects.filter(user=user, role='coowner', pet__is_active=True).count()
         
         return Response({
             'has_owned_pets': owned_pets > 0,
@@ -1629,12 +1628,13 @@ class RemoveUserRoleView(APIView):
         """
         Обрабатывает удаление роли pet_owner согласно UserDeactivation.md
         """
-        from pets.models import Pet
+        from pets.models import Pet, PetOwner
         
         # 8.2.1.2.1. Для каждого питомца, у которого пользователь основной владелец
-        owned_pets = Pet.objects.filter(main_owner=user)
+        main_owner_rels = PetOwner.objects.filter(user=user, role='main').select_related('pet')
         
-        for pet in owned_pets:
+        for po in main_owner_rels:
+            pet = po.pet
             # 8.2.1.2.1.1. Для каждого совладельца: рассылка уведомлений
             co_owners = pet.owners.exclude(id=user.id)
             for co_owner in co_owners:
@@ -1649,15 +1649,16 @@ class RemoveUserRoleView(APIView):
                 self._check_co_owner_remaining_pets(co_owner)
         
         # 8.2.2.2.1. Для каждого питомца, у которого пользователь совладелец
-        co_owned_pets = Pet.objects.filter(owners=user).exclude(main_owner=user)
+        coowner_rels = PetOwner.objects.filter(user=user, role='coowner').select_related('pet')
         
-        for pet in co_owned_pets:
+        for po in coowner_rels:
+            pet = po.pet
             # 8.2.2.2.1.1. Сообщение основному владельцу
             if pet.main_owner:
                 self._notify_main_owner_co_owner_removal(pet.main_owner, pet, user)
             
             # 8.2.2.2.1.2. Удалить пользователя из состава совладельцев
-            pet.owners.remove(user)
+            po.delete()
     
     def _notify_co_owner_removal(self, co_owner, pet, removed_user):
         """

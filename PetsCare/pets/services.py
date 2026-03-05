@@ -48,27 +48,33 @@ class PetOwnerIncapacityService:
         """
         logger.info("Starting inactive owners check")
         
+        from pets.models import PetOwner as PetOwnerModel
+        
         threshold_days = self.settings.get_inactive_owner_threshold_days()
         inactive_date = timezone.now() - timedelta(days=threshold_days)
         
-        # Находим питомцев с неактивными основными владельцами
+        # Находим питомцев с неактивными основными владельцами через PetOwner
         inactive_pets = Pet.objects.filter(
-            main_owner__last_login__lt=inactive_date,
-            main_owner__is_active=True
+            petowner__role='main',
+            petowner__user__last_login__lt=inactive_date,
+            petowner__user__is_active=True,
         ).exclude(
             incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
-        )
+        ).prefetch_related('petowner_set__user')
         
         created_records = []
         
         for pet in inactive_pets:
             try:
+                main_owner = pet.main_owner
+                if not main_owner:
+                    continue
                 with transaction.atomic():
                     # Создаем запись о недееспособности
                     incapacity_record = PetOwnerIncapacity.objects.create(
                         pet=pet,
-                        main_owner=pet.main_owner,
-                        reported_by=pet.main_owner,  # Система обнаружила автоматически
+                        main_owner=main_owner,
+                        reported_by=main_owner,  # Система обнаружила автоматически
                         flow_type='automatic_detection',
                         status='pending_confirmation'
                     )
@@ -77,7 +83,7 @@ class PetOwnerIncapacityService:
                     self._send_confirmation_notifications(incapacity_record)
                     
                     created_records.append(incapacity_record)
-                    logger.info(f"Created incapacity record for pet {pet.id} (owner: {pet.main_owner.id})")
+                    logger.info(f"Created incapacity record for pet {pet.id} (owner: {main_owner.id})")
                     
             except Exception as e:
                 logger.error(f"Error creating incapacity record for pet {pet.id}: {str(e)}")

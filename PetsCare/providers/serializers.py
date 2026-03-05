@@ -24,6 +24,51 @@ from django.utils import timezone
 from geolocation.utils import calculate_distance
 
 
+class ProviderBriefSerializer(serializers.ModelSerializer):
+    """Облегчённый сериализатор провайдера для списков в админке."""
+    full_address = serializers.SerializerMethodField()
+
+    def get_full_address(self, obj):
+        if obj.structured_address:
+            return obj.structured_address.formatted_address or str(obj.structured_address)
+        return None
+
+    class Meta:
+        model = Provider
+        fields = [
+            'id',
+            'name',
+            'phone_number',
+            'email',
+            'full_address',
+            'is_active',
+        ]
+        read_only_fields = fields
+
+
+class ProviderDetailLiteSerializer(serializers.ModelSerializer):
+    """Облегчённая детальная карточка организации для админки."""
+    full_address = serializers.SerializerMethodField()
+
+    def get_full_address(self, obj):
+        if obj.structured_address:
+            return obj.structured_address.formatted_address or str(obj.structured_address)
+        return None
+
+    class Meta:
+        model = Provider
+        fields = [
+            'id',
+            'name',
+            'structured_address',
+            'phone_number',
+            'email',
+            'activation_status',
+            'is_active',
+            'full_address',
+        ]
+
+
 class ProviderSerializer(serializers.ModelSerializer):
     """
     Serializer для модели Provider.
@@ -633,6 +678,103 @@ class EmployeeWorkSlotSerializer(serializers.ModelSerializer):
         fields = '__all__'
 
 
+class ProviderLocationListSerializer(serializers.ModelSerializer):
+    """
+    Облегчённый сериализатор списка локаций для страниц «Филиалы»/«Организация».
+    Не включает тяжёлые массивы прайс-матрицы (available_services).
+    """
+    provider_name = serializers.CharField(source='provider.name', read_only=True)
+    full_address = serializers.SerializerMethodField()
+    schedule_filled = serializers.SerializerMethodField()
+    employees_count = serializers.SerializerMethodField()
+    staff_schedule_filled = serializers.SerializerMethodField()
+    manager_filled = serializers.SerializerMethodField()
+    has_services = serializers.SerializerMethodField()
+    has_prices = serializers.SerializerMethodField()
+    served_pet_types = serializers.PrimaryKeyRelatedField(
+        many=True,
+        read_only=True,
+    )
+
+    def get_full_address(self, obj):
+        return obj.get_full_address()
+
+    def get_schedule_filled(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return False
+        if hasattr(obj, '_prefetched_objects_cache') and 'location_schedules' in obj._prefetched_objects_cache:
+            for ls in obj.location_schedules.all():
+                if not ls.is_closed and ls.open_time is not None and ls.close_time is not None:
+                    return True
+            return False
+        return LocationSchedule.objects.filter(
+            provider_location=obj,
+            is_closed=False
+        ).exclude(open_time__isnull=True).exclude(close_time__isnull=True).exists()
+
+    def get_employees_count(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return 0
+        if hasattr(obj, '_prefetched_objects_cache') and 'employees' in obj._prefetched_objects_cache:
+            return sum(1 for emp in obj.employees.all() if emp.is_active)
+        return obj.employees.filter(is_active=True).count()
+
+    def get_staff_schedule_filled(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return True
+        if hasattr(obj, '_prefetched_objects_cache') and 'employees' in obj._prefetched_objects_cache and 'schedules' in obj._prefetched_objects_cache:
+            active_employees = [emp for emp in obj.employees.all() if emp.is_active]
+            if not active_employees:
+                return True
+            schedules_emp_ids = {s.employee_id for s in obj.schedules.all()}
+            for emp in active_employees:
+                if emp.id not in schedules_emp_ids:
+                    return False
+            return True
+        active = obj.employees.filter(is_active=True)
+        if not active.exists():
+            return True
+        for emp in active:
+            if not Schedule.objects.filter(employee=emp, provider_location=obj).exists():
+                return False
+        return True
+
+    def get_manager_filled(self, obj):
+        return obj.manager_id is not None
+
+    def get_has_services(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return False
+        if hasattr(obj, '_prefetched_objects_cache') and 'location_services' in obj._prefetched_objects_cache:
+            return any(ls.is_active for ls in obj.location_services.all())
+        return ProviderLocationService.objects.filter(location=obj, is_active=True).exists()
+
+    def get_has_prices(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return False
+        if hasattr(obj, '_prefetched_objects_cache') and 'location_services' in obj._prefetched_objects_cache:
+            return any(ls.is_active and ls.price is not None for ls in obj.location_services.all())
+        return ProviderLocationService.objects.filter(location=obj, is_active=True, price__isnull=False).exists()
+
+    class Meta:
+        model = ProviderLocation
+        fields = [
+            'id', 'provider', 'provider_name', 'name',
+            'full_address',
+            'phone_number', 'email',
+            'served_pet_types',
+            'schedule_filled',
+            'employees_count',
+            'staff_schedule_filled',
+            'manager_filled',
+            'has_services',
+            'has_prices',
+            'is_active',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = fields
+
+
 class ProviderLocationSerializer(serializers.ModelSerializer):
     """
     Сериализатор для локации провайдера (филиала).
@@ -725,16 +867,28 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
         if getattr(self, 'swagger_fake_view', False):
             return []
         from .serializers import ProviderLocationServiceSerializer
-        services = ProviderLocationService.objects.filter(
-            location=obj,
-            is_active=True
-        )
+        
+        if hasattr(obj, '_prefetched_objects_cache') and 'location_services' in obj._prefetched_objects_cache:
+            services = [s for s in obj.location_services.all() if s.is_active]
+        else:
+            services = ProviderLocationService.objects.filter(
+                location=obj,
+                is_active=True
+            )
         return ProviderLocationServiceSerializer(services, many=True).data
 
     def get_schedule_filled(self, obj):
         """True если у локации есть хотя бы один рабочий день (LocationSchedule с is_closed=False и заданными open_time, close_time)."""
         if getattr(self, 'swagger_fake_view', False):
             return False
+        
+        # Если данные уже предзагружены, используем их в памяти (O(1))
+        if hasattr(obj, '_prefetched_objects_cache') and 'location_schedules' in obj._prefetched_objects_cache:
+            for ls in obj.location_schedules.all():
+                if not ls.is_closed and ls.open_time is not None and ls.close_time is not None:
+                    return True
+            return False
+            
         return LocationSchedule.objects.filter(
             provider_location=obj,
             is_closed=False
@@ -744,12 +898,27 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
         """Количество сотрудников, привязанных к этой локации (активные)."""
         if getattr(self, 'swagger_fake_view', False):
             return 0
+            
+        if hasattr(obj, '_prefetched_objects_cache') and 'employees' in obj._prefetched_objects_cache:
+            return sum(1 for emp in obj.employees.all() if emp.is_active)
+            
         return obj.employees.filter(is_active=True).count()
 
     def get_staff_schedule_filled(self, obj):
         """True если у локации нет активных сотрудников или у всех активных сотрудников есть хотя бы одна запись расписания (Schedule) для этой локации."""
         if getattr(self, 'swagger_fake_view', False):
             return True
+            
+        if hasattr(obj, '_prefetched_objects_cache') and 'employees' in obj._prefetched_objects_cache and 'schedules' in obj._prefetched_objects_cache:
+            active_employees = [emp for emp in obj.employees.all() if emp.is_active]
+            if not active_employees:
+                return True
+            schedules_emp_ids = {s.employee_id for s in obj.schedules.all()}
+            for emp in active_employees:
+                if emp.id not in schedules_emp_ids:
+                    return False
+            return True
+
         active = obj.employees.filter(is_active=True)
         if not active.exists():
             return True
@@ -782,6 +951,15 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
         """Email, на который отправлено приглашение, если инвайт ещё не истёк (для отображения «Приглашение отправлено на …»)."""
         if getattr(self, 'swagger_fake_view', False):
             return None
+            
+        if hasattr(obj, '_prefetched_objects_cache') and 'manager_invites' in obj._prefetched_objects_cache:
+            now = timezone.now()
+            actives = [inv for inv in obj.manager_invites.all() if inv.expires_at > now]
+            if actives:
+                actives.sort(key=lambda x: x.created_at, reverse=True)
+                return actives[0].email
+            return None
+            
         invite = getattr(obj, 'manager_invites', None)
         if not invite:
             return None

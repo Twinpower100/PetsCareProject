@@ -20,6 +20,7 @@ URL routes for the users module.
 
 from django.urls import path
 from . import api_views
+from . import security_views
 from rest_framework_simplejwt.views import TokenRefreshView, TokenBlacklistView
 
 # Имя приложения для использования в URL
@@ -89,4 +90,12 @@ urlpatterns = [
     path('provider-registration/check-registration-number/', api_views.CheckRegistrationNumberAPIView.as_view(), name='check-registration-number'),
     path('provider-registration/check-vat-number/', api_views.CheckVatNumberAPIView.as_view(), name='check-vat-number'),
     path('provider-registration/wizard/', api_views.ProviderRegistrationWizardAPIView.as_view(), name='provider-registration-wizard'),
+
+    # ── Security tab endpoints ──
+    path('security/change-password/', security_views.ChangePasswordAPIView.as_view(), name='security-change-password'),
+    path('security/change-email/', security_views.ChangeEmailAPIView.as_view(), name='security-change-email'),
+    path('security/confirm-email/', security_views.ConfirmEmailChangeAPIView.as_view(), name='security-confirm-email'),
+    path('security/sessions/', security_views.UserSessionListAPIView.as_view(), name='security-sessions'),
+    path('security/sessions/<int:session_id>/', security_views.UserSessionDeleteAPIView.as_view(), name='security-session-delete'),
+    path('security/sessions/terminate-all/', security_views.TerminateAllSessionsAPIView.as_view(), name='security-terminate-all'),
 ] 

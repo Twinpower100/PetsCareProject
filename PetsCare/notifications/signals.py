@@ -266,38 +266,41 @@ def handle_review_notifications(sender, instance, created, **kwargs):
         logger.error(f"Failed to handle review notification for review {instance.id}: {e}")
 
 
-# Сигналы для напоминаний о питомцах
-@receiver(post_save, sender='pets.Pet')
+# Сигналы для напоминаний о питомцах (через PetOwner)
+@receiver(post_save, sender='pets.PetOwner')
 def handle_pet_reminder_notifications(sender, instance, created, **kwargs):
     """
     Обрабатывает уведомления о напоминаниях для питомцев.
+    Срабатывает при создании PetOwner с role='main'.
     
     Args:
         sender: Модель отправителя сигнала
-        instance: Экземпляр питомца
-        created: Создан ли питомец
+        instance: Экземпляр PetOwner
+        created: Создан ли PetOwner
         **kwargs: Дополнительные аргументы
     """
     try:
-        if created:
+        if created and instance.role == 'main':
             notification_service = NotificationService()
+            pet = instance.pet
+            user = instance.user
             
             # Отправляем приветственное уведомление о питомце
             notification = notification_service.send_notification(
-                user=instance.main_owner,
+                user=user,
                 notification_type='reminder',
                 title=_('Pet Added Successfully'),
-                message=_('Your pet ') + instance.name + _(' has been added to your profile'),
+                message=_('Your pet ') + pet.name + _(' has been added to your profile'),
                 channels=['email', 'push', 'in_app'],
                 priority='low',
-                pet=instance,
-                data={'pet_id': instance.id, 'pet_name': instance.name}
+                pet=pet,
+                data={'pet_id': pet.id, 'pet_name': pet.name}
             )
             
-            logger.info(f"Pet reminder notification sent for pet {instance.id}")
+            logger.info(f"Pet reminder notification sent for pet {pet.id}")
             
     except Exception as e:
-        logger.error(f"Failed to handle pet reminder notification for pet {instance.id}: {e}")
+        logger.error(f"Failed to handle pet reminder notification for PetOwner {instance.id}: {e}")
 
 
 # Сигналы для передержек питомцев

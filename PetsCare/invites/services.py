@@ -74,9 +74,10 @@ def maybe_remove_role(user, role_name):
             user.remove_role('branch_manager')
 
     elif role_name == 'pet_owner':
-        has_pets = Pet.objects.filter(
-            owners=user,
-            is_active=True,
+        from pets.models import PetOwner
+        has_pets = PetOwner.objects.filter(
+            user=user,
+            pet__is_active=True,
         ).exists()
         if not has_pets:
             user.remove_role('pet_owner')
@@ -274,19 +275,32 @@ def _accept_specialist(invite, user):
 
 def _accept_pet_co_owner(invite, user):
     """Принимает инвайт совладельца питомца."""
-    invite.pet.owners.add(user)
+    from pets.models import PetOwner
+    PetOwner.objects.get_or_create(
+        pet=invite.pet, user=user,
+        defaults={'role': 'coowner'},
+    )
     user.add_role('pet_owner')
 
 
 def _accept_pet_transfer(invite, user):
     """Принимает инвайт передачи прав основного владельца."""
+    from pets.models import PetOwner
     pet = invite.pet
     old_main_owner = pet.main_owner
 
-    pet.main_owner = user
-    if user not in pet.owners.all():
-        pet.owners.add(user)
-    pet.save()
+    # Понижаем текущего main → coowner
+    PetOwner.objects.filter(
+        pet=pet, role='main'
+    ).update(role='coowner')
+
+    # Назначаем нового main (или создаём)
+    po, created = PetOwner.objects.get_or_create(
+        pet=pet, user=user,
+        defaults={'role': 'main'},
+    )
+    if not created:
+        PetOwner.objects.filter(pk=po.pk).update(role='main')
 
     user.add_role('pet_owner')
     if old_main_owner and old_main_owner.pk != user.pk:

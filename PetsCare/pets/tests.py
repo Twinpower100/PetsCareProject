@@ -13,10 +13,30 @@ from django.urls import reverse
 from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
 from django.utils import timezone
-from .models import Pet, PetType, Breed
+from .models import Pet, PetType, Breed, PetOwner
 from unittest.mock import patch, MagicMock
 
 User = get_user_model()
+
+
+def _create_pet_with_owner(owner, name, pet_type, breed=None, weight=10.0):
+    """
+    Вспомогательная функция: создаёт Pet + PetOwner(role='main').
+    Возвращает pet.
+    """
+    pet = Pet.objects.create(
+        name=name,
+        pet_type=pet_type,
+        breed=breed,
+        weight=weight,
+    )
+    PetOwner.objects.create(pet=pet, user=owner, role='main')
+    return pet
+
+
+def _add_coowner(pet, user):
+    """Добавляет совладельца через PetOwner."""
+    PetOwner.objects.create(pet=pet, user=user, role='coowner')
 
 
 class CoOwnerRemovalTestCase(APITestCase):
@@ -31,21 +51,24 @@ class CoOwnerRemovalTestCase(APITestCase):
             email='main@example.com',
             password='testpass123',
             first_name='Main',
-            last_name='Owner'
+            last_name='Owner',
+            phone_number='+12345678901'
         )
         
         self.co_owner = User.objects.create_user(
             email='co@example.com',
             password='testpass123',
             first_name='Co',
-            last_name='Owner'
+            last_name='Owner',
+            phone_number='+12345678902'
         )
         
         self.other_user = User.objects.create_user(
             email='other@example.com',
             password='testpass123',
             first_name='Other',
-            last_name='User'
+            last_name='User',
+            phone_number='+12345678903'
         )
         
         # Создаем тип питомца и породу
@@ -60,16 +83,16 @@ class CoOwnerRemovalTestCase(APITestCase):
             code='golden_retriever'
         )
         
-        # Создаем питомца
-        self.pet = Pet.objects.create(
-            main_owner=self.main_owner,
+        # Создаем питомца с основным владельцем через PetOwner
+        self.pet = _create_pet_with_owner(
+            owner=self.main_owner,
             name='Buddy',
             pet_type=self.pet_type,
-            breed=self.breed
+            breed=self.breed,
         )
         
         # Добавляем совладельца
-        self.pet.owners.add(self.co_owner)
+        _add_coowner(self.pet, self.co_owner)
         
         # Настраиваем клиент
         self.client = APIClient()
@@ -91,6 +114,9 @@ class CoOwnerRemovalTestCase(APITestCase):
         
         # Проверяем, что совладелец удален из списка владельцев
         self.pet.refresh_from_db()
+        self.assertFalse(
+            PetOwner.objects.filter(pet=self.pet, user=self.co_owner).exists()
+        )
         self.assertNotIn(self.co_owner, self.pet.owners.all())
     
     def test_main_owner_cannot_remove_themselves(self):
@@ -116,10 +142,8 @@ class CoOwnerRemovalTestCase(APITestCase):
         url = reverse('pets:pet-remove-myself-as-coowner', kwargs={'pk': self.pet.id})
         response = self.client.post(url)
         
-        # Проверяем ответ
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
-        self.assertIn('error', response.data)
-        self.assertIn('do not have access', response.data['error'].lower())
+        # Проверяем ответ - вернется 404, так как get_queryset скрывает чужих питомцев
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
     
     @patch('pets.api_views.PetViewSet._has_active_pet_sittings')
     def test_cannot_remove_with_active_pet_sittings(self, mock_has_active):
@@ -137,7 +161,7 @@ class CoOwnerRemovalTestCase(APITestCase):
         # Проверяем ответ
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('error', response.data)
-        self.assertIn('active pet sittings', response.data['error'].lower())
+        self.assertIn('active pet sitting', response.data['error'].lower())
     
     @patch('pets.api_views.PetViewSet._notify_main_owner')
     def test_main_owner_notification(self, mock_notify):
@@ -171,7 +195,7 @@ class CoOwnerRemovalTestCase(APITestCase):
         self.client.force_authenticate(user=self.co_owner)
         
         # Сохраняем исходное состояние
-        original_owners_count = self.pet.owners.count()
+        original_owners_count = PetOwner.objects.filter(pet=self.pet).count()
         
         # Мокаем ошибку в транзакции
         with patch('pets.api_views.PetViewSet._log_coowner_removal', side_effect=Exception('Test error')):
@@ -181,8 +205,10 @@ class CoOwnerRemovalTestCase(APITestCase):
         # Проверяем что транзакция откатилась
         self.assertEqual(response.status_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
         self.pet.refresh_from_db()
-        self.assertEqual(self.pet.owners.count(), original_owners_count)
-        self.assertIn(self.co_owner, self.pet.owners.all())
+        self.assertEqual(PetOwner.objects.filter(pet=self.pet).count(), original_owners_count)
+        self.assertTrue(
+            PetOwner.objects.filter(pet=self.pet, user=self.co_owner).exists()
+        )
     
     def test_unauthorized_access(self):
         """Тест доступа без аутентификации."""
@@ -216,22 +242,24 @@ class CoOwnerRemovalIntegrationTestCase(TestCase):
         # Создаем пользователей
         self.main_owner = User.objects.create_user(
             email='main@example.com',
-            password='testpass123'
+            password='testpass123',
+            phone_number='+10000000001'
         )
         
         self.co_owner = User.objects.create_user(
             email='co@example.com',
-            password='testpass123'
+            password='testpass123',
+            phone_number='+10000000002'
         )
         
-        # Создаем питомца
+        # Создаем питомца с основным владельцем через PetOwner
         self.pet_type = PetType.objects.create(name='Dog', code='dog')
-        self.pet = Pet.objects.create(
-            main_owner=self.main_owner,
+        self.pet = _create_pet_with_owner(
+            owner=self.main_owner,
             name='Buddy',
-            pet_type=self.pet_type
+            pet_type=self.pet_type,
         )
-        self.pet.owners.add(self.co_owner)
+        _add_coowner(self.pet, self.co_owner)
     
     def test_coowner_removal_affects_pet_access(self):
         """Тест что снятие совладельца влияет на доступы к питомцу."""
@@ -249,8 +277,12 @@ class CoOwnerRemovalIntegrationTestCase(TestCase):
         # Проверяем что доступ существует
         self.assertTrue(PetAccess.objects.filter(id=access.id).exists())
         
-        # Симулируем снятие совладельца (удаляем из owners)
-        self.pet.owners.remove(self.co_owner)
+        # Снимаем совладельца через API (интеграционный тест)
+        from rest_framework.test import APIClient
+        client = APIClient()
+        client.force_authenticate(user=self.co_owner)
+        url = reverse('pets:pet-remove-myself-as-coowner', kwargs={'pk': self.pet.id})
+        client.post(url)
         
         # Проверяем что временный доступ также удален
         self.assertFalse(PetAccess.objects.filter(id=access.id).exists())
@@ -260,9 +292,12 @@ class CoOwnerRemovalIntegrationTestCase(TestCase):
         # Сохраняем основного владельца
         original_main_owner = self.pet.main_owner
         
-        # Симулируем снятие совладельца
-        self.pet.owners.remove(self.co_owner)
-        self.pet.refresh_from_db()
+        # Снимаем совладельца через PetOwner
+        PetOwner.objects.filter(pet=self.pet, user=self.co_owner).delete()
+        
+        # Очищаем кэш prefetch
+        if hasattr(self.pet, '_prefetched_objects_cache'):
+            del self.pet._prefetched_objects_cache
         
         # Проверяем что основной владелец остался
         self.assertEqual(self.pet.main_owner, original_main_owner)

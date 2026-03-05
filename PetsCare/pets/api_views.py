@@ -1,6 +1,7 @@
 from rest_framework import viewsets, permissions, status, generics
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.core.exceptions import ObjectDoesNotExist
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext_lazy as _
 from rest_framework.views import APIView
@@ -9,7 +10,7 @@ from datetime import timedelta
 from users.models import User
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction
-from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, DocumentType
+from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
 from .serializers import (
     PetSerializer,
     MedicalRecordSerializer,
@@ -17,11 +18,17 @@ from .serializers import (
     PetAccessSerializer,
     PetRecordFileSerializer,
     DocumentTypeSerializer,
+    ChronicConditionSerializer,
+    PhysicalFeatureSerializer,
+    BehavioralTraitSerializer,
     PetOwnerIncapacitySerializer,
     PetIncapacityNotificationSerializer,
     PetTypeSerializer,
-    BreedSerializer
+    BreedSerializer,
+    PetOwnerSerializer
 )
+from invites.models import Invite
+from invites.serializers import InviteSerializer
 from providers.models import EmployeeProvider, Employee, Provider, ProviderLocation
 from catalog.models import Service
 from catalog.serializers import ServiceSerializer as CatalogServiceSerializer
@@ -54,15 +61,24 @@ class PetViewSet(viewsets.ModelViewSet):
     - Search for pets
     - Filtering and sorting
     """
-    queryset = Pet.objects.all()
+    queryset = Pet._default_manager.all()
     serializer_class = PetSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """Возвращает список питомцев текущего пользователя"""
+        """Возвращает список питомцев текущего пользователя с prefetch для избежания N+1"""
         if getattr(self, 'swagger_fake_view', False):
-            return Pet.objects.none()
-        return self.queryset.filter(owners=self.request.user)
+            return Pet._default_manager.none()
+        return (
+            self.queryset
+            .filter(owners=self.request.user, is_active=True)
+            .prefetch_related('petowner_set', 'petowner_set__user')
+        )
+
+    def perform_destroy(self, instance):
+        """Мягкое удаление питомца"""
+        instance.is_active = False
+        instance.save()
 
     @action(detail=False, methods=['get'])
     def my_pets(self, request):
@@ -83,16 +99,18 @@ class PetViewSet(viewsets.ModelViewSet):
         pet = self.get_object()
         user = request.user
         
-        # Проверяем, что пользователь является совладельцем
-        if pet.main_owner == user:
-            return Response({
-                'error': _('You are the main owner of this pet. To transfer ownership, please use the transfer function.')
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        if user not in pet.owners.all():
+        # Проверяем роль через PetOwner
+        try:
+            po = PetOwner.objects.get(pet=pet, user=user)
+        except PetOwner.DoesNotExist:
             return Response({
                 'error': _('You do not have access to this pet.')
             }, status=status.HTTP_403_FORBIDDEN)
+        
+        if po.role == 'main':
+            return Response({
+                'error': _('You are the main owner of this pet. To transfer ownership, please use the transfer function.')
+            }, status=status.HTTP_400_BAD_REQUEST)
         
         # Проверяем, нет ли активных передержек или критических операций
         if self._has_active_pet_sittings(pet, user):
@@ -102,15 +120,23 @@ class PetViewSet(viewsets.ModelViewSet):
         
         try:
             with transaction.atomic():
-                # Удаляем пользователя из списка владельцев
-                pet.owners.remove(user)
+                # Удаляем PetOwner запись
+                po.delete()
                 
                 # Логируем действие
                 self._log_coowner_removal(pet, user)
                 
                 # Уведомляем основного владельца
-                if pet.main_owner:
+                main_owner = pet.main_owner
+                if main_owner:
                     self._notify_main_owner(pet, user)
+                
+                # Удаляем все временные доступы этого пользователя к этому питомцу
+                try:
+                    from access.models import PetAccess
+                    PetAccess.objects.filter(pet=pet, granted_to=user).delete()
+                except ImportError:
+                    pass
                 
                 return Response({
                     'message': _('You have successfully removed yourself as a co-owner of this pet.'),
@@ -122,6 +148,152 @@ class PetViewSet(viewsets.ModelViewSet):
             return Response({
                 'error': _('Unable to process your request at this time. Please try again later.')
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['get'])
+    def owners(self, request, pk=None):
+        """
+        Возвращает список совладельцев и зависших инвайтов.
+        Только владелец (main/coowner) может просматривать этот список.
+        """
+        pet = self.get_object()
+        user = request.user
+        
+        # Проверяем, что запрашивающий - владелец
+        if user not in pet.owners.all():
+            return Response({'error': _('You do not have access to this pet.')}, status=status.HTTP_403_FORBIDDEN)
+            
+        owners_qs = pet.petowner_set.select_related('user').all()
+        owners_data = PetOwnerSerializer(owners_qs, many=True).data
+        
+        # Инвайты 
+        invites_qs = Invite.objects.filter(
+            pet=pet,
+            status=Invite.STATUS_PENDING
+        )
+        invites_data = InviteSerializer(invites_qs, many=True).data
+        
+        return Response({
+            'owners': owners_data,
+            'pending_invites': invites_data
+        })
+
+    @action(detail=True, methods=['post'], url_path='transfer-ownership')
+    def transfer_ownership(self, request, pk=None):
+        """
+        Передача прав основного владельца.
+        Только основной владелец может передать права.
+        Новый владелец должен быть совладельцем.
+        """
+        pet = self.get_object()
+        user = request.user
+        new_owner_id = request.data.get('new_owner_id')
+        
+        if not new_owner_id:
+            return Response({'error': _('new_owner_id is required.')}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if user.pk == new_owner_id:
+            return Response({'error': _('You cannot transfer ownership to yourself.')}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if pet.main_owner_id != user.pk:
+            return Response({'error': _('Only the main owner can transfer ownership.')}, status=status.HTTP_403_FORBIDDEN)
+            
+        try:
+            with transaction.atomic():
+                # Блокируем строки PetOwner для этого питомца
+                owners = list(PetOwner.objects.select_for_update().filter(pet=pet))
+                
+                new_owner_po = None
+                current_owner_po = None
+                
+                for po in owners:
+                    if po.user_id == new_owner_id:
+                        new_owner_po = po
+                    if po.user_id == user.pk:
+                        current_owner_po = po
+                        
+                if not new_owner_po:
+                    return Response({'error': _('The new owner must be a co-owner first.')}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                # Меняем роли
+                current_owner_po.role = 'coowner'
+                current_owner_po.save(update_fields=['role'])
+                
+                new_owner_po.role = 'main'
+                new_owner_po.save(update_fields=['role'])
+                
+                # Обновляем роли пользователей
+                user.remove_role('pet_owner')  # maybe_remove_role in real life if needed, but they remain coowner so pet_owner logic will keep the role
+                new_owner_po.user.add_role('pet_owner')
+
+                try:
+                    subject = _('Pet ownership transferred')
+                    message = _(
+                        'Ownership of pet {pet_name} has been transferred to {new_owner_email}.'
+                    ).format(
+                        pet_name=pet.name,
+                        new_owner_email=new_owner_po.user.email
+                    )
+                    send_mail(
+                        subject, message, settings.DEFAULT_FROM_EMAIL,
+                        [user.email, new_owner_po.user.email], fail_silently=True
+                    )
+                except Exception:
+                    pass
+                    
+                return Response({'message': _('Ownership transferred successfully.')}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': _('Unable to process your request at this time. Please try again later.')}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=True, methods=['delete'], url_path=r'co-owners/(?P<user_id>\d+)')
+    def remove_coowner(self, request, pk=None, user_id=None):
+        """
+        Удаление совладельца. Осуществляется основным владельцем.
+        """
+        pet = self.get_object()
+        user = request.user
+        
+        if not user_id:
+            return Response({'error': _('user_id is required.')}, status=status.HTTP_400_BAD_REQUEST)
+        
+        user_id = int(user_id)
+        if user.pk == user_id:
+            return Response({'error': _('To remove yourself, use remove_myself_as_coowner endpoint.')}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if pet.main_owner_id != user.pk:
+            return Response({'error': _('Only the main owner can remove other co-owners.')}, status=status.HTTP_403_FORBIDDEN)
+            
+        try:
+            with transaction.atomic():
+                po = PetOwner.objects.get(pet=pet, user_id=user_id)
+                if po.role == 'main':
+                    return Response({'error': _('Cannot remove the main owner.')}, status=status.HTTP_400_BAD_REQUEST)
+                    
+                removed_user = po.user
+                
+                if self._has_active_pet_sittings(pet, removed_user):
+                     return Response({
+                        'error': _('You cannot remove the co-owner while they have active pet sitting responsibilities.')
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                    
+                po.delete()
+                
+                try:
+                    from access.models import PetAccess
+                    PetAccess.objects.filter(pet=pet, granted_to=removed_user).delete()
+                except ImportError:
+                    pass
+                    
+                # убираем роль из удаляемого
+                from invites.services import maybe_remove_role
+                maybe_remove_role(removed_user, 'pet_owner')
+
+                self._log_coowner_removal(pet, removed_user)
+                
+                return Response({'message': _('Co-owner removed.')}, status=status.HTTP_200_OK)
+        except PetOwner.DoesNotExist:
+            return Response({'error': _('Co-owner not found.')}, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            return Response({'error': _('Unable to process your request.')}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def _has_active_pet_sittings(self, pet, user):
         """
@@ -138,9 +310,9 @@ class PetViewSet(viewsets.ModelViewSet):
             from sitters.models import PetSitting
             
             # Проверяем активные передержки где пользователь является ситтером
-            active_sittings = PetSitting.objects.filter(
+            active_sittings = PetSitting._default_manager.filter(
                 pet=pet,
-                sitter=user,
+                sitter__user=user,
                 status__in=['waiting_start', 'in_progress']
             ).exists()
             
@@ -159,14 +331,18 @@ class PetViewSet(viewsets.ModelViewSet):
             user: Пользователь, который снял себя как совладельца
         """
         try:
-            from audit.models import AuditLog
+            from audit.models import UserAction
+            from django.contrib.contenttypes.models import ContentType
             
-            AuditLog.objects.create(
+            pet_content_type = ContentType.objects.get_for_model(pet)
+            
+            UserAction._default_manager.create(
                 user=user,
-                action='coowner_self_removal',
-                object_type='Pet',
+                action_type='update',
+                content_type=pet_content_type,
                 object_id=pet.id,
                 details={
+                    'action': 'coowner_self_removal',
                     'pet_name': pet.name,
                     'pet_id': pet.id,
                     'removed_user_id': user.id,
@@ -216,14 +392,14 @@ class MedicalRecordViewSet(viewsets.ModelViewSet):
     """
     ViewSet for managing medical records.
     """
-    queryset = MedicalRecord.objects.all()
+    queryset = MedicalRecord._default_manager.all()
     serializer_class = MedicalRecordSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         """Возвращает медицинские записи питомцев текущего пользователя"""
         if getattr(self, 'swagger_fake_view', False):
-            return MedicalRecord.objects.none()
+            return MedicalRecord._default_manager.none()
         return self.queryset.filter(pet__owners=self.request.user)
 
     def perform_create(self, serializer):
@@ -243,14 +419,14 @@ class PetRecordViewSet(viewsets.ModelViewSet):
     - A record can be created only by the pet owner (owners) or an employee of the provider, if specified in the employee field and active in this provider.
     - Does not manage access rights to other users' information about the pet.
     """
-    queryset = PetRecord.objects.all()
+    queryset = PetRecord._default_manager.all()
     serializer_class = PetRecordSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         """Владельцы видят записи своих питомцев; сотрудник — записи, где он исполнитель (по полю employee)."""
         if getattr(self, 'swagger_fake_view', False):
-            return PetRecord.objects.none()
+            return PetRecord._default_manager.none()
         user = self.request.user
         from django.db.models import Q
         return self.queryset.filter(
@@ -270,7 +446,7 @@ class PetRecordViewSet(viewsets.ModelViewSet):
         if provider_id and employee_id:
             from providers.models import Employee, EmployeeProvider
             try:
-                employee = Employee.objects.get(pk=employee_id)
+                employee = Employee._default_manager.get(pk=employee_id)
                 # Проверяем, что этот сотрудник — текущий пользователь и может проводить приёмы (не technical_worker)
                 if employee.user == user:
                     ep = EmployeeProvider.get_active_ep_for_user_provider(user, get_object_or_404(Provider, pk=provider_id))
@@ -294,14 +470,14 @@ class PetAccessViewSet(viewsets.ModelViewSet):
     - Allows revoking previously granted access.
     - Does not manage creating or editing records in the pet's history.
     """
-    queryset = PetAccess.objects.all()
+    queryset = PetAccess._default_manager.all()
     serializer_class = PetAccessSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         """Возвращает доступы к питомцам текущего пользователя"""
         if getattr(self, 'swagger_fake_view', False):
-            return PetAccess.objects.none()
+            return PetAccess._default_manager.none()
         return self.queryset.filter(pet__owners=self.request.user)
 
     def perform_create(self, serializer):
@@ -331,7 +507,7 @@ class DocumentTypeViewSet(viewsets.ModelViewSet):
     - Setting mandatory fields
     - Filtering by activity
     """
-    queryset = DocumentType.objects.all()
+    queryset = DocumentType._default_manager.all()
     serializer_class = DocumentTypeSerializer
     permission_classes = [permissions.IsAuthenticated]
 
@@ -380,16 +556,24 @@ class PetDeleteAPIView(APIView):
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    def delete(self, request, pet_id):
+    def delete(self, request, pk=None, pet_id=None):
         """Удаляет питомца"""
-        pet = get_object_or_404(Pet, pk=pet_id)
+        target_id = pk if pk is not None else pet_id
+        if target_id is None:
+            return Response(
+                {'error': _('Pet ID is required')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        pet = get_object_or_404(Pet, pk=target_id)
         user = request.user
         is_main_owner = (pet.main_owner == user)
         is_admin = user.is_staff or user.is_superuser
 
         if not (is_main_owner or is_admin):
             raise permissions.PermissionDenied(_('Only main owner or admin can delete this pet'))
-        pet.delete()
+        pet.is_active = False
+        pet.save()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -397,26 +581,31 @@ class PetListCreateAPIView(generics.ListCreateAPIView):
     """
     API for creating and getting a list of pets.
     """
-    queryset = Pet.objects.all()
+    queryset = Pet._default_manager.all()
     serializer_class = PetSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         """Возвращает список питомцев текущего пользователя"""
         if getattr(self, 'swagger_fake_view', False):
-            return Pet.objects.none()
-        return self.queryset.filter(owners=self.request.user)
+            return Pet._default_manager.none()
+        return self.queryset.filter(owners=self.request.user, is_active=True)
 
 
 class PetRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Pet.objects.all()
+    queryset = Pet._default_manager.all()
     serializer_class = PetSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return Pet.objects.none()
-        return self.queryset.filter(owners=self.request.user)
+            return Pet._default_manager.none()
+        return self.queryset.filter(owners=self.request.user, is_active=True)
+
+    def perform_destroy(self, instance):
+        """Мягкое удаление питомца"""
+        instance.is_active = False
+        instance.save()
 
 
 class MedicalRecordListCreateAPIView(generics.ListCreateAPIView):
@@ -425,8 +614,8 @@ class MedicalRecordListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return MedicalRecord.objects.none()
-        return MedicalRecord.objects.filter(pet__owners=self.request.user)
+            return MedicalRecord._default_manager.none()
+        return MedicalRecord._default_manager.filter(pet__owners=self.request.user)
 
 
 class MedicalRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -435,8 +624,8 @@ class MedicalRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return MedicalRecord.objects.none()
-        return MedicalRecord.objects.filter(pet__owners=self.request.user)
+            return MedicalRecord._default_manager.none()
+        return MedicalRecord._default_manager.filter(pet__owners=self.request.user)
 
 
 class PetRecordListCreateAPIView(generics.ListCreateAPIView):
@@ -445,10 +634,10 @@ class PetRecordListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return PetRecord.objects.none()
+            return PetRecord._default_manager.none()
         from django.db.models import Q
         user = self.request.user
-        return PetRecord.objects.filter(
+        return PetRecord._default_manager.filter(
             Q(pet__owners=user) | Q(employee__user=user)
         ).distinct()
 
@@ -459,10 +648,10 @@ class PetRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIVie
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return PetRecord.objects.none()
+            return PetRecord._default_manager.none()
         from django.db.models import Q
         user = self.request.user
-        return PetRecord.objects.filter(
+        return PetRecord._default_manager.filter(
             Q(pet__owners=user) | Q(employee__user=user)
         ).distinct()
 
@@ -473,8 +662,8 @@ class PetAccessListCreateAPIView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return PetAccess.objects.none()
-        return PetAccess.objects.filter(pet__owners=self.request.user)
+            return PetAccess._default_manager.none()
+        return PetAccess._default_manager.filter(pet__owners=self.request.user)
 
 
 class PetAccessRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -483,8 +672,8 @@ class PetAccessRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIVie
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return PetAccess.objects.none()
-        return PetAccess.objects.filter(pet__owners=self.request.user)
+            return PetAccess._default_manager.none()
+        return PetAccess._default_manager.filter(pet__owners=self.request.user)
 
 
 class PetRecordFileUploadAPIView(APIView):
@@ -631,7 +820,7 @@ class PetRecordFileUploadAPIView(APIView):
                 document_data['issuing_authority'] = request.data['issuing_authority']
             
             # Создаем документ
-            pet_record_file = PetRecordFile.objects.create(**document_data)
+            pet_record_file = PetRecordFile._default_manager.create(**document_data)
             
             # Сериализуем результат
             serializer = PetRecordFileSerializer(pet_record_file)
@@ -680,9 +869,9 @@ class PetDocumentDownloadAPIView(APIView):
             from providers.models import Employee, EmployeeProvider
             
             try:
-                employee = Employee.objects.get(user=user)
+                employee = Employee._default_manager.get(user=user)
                 # Проверяем, что сотрудник работает в учреждении, где есть записи питомца
-                has_records_for_pet = PetRecord.objects.filter(
+                has_records_for_pet = PetRecord._default_manager.filter(
                     pet=document.pet,
                     employee=employee
                 ).exists()
@@ -691,11 +880,11 @@ class PetDocumentDownloadAPIView(APIView):
                     return True
                 
                 # Проверяем, что сотрудник работает в учреждении, где есть записи питомца
-                provider_records = PetRecord.objects.filter(
+                provider_records = PetRecord._default_manager.filter(
                     pet=document.pet
                 ).values_list('provider', flat=True).distinct()
                 
-                is_employee_for_providers = EmployeeProvider.objects.filter(
+                is_employee_for_providers = EmployeeProvider._default_manager.filter(
                     employee=employee,
                     provider__in=provider_records,
                     status__in=['active', 'temporary']
@@ -710,11 +899,11 @@ class PetDocumentDownloadAPIView(APIView):
         if user.has_role('provider_admin'):
             from providers.models import EmployeeProvider
             
-            provider_records = PetRecord.objects.filter(
+            provider_records = PetRecord._default_manager.filter(
                 pet=document.pet
             ).values_list('provider', flat=True).distinct()
             
-            is_admin_for_providers = EmployeeProvider.objects.filter(
+            is_admin_for_providers = EmployeeProvider._default_manager.filter(
                 employee__user=user,
                 provider__in=provider_records,
                 is_manager=True,
@@ -879,18 +1068,17 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Возвращает queryset в зависимости от роли пользователя."""
         if getattr(self, 'swagger_fake_view', False):
-            return PetOwnerIncapacity.objects.none()
+            return PetOwnerIncapacity._default_manager.none()
         
         user = self.request.user
         
         if user.is_staff:
             # Администраторы видят все случаи
-            return PetOwnerIncapacity.objects.all()
+            return PetOwnerIncapacity._default_manager.all()
         else:
             # Обычные пользователи видят только случаи с их питомцами
-            return PetOwnerIncapacity.objects.filter(
-                models.Q(pet__main_owner=user) | 
-                models.Q(pet__owners=user) |
+            return PetOwnerIncapacity._default_manager.filter(
+                models.Q(pet__petowner__user=user) | 
                 models.Q(reported_by=user)
             ).distinct()
     
@@ -914,8 +1102,8 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            pet = Pet.objects.get(id=pet_id)
-        except Pet.DoesNotExist:
+            pet = Pet._default_manager.get(id=pet_id)
+        except ObjectDoesNotExist:
             return Response({
                 'error': _('Pet not found.')
             }, status=status.HTTP_404_NOT_FOUND)
@@ -971,8 +1159,8 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
         
         try:
-            pet = Pet.objects.get(id=pet_id)
-        except Pet.DoesNotExist:
+            pet = Pet._default_manager.get(id=pet_id)
+        except ObjectDoesNotExist:
             return Response({
                 'error': _('Pet not found.')
             }, status=status.HTTP_404_NOT_FOUND)
@@ -1069,9 +1257,8 @@ class PetOwnerIncapacityViewSet(viewsets.ModelViewSet):
         user = request.user
         
         # Получаем случаи, где пользователь является основным владельцем или совладельцем
-        cases = PetOwnerIncapacity.objects.filter(
-            models.Q(pet__main_owner=user) | 
-            models.Q(pet__owners=user) |
+        cases = PetOwnerIncapacity._default_manager.filter(
+            models.Q(pet__petowner__user=user) |
             models.Q(reported_by=user)
         ).distinct().order_by('-created_at')
         
@@ -1116,8 +1303,8 @@ class PetIncapacityNotificationViewSet(viewsets.ReadOnlyModelViewSet):
     def get_queryset(self):
         """Возвращает уведомления пользователя."""
         if getattr(self, 'swagger_fake_view', False):
-            return PetIncapacityNotification.objects.none()
-        return PetIncapacityNotification.objects.filter(recipient=self.request.user).order_by('-created_at')
+            return PetIncapacityNotification._default_manager.none()
+        return PetIncapacityNotification._default_manager.filter(recipient=self.request.user).order_by('-created_at')
     
     @action(detail=True, methods=['post'])
     def mark_as_read(self, request, pk=None):
@@ -1169,16 +1356,16 @@ class PetSearchAPIView(generics.ListAPIView):
     def get_queryset(self):
         """Возвращает queryset с учетом прав доступа пользователя."""
         if getattr(self, 'swagger_fake_view', False):
-            return Pet.objects.none()
+            return Pet._default_manager.none()
         
         user = self.request.user
         
         if user.is_staff:
             # Администраторы видят всех питомцев
-            return Pet.objects.all()
+            return Pet._default_manager.all()
         else:
-            # Обычные пользователи видят только своих питомцев
-            return Pet.objects.filter(owners=user)
+            # Обычные пользователи видят только своих активных питомцев
+            return Pet._default_manager.filter(owners=user, is_active=True)
     
     def get_serializer_context(self):
         """Добавляет контекст для сериализатора."""
@@ -1204,8 +1391,8 @@ class PetTypeSearchAPIView(generics.ListAPIView):
     def get_queryset(self):
         """Возвращает активные типы питомцев."""
         if getattr(self, 'swagger_fake_view', False):
-            return PetType.objects.none()
-        return PetType.objects.all()
+            return PetType._default_manager.none()
+        return PetType._default_manager.all()
 
 
 class BreedSearchAPIView(generics.ListAPIView):
@@ -1222,8 +1409,50 @@ class BreedSearchAPIView(generics.ListAPIView):
     def get_queryset(self):
         """Возвращает породы с предзагрузкой типов питомцев."""
         if getattr(self, 'swagger_fake_view', False):
-            return Breed.objects.none()
-        return Breed.objects.select_related('pet_type').all()
+            return Breed._default_manager.none()
+        return Breed._default_manager.select_related('pet_type').all()
+
+
+class ChronicConditionListAPIView(generics.ListAPIView):
+    """
+    Список справочника хронических заболеваний для выбора при редактировании карточки питомца.
+    GET /api/v1/chronic-conditions/
+    """
+    serializer_class = ChronicConditionSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return ChronicCondition._default_manager.none()
+        return ChronicCondition._default_manager.all()
+
+
+class PhysicalFeatureListAPIView(generics.ListAPIView):
+    """
+    Список справочника физических особенностей (отсутствие конечностей, слепота и т.д.).
+    GET /api/v1/physical-features/
+    """
+    serializer_class = PhysicalFeatureSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return PhysicalFeature._default_manager.none()
+        return PhysicalFeature._default_manager.all()
+
+
+class BehavioralTraitListAPIView(generics.ListAPIView):
+    """
+    Список справочника поведенческих особенностей.
+    GET /api/v1/behavioral-traits/
+    """
+    serializer_class = BehavioralTraitSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return BehavioralTrait._default_manager.none()
+        return BehavioralTrait._default_manager.all()
 
 
 class SizeRulesByPetTypeAPIView(APIView):
@@ -1238,7 +1467,7 @@ class SizeRulesByPetTypeAPIView(APIView):
 
     def get(self, request):
         from .models import SIZE_CATEGORY_ORDER
-        qs = SizeRule.objects.values_list('pet_type_id', 'size_code').order_by('pet_type_id', 'min_weight_kg')
+        qs = SizeRule._default_manager.values_list('pet_type_id', 'size_code').order_by('pet_type_id', 'min_weight_kg')
         by_pet_type = {}
         for pet_type_id, size_code in qs:
             if pet_type_id not in by_pet_type:
@@ -1276,7 +1505,7 @@ class ServicesForPetRecordAPIView(APIView):
                 {'error': _('You do not have access to this pet')},
                 status=status.HTTP_403_FORBIDDEN
             )
-        pet_type = pet.pet_type if hasattr(pet.pet_type, 'id') else Pet.objects.get(pk=pet_id).pet_type
+        pet_type = pet.pet_type if hasattr(pet.pet_type, 'id') else Pet._default_manager.get(pk=pet_id).pet_type
         provider_location_id = request.query_params.get('provider_location_id')
 
         if provider_location_id:
@@ -1291,7 +1520,7 @@ class ServicesForPetRecordAPIView(APIView):
                 Q(allowed_pet_types__isnull=True) | Q(allowed_pet_types=pet_type)
             ).filter(children__isnull=False).distinct().order_by('hierarchy_order', 'name')
         else:
-            queryset = Service.objects.filter(
+            queryset = Service._default_manager.filter(
                 Q(allowed_pet_types__isnull=True) | Q(allowed_pet_types=pet_type)
             ).filter(children__isnull=False).distinct().order_by('hierarchy_order', 'name')
 
@@ -1332,18 +1561,18 @@ class PetRecommendationsAPIView(generics.ListAPIView):
     def get_queryset(self):
         """Возвращает персонализированные рекомендации."""
         if getattr(self, 'swagger_fake_view', False):
-            return Pet.objects.none()
+            return Pet._default_manager.none()
         
         user = self.request.user
         limit = int(self.request.query_params.get('limit', 10))
         
         # Получаем питомцев пользователя
-        user_pets = Pet.objects.filter(owners=user)
+        user_pets = Pet._default_manager.filter(owners=user)
         
         if not user_pets.exists():
             # Если у пользователя нет питомцев, возвращаем популярные типы
-            return Pet.objects.filter(
-                pet_type__in=PetType.objects.all()[:3]
+            return Pet._default_manager.filter(
+                pet_type__in=PetType._default_manager.all()[:3]
             ).order_by('?')[:limit]
         
         # Анализируем предпочтения пользователя
@@ -1351,14 +1580,14 @@ class PetRecommendationsAPIView(generics.ListAPIView):
         user_breeds = user_pets.values_list('breed', flat=True).distinct()
         
         # Находим похожих питомцев
-        similar_pets = Pet.objects.exclude(owners=user).filter(
+        similar_pets = Pet._default_manager.exclude(owners=user).filter(
             Q(pet_type__in=user_pet_types) |
             Q(breed__in=user_breeds)
         ).distinct()
         
         # Если похожих питомцев мало, добавляем случайные
         if similar_pets.count() < limit:
-            additional_pets = Pet.objects.exclude(
+            additional_pets = Pet._default_manager.exclude(
                 Q(owners=user) | Q(id__in=similar_pets.values_list('id', flat=True))
             ).order_by('?')[:limit - similar_pets.count()]
             similar_pets = list(similar_pets) + list(additional_pets)
@@ -1377,7 +1606,7 @@ class PetStatisticsAPIView(APIView):
         user = request.user
         
         # Получаем питомцев пользователя
-        user_pets = Pet.objects.filter(owners=user)
+        user_pets = Pet._default_manager.filter(owners=user)
         
         # Базовая статистика
         total_pets = user_pets.count()

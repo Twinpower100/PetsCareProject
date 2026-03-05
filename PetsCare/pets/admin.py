@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
-from .models import PetType, Breed, SizeRule, Pet, MedicalRecord, PetRecord, PetRecordFile, User, DocumentType
+from .models import PetType, Breed, SizeRule, Pet, MedicalRecord, PetRecord, PetRecordFile, User, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
 from custom_admin import custom_admin_site
 from django import forms
 import json
@@ -25,6 +25,28 @@ class SizeRuleAdmin(admin.ModelAdmin):
     ordering = ('pet_type', 'min_weight_kg')
 
 
+class ChronicConditionAdmin(admin.ModelAdmin):
+    """Справочник хронических заболеваний для карточки питомца."""
+    list_display = ('code', 'name', 'name_ru', 'name_en', 'category', 'order')
+    list_filter = ('category',)
+    search_fields = ('code', 'name', 'name_ru', 'name_en')
+    ordering = ('category', 'order', 'code')
+
+
+class PhysicalFeatureAdmin(admin.ModelAdmin):
+    """Справочник физических особенностей (отсутствие конечностей, слепота и т.д.)."""
+    list_display = ('code', 'name', 'name_ru', 'name_en', 'order')
+    search_fields = ('code', 'name')
+    ordering = ('order', 'code')
+
+
+class BehavioralTraitAdmin(admin.ModelAdmin):
+    """Справочник поведенческих особенностей."""
+    list_display = ('code', 'name', 'name_ru', 'name_en', 'order')
+    search_fields = ('code', 'name')
+    ordering = ('order', 'code')
+
+
 class MedicalRecordInline(admin.StackedInline):
     model = MedicalRecord
     extra = 0
@@ -42,124 +64,74 @@ class PetRecordInline(admin.StackedInline):
     raw_id_fields = ('provider_location', 'employee', 'files')
 
 
+
+class PetOwnerInline(admin.TabularInline):
+    """Inline для управления владельцами питомца (через PetOwner)."""
+    model = PetOwner
+    extra = 1
+    fields = ('user', 'role', 'created_at')
+    readonly_fields = ('created_at',)
+    raw_id_fields = ('user',)
+    verbose_name = _('Owner')
+    verbose_name_plural = _('Owners')
+
+
 class PetAdminForm(forms.ModelForm):
     class Meta:
         model = Pet
-        fields = '__all__'
+        exclude = ('owners',)  # owners управляется через PetOwnerInline
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         
-        # Настраиваем queryset для всех активных пользователей
-        active_users = User.objects.filter(is_active=True).order_by('email')
-        
-        if self.instance and self.instance.pk:
-            # Для существующего питомца показываем всех активных пользователей
-            # чтобы можно было добавить новых владельцев
-            self.fields['owners'].queryset = active_users
-        else:
-            # Для нового питомца показываем всех активных пользователей
-            self.fields['owners'].queryset = active_users
-        
-        # Настраиваем отображение пользователей для основного владельца
-        self.fields['main_owner'].queryset = active_users
-        
-        # Поле owners обязательно для заполнения
-        self.fields['owners'].required = True
-        
         # Настраиваем JSON поля как опциональные
-        self.fields['special_needs'].required = False
-        self.fields['medical_conditions'].required = False
-        
-        # Настраиваем виджеты для JSON полей
-        self.fields['special_needs'].widget = forms.Textarea(attrs={
-            'rows': 4,
-            'cols': 80,
-            'placeholder': '{"diet": "Специальная диета", "medications": ["Витамины"]}'
-        })
-        self.fields['medical_conditions'].widget = forms.Textarea(attrs={
-            'rows': 4,
-            'cols': 80,
-            'placeholder': '{"chronic_conditions": ["Диабет"], "allergies": ["Курица"]}'
-        })
+        if 'special_needs' in self.fields:
+            self.fields['special_needs'].required = False
+            self.fields['special_needs'].widget = forms.Textarea(attrs={
+                'rows': 4, 'cols': 80,
+                'placeholder': '{"diet": "Специальная диета", "medications": ["Витамины"]}'
+            })
+        if 'medical_conditions' in self.fields:
+            self.fields['medical_conditions'].required = False
+            self.fields['medical_conditions'].widget = forms.Textarea(attrs={
+                'rows': 4, 'cols': 80,
+                'placeholder': '{"chronic_conditions": ["Диабет"], "allergies": ["Курица"]}'
+            })
     
     def clean(self):
         cleaned_data = super().clean()
-        main_owner = cleaned_data.get('main_owner')
-        owners = cleaned_data.get('owners')
-        
-        # Проверяем, что есть хотя бы один владелец
-        if not owners:
-            raise forms.ValidationError({'owners': _('There must be at least one owner.')})
-        
-        # Проверяем, что основной владелец входит в список владельцев
-        if main_owner and main_owner not in owners:
-            raise forms.ValidationError({
-                'main_owner': _('Main owner must be in owners list.'),
-                'owners': _('Please select the main owner in the owners list.')
-            })
         
         # Валидируем JSON поля
-        special_needs = cleaned_data.get('special_needs')
-        medical_conditions = cleaned_data.get('medical_conditions')
-        
-        if special_needs:
-            try:
-                if isinstance(special_needs, str):
-                    json.loads(special_needs)
-            except json.JSONDecodeError:
-                raise forms.ValidationError({
-                    'special_needs': _('Invalid JSON format for special needs.')
-                })
-        
-        if medical_conditions:
-            try:
-                if isinstance(medical_conditions, str):
-                    json.loads(medical_conditions)
-            except json.JSONDecodeError:
-                raise forms.ValidationError({
-                    'medical_conditions': _('Invalid JSON format for medical conditions.')
-                })
+        for field_name in ('special_needs', 'medical_conditions'):
+            value = cleaned_data.get(field_name)
+            if value:
+                try:
+                    if isinstance(value, str):
+                        json.loads(value)
+                except json.JSONDecodeError:
+                    raise forms.ValidationError({
+                        field_name: _('Invalid JSON format.')
+                    })
         
         return cleaned_data
-    
-    def save(self, commit=True):
-        """Переопределяем save для правильной обработки ManyToMany полей"""
-        instance = super().save(commit=False)
-        
-        # Сохраняем ManyToMany данные
-        owners_data = self.cleaned_data.get('owners', [])
-        
-        if commit:
-            # Сохраняем объект
-            instance.save()
-            
-            # Устанавливаем ManyToMany связи
-            instance.owners.set(owners_data)
-        else:
-            # Если не commit, сохраняем данные для последующего использования
-            instance._owners_data = owners_data
-        
-        return instance
 
 
 class PetAdmin(admin.ModelAdmin):
     """
     Административный интерфейс для модели питомца.
+    Владельцы управляются через PetOwnerInline.
     """
     list_display = [
         'id', 'name', 'pet_type', 'breed',
-        'birth_date', 'main_owner', 'is_active'
+        'birth_date', 'get_main_owner', 'is_active'
     ]
     list_filter = ['pet_type', 'birth_date', 'is_active']
-    search_fields = ['name', 'breed', 'main_owner__email']
+    search_fields = ['name', 'breed__name', 'petowner__user__email']
     readonly_fields = ['created_at', 'updated_at']
+    inlines = [PetOwnerInline, MedicalRecordInline, PetRecordInline]
     fieldsets = (
         (_('Basic Information'), {
             'fields': ('name', 'pet_type', 'breed', 'birth_date', 'is_active')
-        }),
-        (_('Ownership'), {
-            'fields': ('main_owner', 'owners')
         }),
         (_('Physical Characteristics'), {
             'fields': ('weight',)
@@ -176,15 +148,11 @@ class PetAdmin(admin.ModelAdmin):
         })
     )
     form = PetAdminForm
-    
-    def save_model(self, request, obj, form, change):
-        """Переопределяем save_model для правильной обработки ManyToMany полей"""
-        # Сохраняем объект
-        obj.save()
-        
-        # Устанавливаем ManyToMany связи
-        if 'owners' in form.cleaned_data:
-            obj.owners.set(form.cleaned_data['owners'])
+
+    @admin.display(description=_('Main Owner'))
+    def get_main_owner(self, obj):
+        mo = obj.main_owner
+        return mo.email if mo else '-'
 
 
 class MedicalRecordAdmin(admin.ModelAdmin):
@@ -218,10 +186,15 @@ class PetRecordFileAdmin(admin.ModelAdmin):
     date_hierarchy = 'created_at'
 
 
+
 custom_admin_site.register(PetType, PetTypeAdmin)
 custom_admin_site.register(Breed, BreedAdmin)
 custom_admin_site.register(SizeRule, SizeRuleAdmin)
+custom_admin_site.register(ChronicCondition, ChronicConditionAdmin)
+custom_admin_site.register(PhysicalFeature, PhysicalFeatureAdmin)
+custom_admin_site.register(BehavioralTrait, BehavioralTraitAdmin)
 custom_admin_site.register(Pet, PetAdmin)
+custom_admin_site.register(PetOwner)
 custom_admin_site.register(MedicalRecord, MedicalRecordAdmin)
 custom_admin_site.register(PetRecordFile, PetRecordFileAdmin)
 custom_admin_site.register(DocumentType)
