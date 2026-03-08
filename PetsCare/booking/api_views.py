@@ -22,6 +22,7 @@ from .models import TimeSlot, Booking, BookingStatus, BookingPayment, BookingRev
 from .serializers import (
     TimeSlotSerializer,
     TimeSlotSearchSerializer,
+    BookingListSerializer,
     BookingSerializer,
     BookingCreateSerializer,
     BookingUpdateSerializer,
@@ -158,7 +159,23 @@ class BookingViewSet(viewsets.ModelViewSet):
                 Q(provider__in=managed_providers) |
                 Q(provider_location__provider__in=managed_providers)
             )
-            
+
+        if self.action == 'list':
+            queryset = queryset.select_related(
+                'user',
+                'pet',
+                'pet__pet_type',
+                'pet__breed',
+                'provider',
+                'provider__structured_address',
+                'provider_location',
+                'provider_location__structured_address',
+                'employee',
+                'employee__user',
+                'service',
+                'status',
+            )
+
         return queryset
 
     def _user_can_manage_provider(self, user, booking):
@@ -180,6 +197,8 @@ class BookingViewSet(viewsets.ModelViewSet):
         """
         if self.action == 'create':
             return BookingCreateSerializer
+        elif self.action == 'list':
+            return BookingListSerializer
         elif self.action in ['update', 'partial_update']:
             return BookingUpdateSerializer
         elif self.action == 'update_status':

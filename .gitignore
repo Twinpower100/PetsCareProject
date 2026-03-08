@@ -66,6 +66,7 @@ logs/
 # Gmail API credentials (не коммитить!)
 credentials.json
 token.json
+credentials.md
 
 # Development & Data seeding scripts
 scripts/

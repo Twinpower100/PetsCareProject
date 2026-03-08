@@ -254,3 +254,34 @@ class PublicServiceCategoriesAPIView(generics.ListAPIView):
             is_active=True,
             is_client_facing=True,
         ).order_by('hierarchy_order', 'name')
+
+class PublicServiceTreeAPIView(generics.ListAPIView):
+    """
+    Публичный API для получения всего дерева категорий услуг.
+    """
+    serializer_class = ServiceSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return Service.objects.none()
+        
+        return Service.objects.filter(is_active=True, is_client_facing=True).order_by('hierarchy_order', 'name')
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        serializer = self.get_serializer(queryset, many=True)
+        
+        # Build tree
+        nodes = {item['id']: item for item in serializer.data}
+        roots = []
+        for item in nodes.values():
+            item['children'] = []
+        for item in nodes.values():
+            parent_id = item.get('parent')
+            if parent_id and parent_id in nodes:
+                nodes[parent_id]['children'].append(item)
+            elif not parent_id:
+                roots.append(item)
+                
+        return Response(roots)

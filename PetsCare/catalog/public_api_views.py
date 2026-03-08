@@ -131,8 +131,8 @@ class PublicServiceSearchAPIView(generics.ListAPIView):
     permission_classes = [permissions.AllowAny]  # Публичный доступ
 
     def get_queryset(self):
-        queryset = Service.objects.filter(is_active=True)
-        query = self.request.query_params.get('q', '')
+        queryset = Service.objects.filter(is_active=True, is_client_facing=True)
+        query = self.request.query_params.get('q', '').strip()
         if query:
             queryset = queryset.filter(
                 Q(name__icontains=query) |

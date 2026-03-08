@@ -9,6 +9,7 @@ URL routes for the booking module.
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import api_views
+from . import flow_views
 
 router = DefaultRouter()
 router.register(r'bookings', api_views.BookingViewSet, basename='booking')
@@ -21,6 +22,11 @@ urlpatterns = [
     # API для автоматического бронирования работника
     path('auto-book-employee/', api_views.auto_book_employee, name='auto_book_employee'),
     path('available-employees/', api_views.get_available_employees, name='get_available_employees'),
+    
+    # Новый Booking Flow UI: Поиск, Слоты, Создание
+    path('booking/search/', flow_views.ProviderSearchAPIView.as_view(), name='search_providers'),
+    path('booking/locations/<int:location_id>/slots/', flow_views.LocationSlotsAPIView.as_view(), name='location_slots'),
+    path('booking/appointments/', flow_views.CreateAppointmentAPIView.as_view(), name='create_appointment'),
     
     # Существующие URL - восстановлены
     path('bookings/<int:booking_id>/cancel/', api_views.CancelBookingAPIView.as_view(), name='cancel_booking'),

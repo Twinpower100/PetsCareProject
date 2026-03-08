@@ -17,8 +17,10 @@ from .api_views import (
     ServiceListCreateAPIView,
     ServiceRetrieveUpdateDestroyAPIView,
     ServiceSearchAPIView,
-    PublicServiceCategoriesAPIView  # Временно закомментировано
+    PublicServiceCategoriesAPIView,
+    PublicServiceTreeAPIView
 )
+from .public_api_views import PublicServiceSearchAPIView
 
 # Создаем роутер для API
 router = DefaultRouter()
@@ -49,4 +51,12 @@ urlpatterns = [
     path('public/service-categories/', 
          PublicServiceCategoriesAPIView.as_view(), 
          name='public-service-categories'),
+    # Публичный API для всего дерева услуг
+    path('public/service-tree/', 
+         PublicServiceTreeAPIView.as_view(), 
+         name='public-service-tree'),
+    # Публичный поиск услуг (автодополнение, без авторизации)
+    path('public/services/search/', 
+         PublicServiceSearchAPIView.as_view(), 
+         name='public-service-search'),
 ] 

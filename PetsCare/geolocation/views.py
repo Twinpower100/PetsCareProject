@@ -213,10 +213,18 @@ class AddressAutocompleteView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         query = serializer.validated_data['query']
+        language = serializer.validated_data.get('language')
+        country = serializer.validated_data.get('country')
+        session_token = serializer.validated_data.get('session_token')
         
         try:
             maps_service = GoogleMapsService()
-            predictions = maps_service.autocomplete_address(query)
+            predictions = maps_service.autocomplete_address(
+                query,
+                country=country,
+                language=language,
+                session_token=session_token,
+            )
 
             return Response({
                 'success': True,
@@ -243,9 +251,10 @@ class PlaceDetailsView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         place_id = serializer.validated_data['place_id']
+        language = serializer.validated_data.get('language')
         try:
             maps_service = GoogleMapsService()
-            details = maps_service.get_place_details(place_id)
+            details = maps_service.get_place_details(place_id, language=language)
             if not details:
                 return Response({'success': False, 'error': _('Place not found')}, status=status.HTTP_404_NOT_FOUND)
             return Response({'success': True, **details})
@@ -277,6 +286,7 @@ class AddressGeocodeView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         address_text = serializer.validated_data['address']
+        language = serializer.validated_data.get('language')
         
         import logging
         logger = logging.getLogger(__name__)
@@ -285,7 +295,7 @@ class AddressGeocodeView(APIView):
             maps_service = GoogleMapsService()
             
             # Просто используем Google Maps API напрямую - он умеет обрабатывать адреса в разных форматах
-            geocode_result = maps_service.geocode_address(address_text.strip())
+            geocode_result = maps_service.geocode_address(address_text.strip(), language=language)
             
             if geocode_result:
                 # Извлекаем координаты из структуры, возвращаемой _parse_geocoding_result
@@ -296,7 +306,9 @@ class AddressGeocodeView(APIView):
                     'latitude': float(coordinates.get('latitude')) if coordinates.get('latitude') else None,
                     'longitude': float(coordinates.get('longitude')) if coordinates.get('longitude') else None,
                     'place_id': geocode_result.get('place_id'),
-                    'components': geocode_result.get('address_components', [])
+                    'components': geocode_result.get('address_components', []),
+                    'city': geocode_result.get('address_components', {}).get('city'),
+                    'country': geocode_result.get('address_components', {}).get('country'),
                 })
             else:
                 return Response({
@@ -343,17 +355,23 @@ class AddressReverseGeocodeView(APIView):
         
         latitude = serializer.validated_data['latitude']
         longitude = serializer.validated_data['longitude']
+        language = serializer.validated_data.get('language')
         
         try:
             maps_service = GoogleMapsService()
-            reverse_geocode_result = maps_service.reverse_geocode(latitude, longitude)
+            reverse_geocode_result = maps_service.reverse_geocode(latitude, longitude, language=language)
             
             if reverse_geocode_result:
+                coordinates = reverse_geocode_result.get('coordinates', {})
                 return Response({
                     'success': True,
                     'formatted_address': reverse_geocode_result.get('formatted_address'),
                     'place_id': reverse_geocode_result.get('place_id'),
-                    'components': reverse_geocode_result.get('address_components', [])
+                    'components': reverse_geocode_result.get('address_components', []),
+                    'city': reverse_geocode_result.get('address_components', {}).get('city'),
+                    'country': reverse_geocode_result.get('address_components', {}).get('country'),
+                    'latitude': float(coordinates.get('latitude')) if coordinates.get('latitude') else latitude,
+                    'longitude': float(coordinates.get('longitude')) if coordinates.get('longitude') else longitude,
                 })
             else:
                 return Response({

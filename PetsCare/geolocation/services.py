@@ -17,6 +17,7 @@ from django.contrib.gis.geos import Point
 
 from users.models import User
 from .models import Address, AddressValidation, AddressCache, UserLocation
+from booking.location_search import normalize_location_text, transliterate_cyrillic_to_latin
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,12 @@ class GoogleMapsService:
         self.places_url = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
         self.place_details_url = "https://maps.googleapis.com/maps/api/place/details/json"
     
-    def geocode_address(self, address: str, country: str = None) -> Optional[Dict[str, Any]]:
+    def geocode_address(
+        self,
+        address: str,
+        country: str = None,
+        language: str | None = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Geocoding address via Google Maps API.
         
@@ -72,7 +78,7 @@ class GoogleMapsService:
         params = {
             'address': address.strip(),
             'key': self.api_key,
-            'language': getattr(settings, 'ADDRESS_VALIDATION_SETTINGS', {}).get('DEFAULT_LANGUAGE', 'en')
+            'language': language or getattr(settings, 'ADDRESS_VALIDATION_SETTINGS', {}).get('DEFAULT_LANGUAGE', 'en')
         }
         
         if country:
@@ -114,8 +120,14 @@ class GoogleMapsService:
             logger.error(f"Geocoding error: {e}")
             return None
     
-    def autocomplete_address(self, input_text: str, country: str = None, 
-                           types: str = 'address') -> List[Dict[str, Any]]:
+    def autocomplete_address(
+        self,
+        input_text: str,
+        country: str = None,
+        types: str = 'address',
+        language: str | None = None,
+        session_token: str | None = None,
+    ) -> List[Dict[str, Any]]:
         """
         Autocomplete address via Google Places API.
         
@@ -130,20 +142,25 @@ class GoogleMapsService:
         params = {
             'input': input_text,
             'key': self.api_key,
-            'language': 'en',
+            'language': language or getattr(settings, 'ADDRESS_VALIDATION_SETTINGS', {}).get('DEFAULT_LANGUAGE', 'en'),
             'types': types
         }
         
         if country:
             params['components'] = f'country:{country}'
+
+        if session_token:
+            params['sessiontoken'] = session_token
         
         try:
-            response = requests.get(self.places_url, params=params, timeout=10)
-            response.raise_for_status()
-            
-            data = response.json()
-            
-            if data['status'] == 'OK':
+            def fetch_predictions(request_params: Dict[str, Any]) -> List[Dict[str, Any]]:
+                response = requests.get(self.places_url, params=request_params, timeout=10)
+                response.raise_for_status()
+
+                data = response.json()
+                if data['status'] != 'OK':
+                    return []
+
                 return [
                     {
                         'description': prediction['description'],
@@ -152,8 +169,17 @@ class GoogleMapsService:
                     }
                     for prediction in data['predictions']
                 ]
-            else:
-                return []
+
+            predictions = fetch_predictions(params)
+            if predictions:
+                return predictions
+
+            transliterated_input = transliterate_cyrillic_to_latin(input_text or '')
+            if normalize_location_text(transliterated_input) != normalize_location_text(input_text or ''):
+                params['input'] = transliterated_input
+                return fetch_predictions(params)
+
+            return []
                 
         except requests.RequestException as e:
             logger.error(f"Error requesting Google Places API: {e}")
@@ -162,7 +188,7 @@ class GoogleMapsService:
             logger.error(f"Autocomplete error: {e}")
             return []
 
-    def get_place_details(self, place_id: str) -> Optional[Dict[str, Any]]:
+    def get_place_details(self, place_id: str, language: str | None = None) -> Optional[Dict[str, Any]]:
         """
         Place Details по place_id: полный адрес с номером дома, координаты, компоненты.
         Используется после выбора подсказки автодополнения, чтобы подставить полный адрес.
@@ -173,6 +199,7 @@ class GoogleMapsService:
             'place_id': place_id.strip(),
             'fields': 'formatted_address,address_components,geometry',
             'key': self.api_key,
+            'language': language or getattr(settings, 'ADDRESS_VALIDATION_SETTINGS', {}).get('DEFAULT_LANGUAGE', 'en'),
         }
         try:
             response = requests.get(self.place_details_url, params=params, timeout=10)
@@ -189,6 +216,8 @@ class GoogleMapsService:
                 'latitude': float(location['lat']) if location else None,
                 'longitude': float(location['lng']) if location else None,
                 'place_id': place_id,
+                'city': components.get('city'),
+                'country': components.get('country'),
             }
         except (requests.RequestException, KeyError, TypeError) as e:
             logger.error("Place details error: %s", e)
@@ -258,7 +287,12 @@ class GoogleMapsService:
         
         return parsed
     
-    def reverse_geocode(self, latitude: float, longitude: float) -> Optional[Dict[str, Any]]:
+    def reverse_geocode(
+        self,
+        latitude: float,
+        longitude: float,
+        language: str | None = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Обратное геокодирование координат в адрес.
         
@@ -272,7 +306,7 @@ class GoogleMapsService:
         params = {
             'latlng': f"{latitude},{longitude}",
             'key': self.api_key,
-            'language': 'en'
+            'language': language or getattr(settings, 'ADDRESS_VALIDATION_SETTINGS', {}).get('DEFAULT_LANGUAGE', 'en')
         }
         
         try:

@@ -123,8 +123,24 @@ class AddressAutocompleteSerializer(serializers.Serializer):
     Сериализатор для автодополнения адресов.
     """
     query = serializers.CharField(max_length=255, help_text=_("Text for autocomplete"))
-    session_token = serializers.CharField(max_length=255, required=False, 
-                                        help_text=_("Session token for grouping requests"))
+    session_token = serializers.CharField(
+        max_length=255,
+        required=False,
+        allow_blank=True,
+        help_text=_("Session token for grouping requests"),
+    )
+    language = serializers.CharField(
+        max_length=16,
+        required=False,
+        allow_blank=True,
+        help_text=_("Preferred language for autocomplete"),
+    )
+    country = serializers.CharField(
+        max_length=8,
+        required=False,
+        allow_blank=True,
+        help_text=_("Country code for autocomplete restriction"),
+    )
     
     def validate_query(self, value):
         """
@@ -147,6 +163,7 @@ class AddressAutocompleteSerializer(serializers.Serializer):
 class PlaceDetailsSerializer(serializers.Serializer):
     """Сериализатор для запроса Place Details по place_id."""
     place_id = serializers.CharField(max_length=512, help_text=_("Google Place ID from autocomplete prediction"))
+    language = serializers.CharField(max_length=16, required=False, allow_blank=True, help_text=_("Preferred language"))
 
     def validate_place_id(self, value):
         v = (value or "").strip()
@@ -160,6 +177,7 @@ class AddressGeocodeSerializer(serializers.Serializer):
     Сериализатор для геокодирования адреса.
     """
     address = serializers.CharField(max_length=500, help_text=_("Address to geocode"))
+    language = serializers.CharField(max_length=16, required=False, allow_blank=True, help_text=_("Preferred language"))
     
     def validate_address(self, value):
         """
@@ -185,6 +203,7 @@ class AddressReverseGeocodeSerializer(serializers.Serializer):
     """
     latitude = serializers.FloatField(help_text=_("Latitude"))
     longitude = serializers.FloatField(help_text=_("Longitude"))
+    language = serializers.CharField(max_length=16, required=False, allow_blank=True, help_text=_("Preferred language"))
     
     def validate(self, attrs):
         """

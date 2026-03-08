@@ -19,8 +19,11 @@ from .models import (
     BookingPayment,
     BookingReview
 )
+from providers.models import Provider, Employee, ProviderLocation
 from providers.serializers import EmployeeSerializer, ProviderSerializer
+from catalog.models import Service
 from catalog.serializers import ServiceSerializer
+from users.models import User
 from users.serializers import UserSerializer
 from pets.serializers import PetSerializer
 from pets.models import Pet
@@ -79,12 +82,123 @@ class BookingReviewSerializer(serializers.ModelSerializer):
         ]
 
 
+class BookingUserCompactSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = User
+        fields = ['id', 'email', 'first_name', 'last_name']
+
+
+class BookingPetListSerializer(serializers.ModelSerializer):
+    pet_type_name = serializers.CharField(source='pet_type.name', read_only=True)
+    breed_name = serializers.CharField(source='breed.name', read_only=True)
+
+    class Meta:
+        model = Pet
+        fields = [
+            'id',
+            'name',
+            'photo',
+            'pet_type',
+            'pet_type_name',
+            'breed',
+            'breed_name',
+            'birth_date',
+        ]
+
+
+class BookingProviderListSerializer(serializers.ModelSerializer):
+    full_address = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Provider
+        fields = [
+            'id',
+            'name',
+            'phone_number',
+            'email',
+            'logo',
+            'website',
+            'is_active',
+            'full_address',
+        ]
+
+    def get_full_address(self, obj):
+        if obj.structured_address:
+            return obj.structured_address.formatted_address or str(obj.structured_address)
+        return None
+
+
+class BookingProviderLocationListSerializer(serializers.ModelSerializer):
+    full_address = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ProviderLocation
+        fields = [
+            'id',
+            'name',
+            'phone_number',
+            'email',
+            'is_active',
+            'full_address',
+        ]
+
+    def get_full_address(self, obj):
+        if obj.structured_address:
+            return obj.structured_address.formatted_address or str(obj.structured_address)
+        return None
+
+
+class BookingEmployeeListSerializer(serializers.ModelSerializer):
+    user = BookingUserCompactSerializer(read_only=True)
+
+    class Meta:
+        model = Employee
+        fields = ['id', 'user', 'is_active']
+
+
+class BookingServiceListSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Service
+        fields = ['id', 'name']
+
+
+class BookingListSerializer(serializers.ModelSerializer):
+    user = BookingUserCompactSerializer(read_only=True)
+    pet = BookingPetListSerializer(read_only=True)
+    provider = BookingProviderListSerializer(read_only=True)
+    provider_location = BookingProviderLocationListSerializer(read_only=True)
+    employee = BookingEmployeeListSerializer(read_only=True)
+    service = BookingServiceListSerializer(read_only=True)
+    status = BookingStatusSerializer(read_only=True)
+
+    class Meta:
+        model = Booking
+        fields = [
+            'id',
+            'code',
+            'user',
+            'pet',
+            'provider',
+            'provider_location',
+            'employee',
+            'service',
+            'status',
+            'start_time',
+            'end_time',
+            'notes',
+            'price',
+            'created_at',
+            'updated_at'
+        ]
+
+
 class BookingSerializer(serializers.ModelSerializer):
     """Сериализатор для бронирования."""
     
     user = UserSerializer(read_only=True)
     pet = PetSerializer(read_only=True)
     provider = ProviderSerializer(read_only=True)
+    provider_location = BookingProviderLocationListSerializer(read_only=True)
     employee = EmployeeSerializer(read_only=True)
     service = ServiceSerializer(read_only=True)
     status = BookingStatusSerializer(read_only=True)
@@ -99,6 +213,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'user',
             'pet',
             'provider',
+            'provider_location',
             'employee',
             'service',
             'status',
