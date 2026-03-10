@@ -331,9 +331,18 @@ class BookingDraftValidationAPIView(APIView):
         except RoutingUnavailableError as exc:
             return Response({'error': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
+        possible_escort_owners = []
+        if validation_result.possible_escort_owner_ids:
+            owners_qs = User.objects.filter(id__in=validation_result.possible_escort_owner_ids)
+            possible_escort_owners = [
+                {'id': u.id, 'first_name': u.first_name, 'last_name': u.last_name}
+                for u in owners_qs
+            ]
+
         payload = {
             'is_bookable': validation_result.is_bookable,
             'requires_escort_assignment': validation_result.requires_escort_assignment,
+            'possible_escort_owners': possible_escort_owners,
             'possible_escort_owner_ids': validation_result.possible_escort_owner_ids,
             'conflicting_bookings': validation_result.conflicting_bookings,
             'employee_id': validation_result.employee.id if validation_result.employee else employee_id,
