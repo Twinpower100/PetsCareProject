@@ -11,6 +11,7 @@
 import logging
 from typing import List, Dict, Any
 from datetime import timedelta
+from django.contrib.auth import get_user_model
 from django.utils import timezone
 from django.utils.translation import gettext as _
 from django.db import models
@@ -19,6 +20,67 @@ from .services import NotificationService, PreferenceService, SchedulerService
 from .models import Notification, NotificationType
 
 logger = logging.getLogger(__name__)
+User = get_user_model()
+
+try:
+    from ratings.models import Review
+except Exception:
+    Review = None
+
+try:
+    from sitters.models import PetSitting
+except Exception:
+    PetSitting = None
+
+try:
+    from billing.models import Payment, Refund
+except Exception:
+    Payment = None
+    Refund = None
+
+
+def _get_pet_owner(pet):
+    """Возвращает владельца питомца для старых и новых моделей."""
+    return getattr(pet, 'owner', None) or getattr(pet, 'main_owner', None)
+
+
+def _get_review_author(review):
+    """Возвращает автора отзыва с обратной совместимостью по старым полям."""
+    return getattr(review, 'user', None) or getattr(review, 'author', None)
+
+
+def _get_provider_owner(provider):
+    """Возвращает owner провайдера, даже если он не хранится прямым FK."""
+    owner = getattr(provider, 'owner', None)
+    if owner is not None:
+        return owner
+
+    try:
+        from providers.models import EmployeeProvider
+        owner_link = EmployeeProvider.objects.select_related('employee__user').filter(
+            provider=provider,
+            is_owner=True,
+        ).first()
+        if owner_link is not None:
+            return owner_link.employee.user
+    except Exception:
+        return None
+    return None
+
+
+def _get_payment_user(payment):
+    """Возвращает пользователя из текущей или legacy-модели платежа."""
+    return getattr(payment, 'user', None) or (
+        payment.booking.user if getattr(payment, 'booking', None) else None
+    )
+
+
+def _get_payment_currency(payment):
+    """Возвращает код/значение валюты, если оно доступно в модели."""
+    currency = getattr(payment, 'currency', None)
+    if hasattr(currency, 'code'):
+        return currency.code
+    return currency
 
 
 @shared_task(bind=True, max_retries=3)
@@ -381,9 +443,6 @@ def send_debt_reminder_task(user_id: int, debt_amount: float, currency: str = 'E
         currency: Валюта
     """
     try:
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-        
         user = User.objects.get(id=user_id)
         
         notification_service = NotificationService()
@@ -413,15 +472,19 @@ def send_new_review_notification_task(review_id: int):
         review_id: ID отзыва
     """
     try:
-        from ratings.models import Review
-        
-        review = Review.objects.get(id=review_id)
-        
+        review_model = Review
+        if review_model is None:
+            from ratings.models import Review as review_model
+
+        review = review_model.objects.get(id=review_id)
+        review_author = _get_review_author(review)
+        provider_owner = _get_provider_owner(review.provider)
+
         notification_service = NotificationService()
         
         # Отправляем уведомление провайдеру о новом отзыве
         notification = notification_service.send_notification(
-            user=review.provider.owner,
+            user=provider_owner,
             notification_type='review',
             title=_('New Review Received'),
             message=_('You have received a new review for your service.'),
@@ -431,7 +494,7 @@ def send_new_review_notification_task(review_id: int):
                 'review_id': review.id,
                 'rating': review.rating,
                 'service_name': review.service.name,
-                'client_name': review.user.get_full_name() or review.user.email
+                'client_name': review_author.get_full_name() or review_author.email
             }
         )
         
@@ -551,15 +614,17 @@ def send_pet_sitting_notification_task(sitting_id: int, status: str):
         status: Статус передержки
     """
     try:
-        from sitters.models import PetSitting
-        
-        sitting = PetSitting.objects.get(id=sitting_id)
+        sitting_model = PetSitting
+        if sitting_model is None:
+            from sitters.models import PetSitting as sitting_model
+
+        sitting = sitting_model.objects.get(id=sitting_id)
         
         notification_service = NotificationService()
         
         # Отправляем уведомление владельцу питомца
         notification = notification_service.send_notification(
-            user=sitting.pet.owner,
+            user=_get_pet_owner(sitting.pet),
             notification_type='pet_sitting',
             title=_('Pet Sitting Update'),
             message=_('Your pet sitting status has been updated.'),
@@ -591,15 +656,16 @@ def send_payment_failed_notification_task(payment_id: int, reason: str = None):
         reason: Причина неудачи
     """
     try:
-        from billing.models import Payment
-        
-        payment = Payment.objects.get(id=payment_id)
+        payment_model = Payment
+        if payment_model is None:
+            from billing.models import Payment as payment_model
+
+        payment = payment_model.objects.get(id=payment_id)
         
         notification_service = NotificationService()
         
-        booking_user = payment.booking.user if payment.booking else None
         notification = notification_service.send_notification(
-            user=booking_user,
+            user=_get_payment_user(payment),
             notification_type='payment',
             title=_('Payment Failed'),
             message=_('Your payment could not be processed. Please check your payment method.'),
@@ -608,7 +674,7 @@ def send_payment_failed_notification_task(payment_id: int, reason: str = None):
             data={
                 'payment_id': payment.id,
                 'amount': payment.amount,
-                'currency': None,
+                'currency': _get_payment_currency(payment),
                 'reason': reason
             }
         )
@@ -628,15 +694,16 @@ def send_refund_notification_task(refund_id: int):
         refund_id: ID возврата
     """
     try:
-        from billing.models import Refund
-        
-        refund = Refund.objects.get(id=refund_id)
+        refund_model = Refund
+        if refund_model is None:
+            from billing.models import Refund as refund_model
+
+        refund = refund_model.objects.get(id=refund_id)
         
         notification_service = NotificationService()
         
-        booking_user = refund.payment.booking.user if refund.payment and refund.payment.booking else None
         notification = notification_service.send_notification(
-            user=booking_user,
+            user=_get_payment_user(refund.payment),
             notification_type='payment',
             title=_('Refund Processed'),
             message=_('Your refund has been processed and will be credited to your account.'),
@@ -645,7 +712,7 @@ def send_refund_notification_task(refund_id: int):
             data={
                 'refund_id': refund.id,
                 'amount': refund.amount,
-                'currency': None,
+                'currency': _get_payment_currency(refund),
                 'payment_id': refund.payment.id
             }
         )
@@ -666,9 +733,6 @@ def send_system_maintenance_notification_task(message: str, user_ids: List[int] 
         user_ids: Список ID пользователей (если None, отправляется всем)
     """
     try:
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
-        
         if user_ids:
             users = User.objects.filter(id__in=user_ids)
         else:

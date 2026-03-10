@@ -156,7 +156,7 @@ def _fallback_filter_by_distance(
         
         if point is not None:
             # Используем координаты из Point объекта
-            lat, lon = point.coords
+            lon, lat = point.coords
             distance = calculate_distance(center_lat, center_lon, lat, lon)
             if distance is not None and distance <= radius_km:
                 results.append((obj, distance))
@@ -410,9 +410,9 @@ def batch_distance_calculation(queryset, center_lat: float, center_lon: float,
             for obj in batch:
                 point = getattr(obj, 'point', None)
                 
-                if point is not None:
-                    # Используем PostGIS для расчета расстояния
-                    distance = point.distance(center_point) * 111.32  # Convert to km
+            if point is not None:
+                distance = calculate_distance(center_lat, center_lon, point.y, point.x)
+                if distance is not None:
                     results.append((obj, distance))
         
         return results
@@ -448,7 +448,7 @@ def _fallback_batch_distance_calculation(queryset, center_lat: float, center_lon
             
             if point is not None:
                 # Используем координаты из Point объекта
-                lat, lon = point.coords
+                lon, lat = point.coords
                 distance = calculate_distance(center_lat, center_lon, lat, lon)
                 if distance is not None:
                     results.append((obj, distance))

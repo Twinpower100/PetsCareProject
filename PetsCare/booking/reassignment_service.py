@@ -265,6 +265,13 @@ class BookingReassignmentService:
                 'reassigned_booking_ids': reassigned_ids,
             })
 
+        return {
+            'reassigned_count': len(reassigned_ids),
+            'reassigned_booking_ids': reassigned_ids,
+            'reassigned_bookings': reassigned_bookings,
+            'conflicts': conflicts,
+        }
+
     @staticmethod
     @transaction.atomic
     def process_granular_resolutions(

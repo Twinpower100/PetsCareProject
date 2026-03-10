@@ -1239,3 +1239,15 @@ class EmployeeAutoBookingService:
         result.sort(key=lambda x: (x['workload'], -x['rating']))
         
         return result 
+
+
+from .unified_services import (  # noqa: E402
+    BookingAvailabilityService as UnifiedBookingAvailabilityService,
+    BookingDomainError,
+    BookingDraftValidationResult,
+    BookingTransactionService as UnifiedBookingTransactionService,
+)
+
+# Единый источник истины для новых и legacy-вызовов.
+BookingAvailabilityService = UnifiedBookingAvailabilityService
+BookingTransactionService = UnifiedBookingTransactionService

@@ -543,6 +543,9 @@ class Pet(models.Model):
         Оптимизация: если petowner_set уже подгружен через
         prefetch_related, фильтруем в памяти; иначе — один SQL-запрос.
         """
+        # Поддержка legacy-сценария, когда main_owner передают до первого save().
+        if self.pk is None and hasattr(self, '_pending_main_owner'):
+            return self._pending_main_owner
         # Пробуем использовать prefetched данные
         if 'petowner_set' in getattr(self, '_prefetched_objects_cache', {}):
             for po in self.petowner_set.all():
@@ -553,9 +556,16 @@ class Pet(models.Model):
         po = self.petowner_set.filter(role='main').select_related('user').first()
         return po.user if po else None
 
+    @main_owner.setter
+    def main_owner(self, value):
+        """Сохраняет main owner для старых create/update flows."""
+        self._pending_main_owner = value
+
     @property
     def main_owner_id(self):
         """ID основного владельца (для обратной совместимости)."""
+        if self.pk is None and hasattr(self, '_pending_main_owner'):
+            return getattr(self._pending_main_owner, 'id', None)
         if 'petowner_set' in getattr(self, '_prefetched_objects_cache', {}):
             for po in self.petowner_set.all():
                 if po.role == 'main':
@@ -743,9 +753,28 @@ class Pet(models.Model):
         # Сохраняем объект
         super().save(*args, **kwargs)
 
+        if hasattr(self, '_pending_main_owner') and self._pending_main_owner is not None:
+            self._sync_main_owner_relation(self._pending_main_owner)
+
         # Ресайз фото до заданного max разрешения при необходимости
         if self.photo:
             self._resize_photo_if_needed()
+
+    def _sync_main_owner_relation(self, owner):
+        """Синхронизирует PetOwner после legacy-записи через Pet.main_owner."""
+        existing_main = self.petowner_set.filter(role='main').first()
+        if existing_main and existing_main.user_id == owner.id:
+            return
+
+        self.petowner_set.filter(role='main').exclude(user=owner).update(role='coowner')
+        relation, created = PetOwner.objects.get_or_create(
+            pet=self,
+            user=owner,
+            defaults={'role': 'main'},
+        )
+        if not created and relation.role != 'main':
+            relation.role = 'main'
+            relation.save(update_fields=['role'])
 
     def _resize_photo_if_needed(self):
         """Уменьшает фото до PET_PHOTO_MAX_WIDTH×PET_PHOTO_MAX_HEIGHT при необходимости."""

@@ -45,7 +45,7 @@ class DebtReminderTaskTest(TestCase):
 
     def test_send_debt_reminder_task_user_not_found(self):
         """Тест обработки несуществующего пользователя"""
-        with self.assertLogs(logger, level='ERROR'):
+        with self.assertLogs('notifications.tasks', level='ERROR'):
             send_debt_reminder_task(99999, 100.0, 'EUR')
 
 

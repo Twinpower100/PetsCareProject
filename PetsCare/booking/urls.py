@@ -26,6 +26,7 @@ urlpatterns = [
     # Новый Booking Flow UI: Поиск, Слоты, Создание
     path('booking/search/', flow_views.ProviderSearchAPIView.as_view(), name='search_providers'),
     path('booking/locations/<int:location_id>/slots/', flow_views.LocationSlotsAPIView.as_view(), name='location_slots'),
+    path('booking/appointments/validate/', flow_views.BookingDraftValidationAPIView.as_view(), name='validate_appointment'),
     path('booking/appointments/', flow_views.CreateAppointmentAPIView.as_view(), name='create_appointment'),
     
     # Существующие URL - восстановлены

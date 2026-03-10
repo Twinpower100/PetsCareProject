@@ -11,10 +11,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Используем строго ключ из .env, так как компромиссы и "срезание углов" недопустимы.
 SECRET_KEY = config('SECRET_KEY')
 DEBUG = True
-ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver']
 
 # Кастомная модель пользователя
 AUTH_USER_MODEL = 'users.User'
+TEST_RUNNER = 'test_runner.AppLabelDiscoverRunner'
 
 # Настройка для django_admin_log с кастомной моделью пользователя
 ADMIN_LOG_USER_FIELD = 'user_id'

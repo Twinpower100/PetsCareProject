@@ -102,25 +102,17 @@ class AddressForm(forms.ModelForm):
         if full_address:
             try:
                 validation_service = AddressValidationService()
-                # Create a temporary address for geocoding
-                temp_address = Address(
-                    house_number=cleaned_data.get('house_number', ''),
-                    street=cleaned_data.get('street', ''),
-                    city=cleaned_data.get('city', ''),
-                    region=cleaned_data.get('region', ''),
-                    district=cleaned_data.get('district', ''),
-                    country=cleaned_data.get('country', ''),
-                    postal_code=cleaned_data.get('postal_code', '')
-                )
-                
-                # Perform geocoding
-                is_valid = validation_service.validate_address(temp_address)
-                
-                if is_valid:
-                    cleaned_data['formatted_address'] = temp_address.formatted_address
-                    cleaned_data['latitude'] = temp_address.latitude
-                    cleaned_data['longitude'] = temp_address.longitude
-                    cleaned_data['is_geocoded'] = bool(temp_address.point)
+                geocoding_result = validation_service.google_service.geocode_address(full_address)
+
+                if geocoding_result:
+                    coordinates = geocoding_result.get('coordinates', {})
+                    cleaned_data['formatted_address'] = geocoding_result.get('formatted_address', '')
+                    cleaned_data['latitude'] = coordinates.get('latitude')
+                    cleaned_data['longitude'] = coordinates.get('longitude')
+                    cleaned_data['is_geocoded'] = bool(
+                        coordinates.get('latitude') is not None and
+                        coordinates.get('longitude') is not None
+                    )
                     cleaned_data['validation_status'] = 'valid'
                 else:
                     cleaned_data['validation_status'] = 'invalid'

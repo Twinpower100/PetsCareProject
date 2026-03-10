@@ -9,6 +9,9 @@ Booking models for the application.
 5. Отмен бронирований
 """
 
+import random
+import string
+
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
@@ -181,6 +184,14 @@ class Booking(models.Model):
         related_name='bookings',
         verbose_name=_('User')
     )
+    escort_owner = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='escorted_bookings',
+        verbose_name=_('Escort Owner'),
+        blank=True,
+        help_text=_('Owner escorting the pet to the booking')
+    )
     pet = models.ForeignKey(
         Pet,
         on_delete=models.CASCADE,
@@ -226,6 +237,11 @@ class Booking(models.Model):
     )
     start_time = models.DateTimeField(_('Start Time'))
     end_time = models.DateTimeField(_('End Time'))
+    occupied_duration_minutes = models.PositiveIntegerField(
+        _('Occupied Duration Minutes'),
+        default=0,
+        help_text=_('Immutable occupied duration snapshot stored at booking creation time')
+    )
     notes = models.TextField(_('Notes'), blank=True)
     price = models.DecimalField(
         _('Price'),
@@ -286,6 +302,11 @@ class Booking(models.Model):
         verbose_name = _('Booking')
         verbose_name_plural = _('Bookings')
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['escort_owner', 'start_time']),
+            models.Index(fields=['pet', 'start_time']),
+            models.Index(fields=['employee', 'start_time']),
+        ]
 
     def __str__(self):
         return f"{self.user.username} - {self.service.name} ({self.start_time})"
@@ -295,6 +316,44 @@ class Booking(models.Model):
             raise models.ValidationError(
                 _("End time must be later than start time")
             )
+
+        if not self.escort_owner_id and self.user_id:
+            self.escort_owner = self.user
+
+        if self.escort_owner_id and self.pet_id:
+            if not self.pet.owners.filter(id=self.escort_owner_id).exists():
+                raise models.ValidationError(
+                    {"escort_owner": _("Escort owner must be one of the pet owners")}
+                )
+
+        if not self.occupied_duration_minutes and self.start_time and self.end_time:
+            duration_seconds = (self.end_time - self.start_time).total_seconds()
+            self.occupied_duration_minutes = max(int(duration_seconds // 60), 1)
+
+    def save(self, *args, **kwargs):
+        """Подготавливает производные поля перед сохранением бронирования."""
+        if not self.code:
+            self.code = self._generate_booking_code()
+
+        if not self.provider_id and self.provider_location_id:
+            self.provider = self.provider_location.provider
+
+        if not self.escort_owner_id and self.user_id:
+            self.escort_owner = self.user
+
+        if not self.occupied_duration_minutes and self.start_time and self.end_time:
+            duration_seconds = (self.end_time - self.start_time).total_seconds()
+            self.occupied_duration_minutes = max(int(duration_seconds // 60), 1)
+
+        super().save(*args, **kwargs)
+
+    @staticmethod
+    def _generate_booking_code():
+        """Генерирует уникальный код бронирования."""
+        while True:
+            code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+            if not Booking.objects.filter(code=code).exists():
+                return code
     
     def complete_booking(self, user, status='completed'):
         """

@@ -76,6 +76,23 @@ def _user_has_role(user, role_name):
         return False
 
 
+def _get_managed_providers(user):
+    """
+    Безопасно возвращает queryset провайдеров, которыми управляет пользователь.
+
+    Для anonymous/swagger schema generation возвращает пустой queryset.
+    """
+    if not hasattr(user, 'is_authenticated') or not user.is_authenticated:
+        return Provider.objects.none()
+    get_managed = getattr(user, 'get_managed_providers', None)
+    if not callable(get_managed):
+        return Provider.objects.none()
+    try:
+        return get_managed()
+    except (AttributeError, TypeError):
+        return Provider.objects.none()
+
+
 def _get_provider_full_address(provider):
     """
     Возвращает форматированный адрес провайдера, если он доступен.
@@ -240,8 +257,9 @@ class ProviderListCreateAPIView(generics.ListCreateAPIView):
         queryset = self.queryset
         if self.request.method == 'GET' and _is_brief_mode(self.request):
             queryset = queryset.select_related('structured_address')
-        if self.request.user.get_managed_providers().exists():
-            queryset = queryset.filter(id__in=self.request.user.get_managed_providers())
+        managed_providers = _get_managed_providers(self.request.user)
+        if managed_providers.exists():
+            queryset = queryset.filter(id__in=managed_providers)
         return queryset
 
 
@@ -269,11 +287,14 @@ class ProviderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
 
     def get_queryset(self):
         """Для provider_admin — только управляемые организации."""
+        if getattr(self, 'swagger_fake_view', False):
+            return Provider.objects.none()
         queryset = self.queryset
         if self.request.method == 'GET' and _is_brief_mode(self.request):
             queryset = queryset.select_related('structured_address')
-        if self.request.user.get_managed_providers().exists():
-            queryset = queryset.filter(id__in=self.request.user.get_managed_providers())
+        managed_providers = _get_managed_providers(self.request.user)
+        if managed_providers.exists():
+            queryset = queryset.filter(id__in=managed_providers)
         return queryset
 
 
@@ -290,7 +311,7 @@ class ProviderAdminListAPIView(generics.ListAPIView):
         if getattr(self, 'swagger_fake_view', False):
             return EmployeeProvider.objects.none()
         provider_id = self.kwargs.get('provider_id')
-        managed = self.request.user.get_managed_providers()
+        managed = _get_managed_providers(self.request.user)
         if not managed.filter(pk=provider_id).exists():
             return EmployeeProvider.objects.none()
         role_q = Q(is_owner=True) | Q(is_provider_manager=True) | Q(is_provider_admin=True)
@@ -2163,6 +2184,8 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
         """
         Возвращает queryset локаций с учетом прав доступа.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return ProviderLocation.objects.none()
         queryset = ProviderLocation.objects.select_related(
             'provider', 'provider__invoice_currency', 'structured_address', 'manager'
         )
@@ -2175,8 +2198,8 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
             queryset = queryset.prefetch_related('served_pet_types')
         
         # Provider admin видит только локации своей организации
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
+        managed_providers = _get_managed_providers(self.request.user)
+        if managed_providers.exists():
             queryset = queryset.filter(provider__in=managed_providers)
         
         return queryset
@@ -2231,6 +2254,8 @@ class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
         """
         Возвращает queryset локаций с учетом прав доступа.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return ProviderLocation.objects.none()
         queryset = ProviderLocation.objects.select_related(
             'provider', 'provider__invoice_currency', 'structured_address', 'manager'
         ).prefetch_related(
@@ -2240,8 +2265,8 @@ class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
         )
         
         # Provider admin видит только локации своей организации
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
+        managed_providers = _get_managed_providers(self.request.user)
+        if managed_providers.exists():
             queryset = queryset.filter(provider__in=managed_providers)
         
         return queryset
@@ -2769,12 +2794,15 @@ class LocationScheduleListCreateAPIView(generics.ListCreateAPIView):
     """
     serializer_class = LocationScheduleSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = []
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return LocationSchedule.objects.none()
         location_pk = self.kwargs.get('location_pk')
         queryset = LocationSchedule.objects.filter(provider_location_id=location_pk).order_by('weekday')
-        if self.request.user.get_managed_providers().exists():
-            managed = self.request.user.get_managed_providers()
+        managed = _get_managed_providers(self.request.user)
+        if managed.exists():
             queryset = queryset.filter(provider_location__provider__in=managed)
         return queryset
 
@@ -2802,10 +2830,12 @@ class LocationScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return LocationSchedule.objects.none()
         location_pk = self.kwargs.get('location_pk')
         queryset = LocationSchedule.objects.filter(provider_location_id=location_pk)
-        if self.request.user.get_managed_providers().exists():
-            managed = self.request.user.get_managed_providers()
+        managed = _get_managed_providers(self.request.user)
+        if managed.exists():
             queryset = queryset.filter(provider_location__provider__in=managed)
         return queryset
 
@@ -2817,13 +2847,17 @@ class HolidayShiftListCreateAPIView(generics.ListCreateAPIView):
     """
     serializer_class = HolidayShiftSerializer
     permission_classes = [permissions.IsAuthenticated]
+    filter_backends = []
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            from .models import HolidayShift
+            return HolidayShift.objects.none()
         from .models import HolidayShift
         location_pk = self.kwargs.get('location_pk')
         queryset = HolidayShift.objects.filter(provider_location_id=location_pk).order_by('date')
-        if self.request.user.get_managed_providers().exists():
-            managed = self.request.user.get_managed_providers()
+        managed = _get_managed_providers(self.request.user)
+        if managed.exists():
             queryset = queryset.filter(provider_location__provider__in=managed)
         return queryset
 
@@ -2851,11 +2885,14 @@ class HolidayShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPI
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            from .models import HolidayShift
+            return HolidayShift.objects.none()
         from .models import HolidayShift
         location_pk = self.kwargs.get('location_pk')
         queryset = HolidayShift.objects.filter(provider_location_id=location_pk)
-        if self.request.user.get_managed_providers().exists():
-            managed = self.request.user.get_managed_providers()
+        managed = _get_managed_providers(self.request.user)
+        if managed.exists():
             queryset = queryset.filter(provider_location__provider__in=managed)
         return queryset
 
@@ -2887,13 +2924,15 @@ class ProviderLocationServiceListCreateAPIView(generics.ListCreateAPIView):
         """
         Возвращает queryset записей услуг локаций (локация + услуга + тип + размер) с учётом прав.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return ProviderLocationService.objects.none()
         queryset = ProviderLocationService.objects.select_related(
             'location', 'location__provider', 'service', 'pet_type'
         )
         
         # Provider admin видит только услуги локаций своей организации
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
+        managed_providers = _get_managed_providers(self.request.user)
+        if managed_providers.exists():
             queryset = queryset.filter(location__provider__in=managed_providers)
         
         return queryset
@@ -2931,13 +2970,15 @@ class ProviderLocationServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdat
         """
         Возвращает queryset услуг локаций с учетом прав доступа.
         """
+        if getattr(self, 'swagger_fake_view', False):
+            return ProviderLocationService.objects.none()
         queryset = ProviderLocationService.objects.select_related(
             'location', 'location__provider', 'service', 'pet_type'
         )
         
         # Provider admin видит только услуги локаций своей организации
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
+        managed_providers = _get_managed_providers(self.request.user)
+        if managed_providers.exists():
             queryset = queryset.filter(location__provider__in=managed_providers)
         
         return queryset

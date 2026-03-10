@@ -234,7 +234,7 @@ class ProviderSearchFlowAPITestCase(APITestCase):
         self.assertEqual(response.data[0]['id'], self.location.id)
         self.assertEqual(response.data[0]['address'], self.berlin_address.formatted_address)
 
-    def test_date_filter_falls_back_when_location_has_no_schedule(self):
+    def test_date_filter_excludes_location_when_no_real_slots_exist(self):
         response = self.client.get(
             self.url,
             {
@@ -246,8 +246,7 @@ class ProviderSearchFlowAPITestCase(APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]['id'], self.location.id)
+        self.assertEqual(len(response.data), 0)
 
     def test_size_mismatch_location_is_excluded_from_results(self):
         response = self.client.get(

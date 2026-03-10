@@ -164,6 +164,7 @@ class BookingServiceListSerializer(serializers.ModelSerializer):
 
 class BookingListSerializer(serializers.ModelSerializer):
     user = BookingUserCompactSerializer(read_only=True)
+    escort_owner = BookingUserCompactSerializer(read_only=True)
     pet = BookingPetListSerializer(read_only=True)
     provider = BookingProviderListSerializer(read_only=True)
     provider_location = BookingProviderLocationListSerializer(read_only=True)
@@ -177,6 +178,7 @@ class BookingListSerializer(serializers.ModelSerializer):
             'id',
             'code',
             'user',
+            'escort_owner',
             'pet',
             'provider',
             'provider_location',
@@ -185,6 +187,7 @@ class BookingListSerializer(serializers.ModelSerializer):
             'status',
             'start_time',
             'end_time',
+            'occupied_duration_minutes',
             'notes',
             'price',
             'created_at',
@@ -196,6 +199,7 @@ class BookingSerializer(serializers.ModelSerializer):
     """Сериализатор для бронирования."""
     
     user = UserSerializer(read_only=True)
+    escort_owner = UserSerializer(read_only=True)
     pet = PetSerializer(read_only=True)
     provider = ProviderSerializer(read_only=True)
     provider_location = BookingProviderLocationListSerializer(read_only=True)
@@ -211,6 +215,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'id',
             'code',
             'user',
+            'escort_owner',
             'pet',
             'provider',
             'provider_location',
@@ -219,6 +224,7 @@ class BookingSerializer(serializers.ModelSerializer):
             'status',
             'start_time',
             'end_time',
+            'occupied_duration_minutes',
             'notes',
             'price',
             'payment',
@@ -297,11 +303,12 @@ class BookingCreateSerializer(serializers.ModelSerializer):
         model = Booking
         fields = [
             'pet',
-            'service',
             'provider',
+            'provider_location',
             'employee',
+            'service',
             'start_time',
-            'end_time',
+            'escort_owner',
             'notes'
         ]
 
@@ -309,18 +316,8 @@ class BookingCreateSerializer(serializers.ModelSerializer):
         """
         Валидация данных при создании бронирования.
         """
-        start_time = data.get('start_time')
-        end_time = data.get('end_time')
-        if start_time and end_time and start_time >= end_time:
+        if data.get('escort_owner') and not data['pet'].owners.filter(id=data['escort_owner'].id).exists():
             raise serializers.ValidationError(
-                {'start_time': _('Start time must be before end time')}
+                {'escort_owner': _('Escort owner must be one of the pet owners')}
             )
-            
-        employee = data.get('employee')
-        provider = data.get('provider')
-        if employee.provider != provider:
-            raise serializers.ValidationError(
-                {'employee': _('Employee does not belong to this provider')}
-            )
-            
         return data 

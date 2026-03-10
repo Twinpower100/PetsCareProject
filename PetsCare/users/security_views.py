@@ -23,6 +23,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from rest_framework import status
+from rest_framework import serializers
 from rest_framework.generics import GenericAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -287,6 +288,7 @@ class UserSessionListAPIView(GenericAPIView):
     """
     permission_classes = [IsAuthenticated]
     serializer_class = UserSessionSerializer
+    filter_backends = []
 
     def get(self, request):
         user = request.user
@@ -364,6 +366,7 @@ class TerminateAllSessionsAPIView(GenericAPIView):
     Возвращает свежую пару токенов для текущего сеанса.
     """
     permission_classes = [IsAuthenticated]
+    serializer_class = serializers.Serializer
 
     def post(self, request):
         user = request.user

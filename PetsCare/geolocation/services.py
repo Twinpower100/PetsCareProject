@@ -851,11 +851,15 @@ class DeviceLocationService:
             user: Пользователь
             location_data: Данные о местоположении
         """
+        point = Point(
+            float(location_data['longitude']),
+            float(location_data['latitude']),
+            srid=4326
+        )
         UserLocation.objects.update_or_create(
             user=user,
             defaults={
-                'latitude': location_data['latitude'],
-                'longitude': location_data['longitude'],
+                'point': point,
                 'accuracy': location_data.get('accuracy'),
                 'source': location_data['source'],
                 'last_updated': location_data['timestamp']

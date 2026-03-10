@@ -38,7 +38,12 @@ from .utils import (
     update_booking_status,
     get_available_time_slots
 )
-from .services import EmployeeAutoBookingService, BookingTransactionService
+from .services import (
+    BookingAvailabilityService,
+    BookingDomainError,
+    BookingTransactionService,
+    EmployeeAutoBookingService,
+)
 from pets.models import Pet
 from providers.models import Provider, Service
 from users.models import User
@@ -209,30 +214,27 @@ class BookingViewSet(viewsets.ModelViewSet):
         """
         Создает новое бронирование.
         """
-        # Проверяем доступность временного слота
-        if not check_booking_availability(
-            serializer.validated_data['provider'],
-            serializer.validated_data['employee'],
-            serializer.validated_data['start_time'],
-            serializer.validated_data['end_time']
-        ):
-            raise serializers.ValidationError(
-                _('Selected time slot is not available.')
+        provider_location = serializer.validated_data.get('provider_location')
+        provider = serializer.validated_data.get('provider')
+        if provider_location is not None and provider is None:
+            provider = provider_location.provider
+
+        try:
+            booking = BookingTransactionService.create_booking(
+                user=self.request.user,
+                pet=serializer.validated_data['pet'],
+                provider=provider,
+                provider_location=provider_location,
+                employee=serializer.validated_data['employee'],
+                service=serializer.validated_data['service'],
+                start_time=serializer.validated_data['start_time'],
+                escort_owner=serializer.validated_data.get('escort_owner'),
+                notes=serializer.validated_data.get('notes', ''),
             )
-        
-        # Рассчитываем стоимость
-        price = calculate_booking_price(
-            serializer.validated_data['service'],
-            serializer.validated_data['start_time'],
-            serializer.validated_data['end_time']
-        )
-        
-        # Создаем бронирование
-        booking = serializer.save(
-            user=self.request.user,
-            price=price,
-            status=BookingStatus.objects.get(name='active')
-        )
+        except BookingDomainError as exc:
+            raise serializers.ValidationError(exc.to_dict())
+
+        serializer.instance = booking
     
     @action(detail=True, methods=['post'])
     def cancel_by_client(self, request, pk=None):
@@ -642,21 +644,21 @@ class GetAvailableTimeSlotsAPIView(APIView):
             return Response([])
         try:
             booking = Booking.objects.get(id=booking_id)
-            # Логика получения доступных слотов
-            provider = booking.provider
-            if not provider and booking.provider_location:
-                provider = booking.provider_location.provider
-            if not provider:
+            if not booking.provider_location:
                 return Response(
-                    {'error': _('Provider not found for booking')},
+                    {'error': _('Provider location not found for booking')},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
-            available_slots = TimeSlot.objects.filter(
-                Q(provider=provider) | Q(provider_location__provider=provider),
-                is_available=True
-            ).values('id', 'start_time', 'end_time')
-            return Response(list(available_slots))
+
+            slots_by_date = BookingAvailabilityService.get_available_slots(
+                provider_location=booking.provider_location,
+                service=booking.service,
+                pet=booking.pet,
+                requester=request.user,
+                date_start=booking.start_time.date(),
+                date_end=booking.start_time.date(),
+            )
+            return Response(slots_by_date.get(booking.start_time.date().isoformat(), []))
         except Booking.DoesNotExist:
             return Response({'error': 'Booking not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:

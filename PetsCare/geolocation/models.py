@@ -120,6 +120,9 @@ class Address(models.Model):
                 self.point = Point(lon, lat, srid=4326)
             except (TypeError, ValueError):
                 self.point = None
+        elif self.point:
+            self.longitude = Decimal(str(self.point.x))
+            self.latitude = Decimal(str(self.point.y))
         else:
             self.point = None
         self.is_geocoded = bool(self.point)

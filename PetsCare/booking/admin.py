@@ -1,8 +1,29 @@
 from django.contrib import admin
+from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
 from .models import BookingStatus, Booking, BookingNote, BookingCancellation, AbuseRule, BookingPayment, BookingReview, BookingAutoCompleteSettings
 from custom_admin import custom_admin_site
+
+
+class EscortAssignmentFilter(admin.SimpleListFilter):
+    """Фильтр по типу escort assignment."""
+
+    title = _('Escort Assignment')
+    parameter_name = 'escort_assignment'
+
+    def lookups(self, request, model_admin):
+        return (
+            ('creator', _('Escort equals creator')),
+            ('other', _('Escort differs from creator')),
+        )
+
+    def queryset(self, request, queryset):
+        if self.value() == 'creator':
+            return queryset.filter(user_id=models.F('escort_owner_id'))
+        if self.value() == 'other':
+            return queryset.exclude(user_id=models.F('escort_owner_id'))
+        return queryset
 
 
 class BookingNoteInline(admin.TabularInline):
@@ -56,26 +77,41 @@ class BookingAdmin(admin.ModelAdmin):
     Административный интерфейс для модели бронирования.
     """
     list_display = [
-        'id', 'user', 'pet', 'provider_location', 'get_provider', 'employee',
-        'service', 'status', 'start_time', 'end_time',
-        'price', 'created_at', 'completed_at', 'cancelled_at'
+        'id', 'code', 'user', 'escort_owner', 'pet', 'get_pet_owners',
+        'provider_location', 'get_provider', 'employee', 'service', 'status',
+        'start_time', 'end_time', 'occupied_duration_minutes', 'price',
+        'created_at', 'completed_at', 'cancelled_at'
     ]
     list_filter = [
-        'status', 'provider_location', 'start_time', 'end_time',
+        'status', 'provider_location', 'provider_location__provider', 'escort_owner',
+        EscortAssignmentFilter, 'employee', 'service', 'start_time', 'end_time',
         'created_at', 'updated_at', 'completed_at', 'cancelled_at'
     ]
     search_fields = [
-        'user__username', 'pet__name', 'provider_location__name',
-        'provider_location__provider__name', 'employee__user__username', 'service__name'
+        'code', 'user__username', 'user__email', 'escort_owner__username',
+        'escort_owner__email', 'pet__name', 'provider_location__name',
+        'provider_location__provider__name', 'employee__user__username',
+        'employee__user__email', 'service__name', 'pet__owners__username',
+        'pet__owners__email'
     ]
     readonly_fields = [
-        'created_at', 'updated_at', 'completed_at', 'cancelled_at',
-        'completed_by', 'cancelled_by', 'cancellation_reason', 'get_provider'
+        'code', 'occupied_duration_minutes', 'created_at', 'updated_at',
+        'completed_at', 'cancelled_at', 'completed_by', 'cancelled_by',
+        'cancellation_reason', 'get_provider', 'get_pet_owners'
     ]
+    list_select_related = [
+        'user', 'escort_owner', 'pet', 'provider_location',
+        'provider_location__provider', 'employee', 'employee__user', 'service', 'status'
+    ]
+    autocomplete_fields = ['user', 'escort_owner', 'pet', 'provider_location', 'employee', 'service', 'status']
     date_hierarchy = 'created_at'
     inlines = [BookingNoteInline, BookingCancellationInline]
     
     actions = ['complete_bookings', 'cancel_bookings', 'mark_no_show']
+
+    def get_queryset(self, request):
+        """Подгружает связанные сущности для list/detail без N+1."""
+        return super().get_queryset(request).prefetch_related('pet__owners')
     
     def complete_bookings(self, request, queryset):
         """Завершить выбранные бронирования"""
@@ -137,19 +173,24 @@ class BookingAdmin(admin.ModelAdmin):
             return obj.provider.name
         return '-'
     get_provider.short_description = _('Provider Organization')
+
+    def get_pet_owners(self, obj):
+        """Показывает owners/coowners питомца для проверки escort assignment."""
+        return ', '.join(obj.pet.owners.values_list('email', flat=True))
+    get_pet_owners.short_description = _('Pet Owners')
     
     fieldsets = (
         (None, {
-            'fields': ('pet', 'provider_location', 'employee', 'service')
+            'fields': ('user', 'escort_owner', 'pet', 'get_pet_owners', 'provider_location', 'employee', 'service')
         }),
         (_('Time'), {
-            'fields': ('start_time', 'end_time')
+            'fields': ('start_time', 'end_time', 'occupied_duration_minutes')
         }),
         (_('Status'), {
-            'fields': ('status', 'price', 'notes')
+            'fields': ('status', 'price', 'notes', 'code')
         }),
         (_('Metadata'), {
-            'fields': ('user', 'created_at', 'updated_at'),
+            'fields': ('created_at', 'updated_at'),
             'classes': ('collapse',)
         })
     )
@@ -158,39 +199,44 @@ class BookingAdmin(admin.ModelAdmin):
         """
         Сохраняет модель бронирования с транзакционной защитой.
         """
-        from .services import BookingTransactionService
+        from .services import BookingDomainError, BookingTransactionService
         
         try:
             if change:
-                # Обновление существующего бронирования
-                BookingTransactionService.update_booking(
+                saved_booking = BookingTransactionService.update_booking(
                     booking_id=obj.id,
                     new_start_time=obj.start_time,
-                    new_end_time=obj.end_time,
                     new_employee=obj.employee,
                     new_service=obj.service,
                     new_price=obj.price,
-                    new_notes=obj.notes
+                    new_notes=obj.notes,
+                    new_escort_owner=obj.escort_owner,
                 )
+                obj.pk = saved_booking.pk
+                self.log_change(request, saved_booking, _('Booking updated via booking transaction service'))
             else:
-                # Создание нового бронирования
-                # Получаем provider из provider_location, если он не указан напрямую
                 provider = obj.provider
                 if not provider and obj.provider_location:
                     provider = obj.provider_location.provider
                 
-                BookingTransactionService.create_booking(
+                saved_booking = BookingTransactionService.create_booking(
                     user=obj.user,
                     pet=obj.pet,
                     provider=provider,
                     employee=obj.employee,
                     service=obj.service,
                     start_time=obj.start_time,
-                    end_time=obj.end_time,
                     price=obj.price,
                     notes=obj.notes,
-                    provider_location=obj.provider_location
+                    provider_location=obj.provider_location,
+                    escort_owner=obj.escort_owner,
                 )
+                obj.pk = saved_booking.pk
+                self.log_addition(request, saved_booking, _('Booking created via booking transaction service'))
+        except BookingDomainError as e:
+            from django.contrib import messages
+            messages.error(request, str(e.message))
+            return
         except ValidationError as e:
             from django.contrib import messages
             messages.error(request, str(e))
@@ -199,8 +245,6 @@ class BookingAdmin(admin.ModelAdmin):
             from django.contrib import messages
             messages.error(request, _("Error saving booking: {}").format(str(e)))
             return
-        
-        super().save_model(request, obj, form, change)
 
 
 class BookingNoteAdmin(admin.ModelAdmin):
