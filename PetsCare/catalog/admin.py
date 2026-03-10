@@ -30,7 +30,7 @@ class ServiceAdmin(admin.ModelAdmin):
     """
     list_display = ['get_tree_name', 'get_full_path', 'code', 'parent', 'level', 'hierarchy_order', 'is_active', 'is_client_facing', 'is_mandatory', 'is_periodic', 'requires_license', 'get_allowed_pet_types']
     list_filter = ['level', 'is_active', 'is_client_facing', 'is_mandatory', 'is_periodic', 'requires_license', 'allowed_pet_types']
-    search_fields = ['code', 'name', 'name_en', 'name_ru', 'name_me', 'name_de', 'description', 'description_en', 'description_ru', 'description_me', 'description_de']
+    search_fields = ['code', 'name', 'name_en', 'name_ru', 'name_me', 'name_de', 'description', 'description_en', 'description_ru', 'description_me', 'description_de', 'search_keywords']
     ordering = ['hierarchy_order', 'name']
     readonly_fields = ['level', 'hierarchy_order', 'version']
     fieldsets = (
@@ -82,6 +82,12 @@ class ServiceAdmin(admin.ModelAdmin):
                 'version',
             ),
             'classes': ('collapse',)
+        }),
+        (_('Search Keywords'), {
+            'fields': (
+                'search_keywords',
+            ),
+            'description': _('Enter synonyms and keywords for search routing separated by commas. E.g., укол, прививка')
         })
     )
     

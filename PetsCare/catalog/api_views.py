@@ -224,9 +224,11 @@ class ServiceSearchAPIView(generics.ListAPIView):
         queryset = Service.objects.all()
         query = self.request.query_params.get('q', '')
         if query:
+            search_term = query.strip().lower()
             queryset = queryset.filter(
-                Q(name__icontains=query) |
-                Q(description__icontains=query)
+                Q(name__icontains=search_term) |
+                Q(description__icontains=search_term) |
+                Q(search_keywords__contains=[search_term])
             )
         return queryset.order_by('hierarchy_order', 'name') 
 

@@ -350,6 +350,8 @@ class BookingDraftValidationAPIView(APIView):
             'end_time': validation_result.end_time.isoformat(),
             'occupied_duration_minutes': validation_result.occupied_duration_minutes,
             'price': str(validation_result.price),
+            'has_duplicate_warning': validation_result.has_duplicate_warning,
+            'duplicate_booking_warning': validation_result.duplicate_booking_warning,
         }
         if not validation_result.is_bookable:
             payload['code'] = validation_result.failure_code

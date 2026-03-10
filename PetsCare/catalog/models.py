@@ -9,6 +9,8 @@ Catalog models for the application.
 from django.db import models, transaction
 from django.utils.translation import gettext_lazy as _
 from django.core.validators import RegexValidator
+from django.contrib.postgres.fields import ArrayField
+from django.contrib.postgres.indexes import GinIndex
 
 
 class Service(models.Model):
@@ -171,6 +173,13 @@ class Service(models.Model):
         default=True,
         help_text=_('Whether the service or category is currently active')
     )
+    search_keywords = ArrayField(
+        models.CharField(max_length=100),
+        blank=True,
+        default=list,
+        verbose_name=_('Search Keywords'),
+        help_text=_('Synonyms and keywords for search routing')
+    )
     created_at = models.DateTimeField(
         _('Created At'),
         auto_now_add=True
@@ -188,6 +197,7 @@ class Service(models.Model):
             models.Index(fields=['parent', 'level']),
             models.Index(fields=['level']),
             models.Index(fields=['hierarchy_order']),
+            GinIndex(fields=['search_keywords']),
         ]
 
     def __str__(self):

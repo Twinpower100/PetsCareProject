@@ -110,6 +110,8 @@ class BookingDraftValidationResult:
     conflicting_bookings: list[dict[str, Any]] = field(default_factory=list)
     failure_code: str | None = None
     failure_message: Any = None
+    has_duplicate_warning: bool = False
+    duplicate_booking_warning: str | None = None
 
 
 class BookingAvailabilityService:
@@ -243,6 +245,13 @@ class BookingAvailabilityService:
                 end_time=end_time,
                 exclude_booking_id=exclude_booking_id,
             ):
+                # Проверяем дублирование: тот же питомец + услуга + дата
+                dup_warning, dup_message = cls._check_duplicate_booking(
+                    pet=pet,
+                    service=service,
+                    target_date=start_time.date(),
+                    exclude_booking_id=exclude_booking_id,
+                )
                 return BookingDraftValidationResult(
                     is_bookable=True,
                     start_time=start_time,
@@ -254,6 +263,8 @@ class BookingAvailabilityService:
                     requires_escort_assignment=requires_escort_assignment,
                     possible_escort_owner_ids=possible_escort_owner_ids,
                     conflicting_bookings=cls.serialize_bookings(owner_overlap_bookings),
+                    has_duplicate_warning=dup_warning,
+                    duplicate_booking_warning=dup_message,
                 )
 
             if not cls.is_employee_working(candidate_employee, provider_location, start_time, end_time):
@@ -290,22 +301,28 @@ class BookingAvailabilityService:
         date_start: date,
         date_end: date,
     ) -> dict[str, list[dict[str, Any]]]:
-        """Возвращает реальные доступные слоты по датам."""
+        """Возвращает доступные слоты по датам.
+
+        Слоты рассчитываются только на основе расписания сотрудников
+        и их текущих бронирований. Проверки питомца, эскорта и логистики
+        выполняются только при конкретном бронировании (validate_booking_request).
+        """
         grouped_slots: dict[str, list[dict[str, Any]]] = {}
         location_service = cls.get_location_service(provider_location, service, pet)
         if location_service is None:
             return grouped_slots
+
+        occupied_duration_minutes = int(location_service.duration_minutes)
+        price = Decimal(location_service.price)
 
         current_date = date_start
         while current_date <= date_end:
             slots = cls.get_day_slots(
                 provider_location=provider_location,
                 service=service,
-                pet=pet,
-                requester=requester,
                 target_date=current_date,
-                occupied_duration_minutes=int(location_service.duration_minutes),
-                price=Decimal(location_service.price),
+                occupied_duration_minutes=occupied_duration_minutes,
+                price=price,
             )
             grouped_slots[current_date.isoformat()] = slots
             current_date += timedelta(days=1)
@@ -318,13 +335,17 @@ class BookingAvailabilityService:
         *,
         provider_location: ProviderLocation,
         service: Service,
-        pet: Pet,
-        requester: User,
         target_date: date,
         occupied_duration_minutes: int,
         price: Decimal,
     ) -> list[dict[str, Any]]:
-        """Генерирует слоты на одну дату по единой логике."""
+        """Генерирует слоты на одну дату.
+
+        Логика: расписание локации × расписание сотрудника × отсутствие
+        конфликтов с другими бронированиями сотрудника.
+        Проверки питомца/эскорта/логистики здесь НЕ выполняются —
+        они делаются при конкретном бронировании.
+        """
         policy = BookingPolicy.load()
         slots: list[dict[str, Any]] = []
 
@@ -333,7 +354,30 @@ class BookingAvailabilityService:
             return slots
 
         eligible_employees = cls.get_eligible_employees(provider_location, service)
+        if not eligible_employees:
+            return slots
+
         current_timezone = timezone.get_current_timezone()
+        now = timezone.now()
+
+        # Предзагружаем бронирования сотрудников на этот день одним запросом
+        employee_ids = [e.id for e in eligible_employees]
+        day_start = timezone.make_aware(
+            datetime.combine(target_date, datetime.min.time()), current_timezone,
+        )
+        day_end = day_start + timedelta(days=1)
+
+        employee_bookings = list(
+            Booking.objects.filter(
+                status__name__in=ACTIVE_BOOKING_STATUS_NAMES,
+                employee_id__in=employee_ids,
+                start_time__lt=day_end,
+                end_time__gt=day_start,
+            ).only('employee_id', 'start_time', 'end_time')
+        )
+        bookings_by_employee: dict[int, list] = {eid: [] for eid in employee_ids}
+        for booking in employee_bookings:
+            bookings_by_employee[booking.employee_id].append(booking)
 
         for employee in eligible_employees:
             employee_schedule = cls.get_employee_schedule(employee, provider_location, target_date)
@@ -348,12 +392,14 @@ class BookingAvailabilityService:
                 datetime.combine(target_date, min(location_schedule.close_time, employee_schedule.end_time)),
                 current_timezone,
             )
+
+            emp_bookings = bookings_by_employee.get(employee.id, [])
             current_time = work_start
 
             while current_time + timedelta(minutes=occupied_duration_minutes) <= work_end:
                 slot_end = current_time + timedelta(minutes=occupied_duration_minutes)
 
-                if current_time <= timezone.now():
+                if current_time <= now:
                     current_time += timedelta(minutes=policy.slot_step_minutes)
                     continue
 
@@ -361,26 +407,22 @@ class BookingAvailabilityService:
                     current_time += timedelta(minutes=policy.slot_step_minutes)
                     continue
 
-                validation_result = cls.validate_booking_request(
-                    requester=requester,
-                    pet=pet,
-                    provider_location=provider_location,
-                    service=service,
-                    start_time=current_time,
-                    employee=employee,
+                # Проверяем конфликт с существующими бронированиями сотрудника (in-memory)
+                has_conflict = any(
+                    b.start_time < slot_end and b.end_time > current_time
+                    for b in emp_bookings
                 )
-                if validation_result.is_bookable:
-                    slots.append(
-                        {
-                            'start_time': current_time.isoformat(),
-                            'end_time': slot_end.isoformat(),
-                            'employee_id': employee.id,
-                            'price': str(price),
-                            'occupied_duration_minutes': occupied_duration_minutes,
-                            'requires_escort_assignment': validation_result.requires_escort_assignment,
-                            'possible_escort_owner_ids': validation_result.possible_escort_owner_ids,
-                        }
-                    )
+                if has_conflict:
+                    current_time += timedelta(minutes=policy.slot_step_minutes)
+                    continue
+
+                slots.append({
+                    'start_time': current_time.isoformat(),
+                    'end_time': slot_end.isoformat(),
+                    'employee_id': employee.id,
+                    'price': str(price),
+                    'occupied_duration_minutes': occupied_duration_minutes,
+                })
 
                 current_time += timedelta(minutes=policy.slot_step_minutes)
 
@@ -397,7 +439,7 @@ class BookingAvailabilityService:
         requester: User,
         target_date: date,
     ) -> bool:
-        """Проверяет, есть ли в локации хотя бы один реальный слот."""
+        """Проверяет, есть ли в локации хотя бы один свободный слот."""
         location_service = cls.get_location_service(provider_location, service, pet)
         if location_service is None:
             return False
@@ -405,8 +447,6 @@ class BookingAvailabilityService:
         slots = cls.get_day_slots(
             provider_location=provider_location,
             service=service,
-            pet=pet,
-            requester=requester,
             target_date=target_date,
             occupied_duration_minutes=int(location_service.duration_minutes),
             price=Decimal(location_service.price),
@@ -752,6 +792,48 @@ class BookingAvailabilityService:
         if exclude_booking_id is not None:
             queryset = queryset.exclude(id=exclude_booking_id)
         return list(queryset)
+
+    @classmethod
+    def _check_duplicate_booking(
+        cls,
+        *,
+        pet: Pet,
+        service: Service,
+        target_date: date,
+        exclude_booking_id: int | None,
+    ) -> tuple[bool, str | None]:
+        """Проверяет, есть ли у питомца уже активное бронирование на ту же услугу и дату.
+
+        Возвращает (has_warning, warning_message).
+        Используется для предупреждения пользователя о возможном дублировании.
+        """
+        current_timezone = timezone.get_current_timezone()
+        day_start = timezone.make_aware(
+            datetime.combine(target_date, datetime.min.time()), current_timezone,
+        )
+        day_end = day_start + timedelta(days=1)
+
+        existing = cls.active_bookings().filter(
+            pet=pet,
+            service=service,
+            start_time__gte=day_start,
+            start_time__lt=day_end,
+        )
+        if exclude_booking_id is not None:
+            existing = existing.exclude(id=exclude_booking_id)
+
+        if existing.exists():
+            import logging
+            logger = logging.getLogger('booking.duplicate_warning')
+            logger.warning(
+                'Duplicate booking attempt: pet_id=%s service_id=%s date=%s existing_count=%d',
+                pet.id, service.id, target_date, existing.count(),
+            )
+            return True, str(_(
+                'This pet already has an active booking for this service on this date. '
+                'Are you sure you want to create another one?'
+            ))
+        return False, None
 
     @classmethod
     def _get_previous_pet_booking(cls, pet: Pet, start_time: datetime, exclude_booking_id: int | None):
