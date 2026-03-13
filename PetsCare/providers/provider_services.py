@@ -15,6 +15,7 @@ import logging
 
 from .models import Provider, LocationSchedule, ProviderLocationService, ProviderLocation
 from booking.models import Booking, TimeSlot
+from booking.constants import ACTIVE_BOOKING_STATUS_NAMES
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,7 @@ class ProviderTransactionService:
             active_bookings = Booking.objects.filter(
                 provider=provider_service.provider,
                 service=provider_service.service,
-                status__name__in=['active', 'pending_confirmation']
+                status__name__in=ACTIVE_BOOKING_STATUS_NAMES
             ).first()
             
             if active_bookings:
@@ -174,7 +175,7 @@ class ProviderTransactionService:
             active_bookings = Booking.objects.filter(
                 provider_location=location,
                 start_time__date=target_date,
-                status__name__in=['active', 'pending_confirmation']
+                status__name__in=ACTIVE_BOOKING_STATUS_NAMES
             ).first()
             
             if active_bookings:
@@ -247,7 +248,7 @@ class ProviderTransactionService:
                 active_bookings = Booking.objects.filter(
                     provider=provider,
                     service=provider_service.service,
-                    status__name__in=['active', 'pending_confirmation']
+                    status__name__in=ACTIVE_BOOKING_STATUS_NAMES
                 ).first()
                 
                 if active_bookings:

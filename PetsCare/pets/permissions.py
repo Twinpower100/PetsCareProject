@@ -38,7 +38,7 @@ class IsMainOwner(BasePermission):
 
     @staticmethod
     def _resolve_pet(obj):
-        """Получает Pet из объекта (Pet, MedicalRecord, PetRecord и т.д.)."""
+        """Получает Pet из объекта (Pet, PetHealthNote, VisitRecord и т.д.)."""
         from .models import Pet
         if isinstance(obj, Pet):
             return obj

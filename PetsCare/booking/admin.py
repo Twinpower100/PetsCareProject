@@ -2,7 +2,22 @@ from django.contrib import admin
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
-from .models import BookingStatus, Booking, BookingNote, BookingCancellation, AbuseRule, BookingPayment, BookingReview, BookingAutoCompleteSettings
+from .models import (
+    AbuseRule,
+    Booking,
+    BookingAutoCompleteSettings,
+    BookingCancellation,
+    BookingCancellationReason,
+    BookingNote,
+    BookingPayment,
+    BookingReview,
+    BookingStatus,
+    BookingServiceIssue,
+)
+from .constants import (
+    CANCELLED_BY_PROVIDER,
+    CANCELLATION_REASON_CLIENT_NO_SHOW,
+)
 from custom_admin import custom_admin_site
 
 
@@ -36,8 +51,8 @@ class BookingNoteInline(admin.TabularInline):
 class BookingCancellationInline(admin.TabularInline):
     model = BookingCancellation
     extra = 0
-    fields = ('cancelled_by', 'reason', 'is_abuse', 'abuse_rule', 'created_at')
-    readonly_fields = ('cancelled_by', 'is_abuse', 'abuse_rule', 'created_at')
+    fields = ('cancelled_by', 'cancelled_by_side', 'reason_code', 'client_attendance', 'reason', 'is_abuse', 'abuse_rule', 'created_at')
+    readonly_fields = ('cancelled_by', 'cancelled_by_side', 'reason_code', 'client_attendance', 'is_abuse', 'abuse_rule', 'created_at')
 
 
 class AbuseRuleAdmin(admin.ModelAdmin):
@@ -72,6 +87,12 @@ class BookingStatusAdmin(admin.ModelAdmin):
     )
 
 
+class BookingCancellationReasonAdmin(admin.ModelAdmin):
+    list_display = ('code', 'label', 'scope', 'is_active', 'sort_order')
+    list_filter = ('scope', 'is_active')
+    search_fields = ('code', 'label', 'description')
+
+
 class BookingAdmin(admin.ModelAdmin):
     """
     Административный интерфейс для модели бронирования.
@@ -96,8 +117,9 @@ class BookingAdmin(admin.ModelAdmin):
     ]
     readonly_fields = [
         'code', 'occupied_duration_minutes', 'created_at', 'updated_at',
-        'completed_at', 'cancelled_at', 'completed_by', 'cancelled_by',
-        'cancellation_reason', 'get_provider', 'get_pet_owners'
+        'completed_at', 'completed_by_actor', 'completed_by_user', 'completion_reason_code',
+        'cancelled_at', 'cancelled_by', 'cancelled_by_user', 'cancellation_reason',
+        'cancellation_reason_text', 'client_attendance', 'get_provider', 'get_pet_owners'
     ]
     list_select_related = [
         'user', 'escort_owner', 'pet', 'provider_location',
@@ -156,7 +178,19 @@ class BookingAdmin(admin.ModelAdmin):
         for booking in queryset:
             if booking.can_be_completed:
                 try:
-                    BookingCompletionService.complete_booking(booking, request.user, 'no_show')
+                    no_show_reason = BookingCancellationReason.objects.filter(
+                        code=CANCELLATION_REASON_CLIENT_NO_SHOW,
+                        is_active=True,
+                    ).first()
+                    if no_show_reason is None:
+                        raise ValidationError(_("No-show reason is not configured"))
+                    booking.cancel_booking(
+                        cancelled_by=CANCELLED_BY_PROVIDER,
+                        cancelled_by_user=request.user,
+                        cancellation_reason=no_show_reason,
+                        cancellation_reason_text=_("Marked as no-show by administrator"),
+                        client_attendance='no_show',
+                    )
                     marked_count += 1
                 except Exception as e:
                     self.message_user(request, _("Error marking booking {}: {}").format(booking.id, e), level='ERROR')
@@ -188,6 +222,19 @@ class BookingAdmin(admin.ModelAdmin):
         }),
         (_('Status'), {
             'fields': ('status', 'price', 'notes', 'code')
+        }),
+        (_('Completion Metadata'), {
+            'fields': ('completed_at', 'completed_by_actor', 'completed_by_user', 'completion_reason_code')
+        }),
+        (_('Cancellation Metadata'), {
+            'fields': (
+                'cancelled_at',
+                'cancelled_by',
+                'cancelled_by_user',
+                'cancellation_reason',
+                'cancellation_reason_text',
+                'client_attendance',
+            )
         }),
         (_('Metadata'), {
             'fields': ('created_at', 'updated_at'),
@@ -256,18 +303,18 @@ class BookingNoteAdmin(admin.ModelAdmin):
 
 
 class BookingCancellationAdmin(admin.ModelAdmin):
-    list_display = ('booking', 'cancelled_by', 'is_abuse', 'abuse_rule', 'created_at')
-    list_filter = ('is_abuse', 'abuse_rule', 'created_at')
-    search_fields = ('reason', 'booking__pet__name', 'cancelled_by__username')
+    list_display = ('booking', 'cancelled_by', 'cancelled_by_side', 'reason_code', 'is_abuse', 'abuse_rule', 'created_at')
+    list_filter = ('cancelled_by_side', 'reason_code', 'is_abuse', 'abuse_rule', 'created_at')
+    search_fields = ('reason', 'booking__pet__name', 'cancelled_by__username', 'reason_code__code', 'reason_code__label')
     fieldsets = (
         (None, {
-            'fields': ('booking', 'cancelled_by', 'reason')
+            'fields': ('booking', 'cancelled_by', 'cancelled_by_side', 'reason_code', 'client_attendance', 'reason')
         }),
         (_('Abuse'), {
             'fields': ('is_abuse', 'abuse_rule')
         })
     )
-    readonly_fields = ('booking', 'cancelled_by', 'is_abuse', 'abuse_rule', 'created_at')
+    readonly_fields = ('booking', 'cancelled_by', 'cancelled_by_side', 'reason_code', 'client_attendance', 'is_abuse', 'abuse_rule', 'created_at')
 
     def has_add_permission(self, request):
         return False  # Отмены создаются только через API
@@ -327,7 +374,6 @@ class BookingAutoCompleteSettingsAdmin(admin.ModelAdmin):
     list_display = [
         'auto_complete_enabled',
         'auto_complete_days',
-        'auto_complete_status',
         'service_periodicity_hours',
         'service_start_time',
         'updated_at'
@@ -335,7 +381,6 @@ class BookingAutoCompleteSettingsAdmin(admin.ModelAdmin):
     
     list_editable = [
         'auto_complete_days',
-        'auto_complete_status',
         'service_periodicity_hours',
         'service_start_time'
     ]
@@ -347,7 +392,6 @@ class BookingAutoCompleteSettingsAdmin(admin.ModelAdmin):
             'fields': (
                 'auto_complete_enabled',
                 'auto_complete_days',
-                'auto_complete_status',
             )
         }),
         (_('Service Settings'), {
@@ -384,8 +428,21 @@ class BookingAutoCompleteSettingsAdmin(admin.ModelAdmin):
 
 custom_admin_site.register(AbuseRule, AbuseRuleAdmin)
 custom_admin_site.register(BookingStatus, BookingStatusAdmin)
+custom_admin_site.register(BookingCancellationReason, BookingCancellationReasonAdmin)
 custom_admin_site.register(Booking, BookingAdmin)
 custom_admin_site.register(BookingNote, BookingNoteAdmin)
 custom_admin_site.register(BookingCancellation, BookingCancellationAdmin)
 custom_admin_site.register(BookingPayment, BookingPaymentAdmin)
 custom_admin_site.register(BookingReview, BookingReviewAdmin)
+
+
+@admin.register(BookingServiceIssue)
+class BookingServiceIssueAdmin(admin.ModelAdmin):
+    list_display = ('id', 'booking', 'issue_type', 'reported_by_side', 'status', 'resolution_outcome', 'created_at')
+    list_filter = ('status', 'issue_type', 'reported_by_side', 'resolution_outcome', 'resolved_by_actor')
+    search_fields = ('booking__code', 'description', 'resolution_note')
+    readonly_fields = ('created_at', 'updated_at', 'resolved_at')
+    raw_id_fields = ('booking', 'reported_by_user', 'resolved_by_user')
+
+custom_admin_site.register(BookingServiceIssue, BookingServiceIssueAdmin)
+

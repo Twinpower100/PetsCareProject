@@ -4,6 +4,12 @@ from decimal import Decimal
 from typing import Optional, Tuple
 
 from .models import Booking, BookingStatus
+from .constants import (
+    ACTIVE_BOOKING_STATUS_NAMES,
+    BOOKING_STATUS_ACTIVE,
+    BOOKING_STATUS_CANCELLED,
+    BOOKING_STATUS_COMPLETED,
+)
 
 def check_booking_availability(provider, employee, start_time, end_time, exclude_booking_id=None):
     """
@@ -36,9 +42,8 @@ def check_booking_availability(provider, employee, start_time, end_time, exclude
         overlapping_bookings = overlapping_bookings.exclude(id=exclude_booking_id)
     
     # Проверяем статусы бронирований
-    active_statuses = ['active', 'pending_confirmation']
     overlapping_bookings = overlapping_bookings.filter(
-        status__name__in=active_statuses
+        status__name__in=ACTIVE_BOOKING_STATUS_NAMES
     )
     
     # Если есть пересекающиеся бронирования, слот занят
@@ -119,13 +124,9 @@ def update_booking_status(booking, new_status_name):
     # Проверяем допустимость перехода между статусами
     current_status = booking.status.name
     valid_transitions = {
-        'pending_confirmation': ['active', 'cancelled_by_client', 'cancelled_by_provider'],
-        'active': ['completed', 'cancelled_by_client', 'cancelled_by_provider', 'no_show_by_client', 'no_show_by_provider'],
-        'completed': [],
-        'cancelled_by_client': [],
-        'cancelled_by_provider': [],
-        'no_show_by_client': [],
-        'no_show_by_provider': []
+        BOOKING_STATUS_ACTIVE: [BOOKING_STATUS_COMPLETED, BOOKING_STATUS_CANCELLED],
+        BOOKING_STATUS_COMPLETED: [],
+        BOOKING_STATUS_CANCELLED: [],
     }
     
     if new_status_name not in valid_transitions.get(current_status, []):
@@ -163,7 +164,7 @@ def get_available_time_slots(provider_id, employee_id, date, duration):
         provider_id=provider_id,
         employee_id=employee_id,
         start_time__date=date,
-        status__name__in=['active', 'pending_confirmation']
+        status__name__in=ACTIVE_BOOKING_STATUS_NAMES
     ).order_by('start_time')
     
     # Инициализируем список доступных слотов

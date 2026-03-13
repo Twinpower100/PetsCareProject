@@ -4,7 +4,8 @@
 """
 
 from rest_framework import viewsets, generics, permissions
-from django.db.models import Q
+from django.db.models import BooleanField, Case, IntegerField, Q, Value, When
+from django.db.models.expressions import RawSQL
 from .models import Service
 from .serializers import ServiceSerializer
 from rest_framework.decorators import action
@@ -134,12 +135,50 @@ class PublicServiceSearchAPIView(generics.ListAPIView):
         queryset = Service.objects.filter(is_active=True, is_client_facing=True)
         query = self.request.query_params.get('q', '').strip()
         if query:
-            queryset = queryset.filter(
+            normalized_query = query.lower()
+            prefix_pattern = f"{normalized_query}%"
+            contains_pattern = f"%{normalized_query}%"
+
+            queryset = queryset.annotate(
+                keyword_prefix_match=RawSQL(
+                    "EXISTS (SELECT 1 FROM unnest(search_keywords) AS keyword WHERE LOWER(keyword) LIKE %s)",
+                    [prefix_pattern],
+                    output_field=BooleanField(),
+                ),
+                keyword_contains_match=RawSQL(
+                    "EXISTS (SELECT 1 FROM unnest(search_keywords) AS keyword WHERE LOWER(keyword) LIKE %s)",
+                    [contains_pattern],
+                    output_field=BooleanField(),
+                ),
+            )
+
+            query_filter = (
                 Q(name__icontains=query) |
                 Q(description__icontains=query) |
                 Q(name_en__icontains=query) |
                 Q(name_ru__icontains=query) |
                 Q(name_me__icontains=query) |
-                Q(name_de__icontains=query)
+                Q(name_de__icontains=query) |
+                Q(keyword_contains_match=True)
             )
+            queryset = queryset.filter(query_filter).annotate(
+                search_rank=Case(
+                    When(Q(name__istartswith=query), then=Value(0)),
+                    When(Q(name_en__istartswith=query), then=Value(0)),
+                    When(Q(name_ru__istartswith=query), then=Value(0)),
+                    When(Q(name_me__istartswith=query), then=Value(0)),
+                    When(Q(name_de__istartswith=query), then=Value(0)),
+                    When(Q(keyword_prefix_match=True), then=Value(1)),
+                    When(Q(name__icontains=query), then=Value(2)),
+                    When(Q(name_en__icontains=query), then=Value(2)),
+                    When(Q(name_ru__icontains=query), then=Value(2)),
+                    When(Q(name_me__icontains=query), then=Value(2)),
+                    When(Q(name_de__icontains=query), then=Value(2)),
+                    When(Q(keyword_contains_match=True), then=Value(3)),
+                    default=Value(4),
+                    output_field=IntegerField(),
+                )
+            )
+
+            return queryset.order_by('search_rank', 'hierarchy_order', 'name').distinct()
         return queryset.order_by('hierarchy_order', 'name')

@@ -1,9 +1,11 @@
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
-from .models import PetType, Breed, SizeRule, Pet, MedicalRecord, PetRecord, PetRecordFile, User, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
+from .models import PetType, Breed, SizeRule, Pet, PetHealthNote, VisitRecord, PetDocument, User, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner, VisitRecordAddendum
 from custom_admin import custom_admin_site
 from django import forms
 import json
+
+from .document_type_catalog import get_document_type_order_expression
 
 
 class PetTypeAdmin(admin.ModelAdmin):
@@ -47,21 +49,21 @@ class BehavioralTraitAdmin(admin.ModelAdmin):
     ordering = ('order', 'code')
 
 
-class MedicalRecordInline(admin.StackedInline):
-    model = MedicalRecord
+class PetHealthNoteInline(admin.StackedInline):
+    model = PetHealthNote
     extra = 0
-    fields = ('date', 'title', 'description', 'attachments', 'next_visit')
+    fields = ('date', 'title', 'description', 'next_visit')
 
 
-class PetRecordInline(admin.StackedInline):
-    model = PetRecord
+class VisitRecordInline(admin.StackedInline):
+    model = VisitRecord
     extra = 0
     fields = (
         'service', 'provider_location', 'employee',
         'date', 'next_date', 'description', 'results',
-        'recommendations', 'notes', 'serial_number', 'files'
+        'recommendations', 'notes', 'serial_number'
     )
-    raw_id_fields = ('provider_location', 'employee', 'files')
+    raw_id_fields = ('provider_location', 'employee')
 
 
 
@@ -128,7 +130,7 @@ class PetAdmin(admin.ModelAdmin):
     list_filter = ['pet_type', 'birth_date', 'is_active']
     search_fields = ['name', 'breed__name', 'petowner__user__email']
     readonly_fields = ['created_at', 'updated_at']
-    inlines = [PetOwnerInline, MedicalRecordInline, PetRecordInline]
+    inlines = [PetOwnerInline, PetHealthNoteInline, VisitRecordInline]
     fieldsets = (
         (_('Basic Information'), {
             'fields': ('name', 'pet_type', 'breed', 'birth_date', 'is_active')
@@ -155,19 +157,19 @@ class PetAdmin(admin.ModelAdmin):
         return mo.email if mo else '-'
 
 
-class MedicalRecordAdmin(admin.ModelAdmin):
+class PetHealthNoteAdmin(admin.ModelAdmin):
     list_display = ('title', 'pet', 'date', 'next_visit')
     list_filter = ('date', 'next_visit')
     search_fields = ('title', 'description', 'pet__name')
     date_hierarchy = 'date'
 
 
-@admin.register(PetRecord)
-class PetRecordAdmin(admin.ModelAdmin):
+@admin.register(VisitRecord)
+class VisitRecordAdmin(admin.ModelAdmin):
     list_display = ('pet', 'service', 'provider_location', 'get_provider', 'employee', 'date', 'next_date')
     list_filter = ('date', 'next_date', 'provider_location')
     search_fields = ('pet__name', 'service__name', 'provider_location__name', 'provider_location__provider__name', 'description', 'results')
-    raw_id_fields = ('pet', 'provider_location', 'employee', 'files')
+    raw_id_fields = ('pet', 'provider_location', 'employee')
     readonly_fields = ('created_at', 'updated_at', 'get_provider')
     
     def get_provider(self, obj):
@@ -180,10 +182,54 @@ class PetRecordAdmin(admin.ModelAdmin):
     get_provider.short_description = _('Provider Organization')
 
 
-class PetRecordFileAdmin(admin.ModelAdmin):
+class PetDocumentAdmin(admin.ModelAdmin):
     list_display = ('name', 'created_at')
     search_fields = ('name', 'description')
     date_hierarchy = 'created_at'
+
+
+class DocumentTypeAdmin(admin.ModelAdmin):
+    """Админка фиксированного каталога типов документов питомца."""
+
+    list_display = (
+        'name',
+        'code',
+        'requires_issue_date',
+        'requires_expiry_date',
+        'requires_issuing_authority',
+        'requires_document_number',
+        'is_active',
+    )
+    list_editable = ('is_active',)
+    readonly_fields = (
+        'code',
+        'description',
+        'name_en',
+        'name_ru',
+        'name_me',
+        'name_de',
+        'requires_issue_date',
+        'requires_expiry_date',
+        'requires_issuing_authority',
+        'requires_document_number',
+        'created_at',
+        'updated_at',
+    )
+    search_fields = ('name', 'code')
+
+    def get_queryset(self, request):
+        """Возвращает каталог в согласованном бизнес-порядке."""
+        return super().get_queryset(request).order_by(
+            get_document_type_order_expression(),
+            'id',
+        )
+
+
+class VisitRecordAddendumAdmin(admin.ModelAdmin):
+    list_display = ('id', 'visit_record', 'author', 'created_at')
+    search_fields = ('content', 'author__email', 'visit_record__pet__name')
+    raw_id_fields = ('visit_record', 'author')
+    readonly_fields = ('created_at', 'updated_at')
 
 
 
@@ -195,6 +241,8 @@ custom_admin_site.register(PhysicalFeature, PhysicalFeatureAdmin)
 custom_admin_site.register(BehavioralTrait, BehavioralTraitAdmin)
 custom_admin_site.register(Pet, PetAdmin)
 custom_admin_site.register(PetOwner)
-custom_admin_site.register(MedicalRecord, MedicalRecordAdmin)
-custom_admin_site.register(PetRecordFile, PetRecordFileAdmin)
-custom_admin_site.register(DocumentType)
+custom_admin_site.register(PetHealthNote, PetHealthNoteAdmin)
+custom_admin_site.register(VisitRecord, VisitRecordAdmin)
+custom_admin_site.register(PetDocument, PetDocumentAdmin)
+custom_admin_site.register(DocumentType, DocumentTypeAdmin)
+custom_admin_site.register(VisitRecordAddendum, VisitRecordAddendumAdmin)

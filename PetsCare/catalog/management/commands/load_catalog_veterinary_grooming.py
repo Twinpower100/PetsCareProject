@@ -8,7 +8,7 @@ Usage:
 
 Before running: PetType with codes bird, cat, dog, snake, turtle must exist (pets app).
 Deletes: ProviderLocationService, Provider.available_category_levels, ProviderLocation.available_services,
-  PetRecord, then all Service. Other FK to Service (booking, billing, etc.) are CASCADE or must be empty.
+  VisitRecord, then all Service. Other FK to Service (booking, billing, etc.) are CASCADE or must be empty.
 """
 
 from django.core.management.base import BaseCommand
@@ -418,10 +418,10 @@ class Command(BaseCommand):
         for loc in ProviderLocation.objects.all():
             loc.available_services.clear()
         # Записи, ссылающиеся на Service с PROTECT
-        from pets.models import PetRecord
+        from pets.models import VisitRecord
 
-        deleted_pr = PetRecord.objects.all().delete()
-        self.stdout.write(_("Deleted PetRecord count: %(n)s") % {"n": deleted_pr[0]})
+        deleted_pr = VisitRecord.objects.all().delete()
+        self.stdout.write(_("Deleted VisitRecord count: %(n)s") % {"n": deleted_pr[0]})
         # ProviderLocationService и прочие CASCADE удалятся при удалении Service
         Service.objects.all().delete()
         self.stdout.write(_("Catalog (Service) cleared."))

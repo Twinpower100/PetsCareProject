@@ -7,9 +7,9 @@
 1. PetType - типы питомцев (кошки, собаки и т.д.)
 2. Breed - породы питомцев
 3. Pet - информация о питомцах
-4. MedicalRecord - медицинские записи
-5. PetRecord - записи о процедурах/услугах
-6. PetRecordFile - файлы, прикрепленные к записям
+4. PetHealthNote - внешние owner-facing заметки о здоровье питомца
+5. VisitRecord - записи о визитах/процедурах/услугах
+6. PetDocument - документы, прикрепленные к заметкам и визитам
 7. PetAccess - доступ к карте питомца
 
 Особенности реализации:
@@ -31,6 +31,12 @@ from django.utils import timezone
 import uuid
 import os
 import logging
+
+from .document_type_catalog import (
+    DOCUMENT_TYPE_NAME_CHOICES,
+    get_document_type_definition_by_code,
+    get_document_type_definition_by_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +86,7 @@ class PetType(models.Model):
         unique=True,
         validators=[RegexValidator(
             regex=r'^[a-zA-Z0-9_]+$',
-            message='Code must contain only Latin letters, numbers and underscores.'
+            message=_('Code must contain only Latin letters, numbers and underscores.')
         )],
         help_text=_('Unique technical code (Latin letters, numbers, underscores). Used for integrations and business logic.')
     )
@@ -175,7 +181,7 @@ class Breed(models.Model):
         unique=True,
         validators=[RegexValidator(
             regex=r'^[a-zA-Z0-9_]+$',
-            message='Code must contain only Latin letters, numbers and underscores.'
+            message=_('Code must contain only Latin letters, numbers and underscores.')
         )],
         help_text=_('Unique technical code (Latin letters, numbers, underscores). Used for integrations and business logic.')
     )
@@ -879,80 +885,32 @@ class PetOwner(models.Model):
         super().save(*args, **kwargs)
 
 
-class MedicalRecord(models.Model):
+class PetHealthNote(models.Model):
     """
-    Медицинская карта питомца
+    Внешняя клиническая заметка владельца по питомцу.
+
+    Явно не является протоколом визита провайдера. Файлы хранятся в PetDocument,
+    который может опционально ссылаться на заметку.
     """
     pet = models.ForeignKey(
         Pet,
         on_delete=models.CASCADE,
         verbose_name=_('Pet'),
-        related_name='medical_records',
-        help_text=_('Pet this record belongs to')
+        related_name='health_notes',
+        help_text=_('Pet to which this note belongs')
     )
     date = models.DateField(
         _('Date'),
-        help_text=_('Date of the medical record')
+        help_text=_('Date of the note')
     )
     title = models.CharField(
         _('Title'),
         max_length=200,
-        help_text=_('Title of the medical record')
-    )
-    title_en = models.CharField(
-        _('Title (English)'),
-        max_length=200,
-        blank=True,
-        help_text=_('Title in English')
-    )
-    title_ru = models.CharField(
-        _('Title (Russian)'),
-        max_length=200,
-        blank=True,
-        help_text=_('Title in Russian')
-    )
-    title_me = models.CharField(
-        _('Title (Montenegrian)'),
-        max_length=200,
-        blank=True,
-        help_text=_('Title in Montenegrian')
-    )
-    title_de = models.CharField(
-        _('Title (German)'),
-        max_length=200,
-        blank=True,
-        help_text=_('Title in German')
+        help_text=_('Short title of the note')
     )
     description = models.TextField(
         _('Description'),
-        help_text=_('Description of the medical record')
-    )
-    description_en = models.TextField(
-        _('Description (English)'),
-        blank=True,
-        help_text=_('Description in English')
-    )
-    description_ru = models.TextField(
-        _('Description (Russian)'),
-        blank=True,
-        help_text=_('Description in Russian')
-    )
-    description_me = models.TextField(
-        _('Description (Montenegrian)'),
-        blank=True,
-        help_text=_('Description in Montenegrian')
-    )
-    description_de = models.TextField(
-        _('Description (German)'),
-        blank=True,
-        help_text=_('Description in German')
-    )
-    attachments = models.FileField(
-        _('Attachments'),
-        upload_to='medical_records/%Y/%m/%d/',
-        null=True,
-        blank=True,
-        help_text=_('Any attachments (test results, prescriptions, etc.)')
+        help_text=_('Description of the note')
     )
     next_visit = models.DateField(
         _('Next Visit'),
@@ -970,68 +928,25 @@ class MedicalRecord(models.Model):
     )
 
     class Meta:
-        verbose_name = _('Medical Record')
-        verbose_name_plural = _('Medical Records')
-        ordering = ['-date']
+        db_table = 'pets_medicalrecord'
+        verbose_name = _('Pet Health Note')
+        verbose_name_plural = _('Pet Health Notes')
+        ordering = ['-date', '-created_at']
 
     def __str__(self):
-        return f"{self.pet.name} - {self.get_localized_title()} ({self.date})"
-    
+        return f"{self.pet.name} - {self.title} ({self.date})"
+
     def get_localized_title(self, language_code=None):
-        """
-        Получает локализованное название медицинской записи.
-        
-        Args:
-            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
-            
-        Returns:
-            str: Локализованное название
-        """
-        if language_code is None:
-            from django.utils import translation
-            language_code = translation.get_language()
-        
-        if language_code == 'en' and self.title_en:
-            return self.title_en
-        elif language_code == 'ru' and self.title_ru:
-            return self.title_ru
-        elif language_code == 'me' and self.title_me:
-            return self.title_me
-        elif language_code == 'de' and self.title_de:
-            return self.title_de
-        else:
-            return self.title
-    
+        return self.title
+
     def get_localized_description(self, language_code=None):
-        """
-        Получает локализованное описание медицинской записи.
-        
-        Args:
-            language_code: Код языка (en, ru, me, de). Если None, используется текущий язык.
-            
-        Returns:
-            str: Локализованное описание
-        """
-        if language_code is None:
-            from django.utils import translation
-            language_code = translation.get_language()
-        
-        if language_code == 'en' and self.description_en:
-            return self.description_en
-        elif language_code == 'ru' and self.description_ru:
-            return self.description_ru
-        elif language_code == 'me' and self.description_me:
-            return self.description_me
-        elif language_code == 'de' and self.description_de:
-            return self.description_de
-        else:
-            return self.description
+        return self.description
 
 
-class PetRecord(models.Model):
+class VisitRecord(models.Model):
     """
-    Запись в карте питомца о выполненной процедуре/услуге
-    
+    Канонический протокол визита/приёма питомца.
+
     Особенности:
     - Связь с питомцем и услугой
     - Отслеживание исполнителя и учреждения
@@ -1049,7 +964,7 @@ class PetRecord(models.Model):
         'providers.Provider',
         on_delete=models.PROTECT,
         verbose_name=_('Provider (Legacy)'),
-        related_name='pet_records',
+        related_name='visit_records',
         null=True,
         blank=True,
         help_text=_('Legacy field - use provider_location instead')
@@ -1058,7 +973,7 @@ class PetRecord(models.Model):
         'providers.ProviderLocation',
         on_delete=models.PROTECT,
         verbose_name=_('Provider Location'),
-        related_name='pet_records',
+        related_name='visit_records',
         null=True,
         blank=True,
         help_text=_('Location where the service was provided')
@@ -1067,13 +982,13 @@ class PetRecord(models.Model):
         Service,
         on_delete=models.PROTECT,
         verbose_name=_('Service'),
-        related_name='pet_records'
+        related_name='visit_records'
     )
     employee = models.ForeignKey(
         'providers.Employee',
         on_delete=models.PROTECT,
         verbose_name=_('Employee'),
-        related_name='pet_records',
+        related_name='visit_records',
         null=True,
         blank=True,
         help_text=_('Employee who performed the procedure; empty when record is added by owner')
@@ -1126,12 +1041,6 @@ class PetRecord(models.Model):
         blank=True,
         help_text=_('Serial number (for vaccinations, medications, etc.)')
     )
-    files = models.ManyToManyField(
-        'PetRecordFile',
-        verbose_name=_('Files'),
-        related_name='records',
-        blank=True
-    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -1148,8 +1057,9 @@ class PetRecord(models.Model):
     )
 
     class Meta:
-        verbose_name = _('Pet Record')
-        verbose_name_plural = _('Pet Records')
+        db_table = 'pets_petrecord'
+        verbose_name = _('Visit Record')
+        verbose_name_plural = _('Visit Records')
         ordering = ['-date']
 
     def __str__(self):
@@ -1165,7 +1075,8 @@ class PetRecord(models.Model):
         if self.service and self.pet and self.pet.pet_type:
             if not self.service.is_available_for_pet_type(self.pet.pet_type):
                 raise ValidationError(
-                    f"Услуга '{self.service.name}' недоступна для типа животного '{self.pet.pet_type.name}'"
+                    _('Service "%(service)s" is not available for pet type "%(pet_type)s".')
+                    % {'service': self.service.name, 'pet_type': self.pet.pet_type.name}
                 )
     
     def save(self, *args, **kwargs):
@@ -1178,7 +1089,60 @@ class PetRecord(models.Model):
         super().save(*args, **kwargs)
 
 
-class PetRecordFile(models.Model):
+class VisitRecordAddendum(models.Model):
+    """
+    Дополнение только для добавления (append-only) — клиническое обновление после визита
+    для существующего протокола визита.
+
+    Обеспечивает явность и аудируемость послефактумных обновлений вместо перегрузки
+    PetHealthNote или тихой перезаписи исходного протокола визита.
+    """
+    visit_record = models.ForeignKey(
+        'VisitRecord',
+        on_delete=models.CASCADE,
+        related_name='addenda',
+        verbose_name=_('Visit Record'),
+        help_text=_('Visit protocol to which this addendum belongs')
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name='visit_record_addenda',
+        verbose_name=_('Author'),
+        help_text=_('User who created the addendum')
+    )
+    content = models.TextField(
+        _('Content'),
+        help_text=_('Clinical addendum text')
+    )
+    created_at = models.DateTimeField(
+        _('Created At'),
+        auto_now_add=True
+    )
+    updated_at = models.DateTimeField(
+        _('Updated At'),
+        auto_now=True
+    )
+
+    class Meta:
+        verbose_name = _('Visit Record Addendum')
+        verbose_name_plural = _('Visit Record Addenda')
+        ordering = ['created_at']
+
+    def __str__(self):
+        return f"Addendum #{self.pk or 'new'} for visit #{self.visit_record_id}"
+
+    def clean(self):
+        super().clean()
+        if not (self.content or '').strip():
+            raise ValidationError(_('Addendum content cannot be empty'))
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        super().save(*args, **kwargs)
+
+
+class PetDocument(models.Model):
     """
     Универсальная модель файла питомца
     
@@ -1222,23 +1186,23 @@ class PetRecordFile(models.Model):
         blank=True,
         help_text=_('Type of the document')
     )
-    medical_record = models.ForeignKey(
-        'MedicalRecord',
+    health_note = models.ForeignKey(
+        'PetHealthNote',
         on_delete=models.CASCADE,
-        verbose_name=_('Medical Record'),
+        verbose_name=_('Health Note'),
         related_name='documents',
         null=True,
         blank=True,
-        help_text=_('Medical record to which the document is attached')
+        help_text=_('Health note to which the document is attached')
     )
-    pet_record = models.ForeignKey(
-        'PetRecord',
+    visit_record = models.ForeignKey(
+        'VisitRecord',
         on_delete=models.CASCADE,
-        verbose_name=_('Pet Record'),
+        verbose_name=_('Visit Record'),
         related_name='documents',
         null=True,
         blank=True,
-        help_text=_('Pet record to which the document is attached')
+        help_text=_('Visit record to which the document is attached')
     )
     
     # Метаданные документа
@@ -1292,6 +1256,7 @@ class PetRecordFile(models.Model):
     )
 
     class Meta:
+        db_table = 'pets_petrecordfile'
         verbose_name = _('Pet Document')
         verbose_name_plural = _('Pet Documents')
         ordering = ['-uploaded_at']
@@ -1309,8 +1274,8 @@ class PetRecordFile(models.Model):
         
         # Проверяем, что документ привязан только к одной записи
         record_count = sum([
-            1 if self.medical_record else 0,
-            1 if self.pet_record else 0
+            1 if self.health_note else 0,
+            1 if self.visit_record else 0
         ])
         if record_count > 1:
             raise ValidationError(_('Document can only be attached to one record'))
@@ -1349,7 +1314,7 @@ class PetRecordFile(models.Model):
         return None
 
     def save(self, *args, **kwargs):
-        self.clean()
+        self.full_clean()
         super().save(*args, **kwargs)
 
 
@@ -1428,18 +1393,18 @@ class PetAccess(models.Model):
 
 class DocumentType(models.Model):
     """
-    Тип документа питомца
-    
+    Тип документа питомца из согласованного фиксированного каталога.
+
     Особенности:
-    - Уникальный технический код (code)
-    - Связь с категориями услуг
-    - Настройка обязательных полей
-    - Мультиязычное наименование
+    - Наименование выбирается только из утвержденного списка
+    - Технический код и локализованные названия синхронизируются автоматически
+    - Требования к метаданным определяются каталогом, а не ручным вводом
     """
     name = models.CharField(
         _('Name'),
         max_length=100,
-        help_text=_('Name of the document type (e.g., "Pet Passport", "Veterinary Certificate")')
+        choices=DOCUMENT_TYPE_NAME_CHOICES,
+        help_text=_('Select one of the approved document types.')
     )
     name_en = models.CharField(
         _('Name (English)'),
@@ -1473,20 +1438,13 @@ class DocumentType(models.Model):
             regex=r'^[a-zA-Z0-9_]+$',
             message=_('Code must contain only Latin letters, numbers and underscores.')
         )],
-        help_text=_('Unique technical code (Latin letters, numbers, underscores). Used for integrations and business logic.')
+        help_text=_('Canonical technical code synchronized from the approved document catalog.')
     )
     description = models.TextField(
         _('Description'),
         blank=True,
-        help_text=_('Description of the document type')
+        help_text=_('Canonical description synchronized from the approved document catalog.')
     )
-    # service_categories = models.ManyToManyField(
-    #     'catalog.ServiceCategory',
-    #     verbose_name=_('Service Categories'),
-    #     related_name='document_types',
-    #     blank=True,
-    #     help_text=_('Service categories associated with this document type')
-    # )
     requires_issue_date = models.BooleanField(
         _('Requires Issue Date'),
         default=False,
@@ -1542,7 +1500,10 @@ class DocumentType(models.Model):
         if language_code is None:
             from django.utils import translation
             language_code = translation.get_language()
-        
+
+        if language_code == 'cnr':
+            language_code = 'me'
+
         if language_code == 'en' and self.name_en:
             return self.name_en
         elif language_code == 'ru' and self.name_ru:
@@ -1554,11 +1515,62 @@ class DocumentType(models.Model):
         else:
             return self.name
 
+    def _resolve_catalog_definition(self):
+        """
+        Возвращает описание согласованного типа по имени или коду.
+        """
+        if self.name:
+            definition = get_document_type_definition_by_name(self.name)
+            if definition is not None:
+                return definition
+
+        if self.code:
+            definition = get_document_type_definition_by_code(self.code)
+            if definition is not None:
+                return definition
+
+        return None
+
+    def _sync_catalog_fields(self, definition=None):
+        """
+        Синхронизирует поля модели из единого каталога типов документов.
+        """
+        definition = definition or self._resolve_catalog_definition()
+        if definition is None:
+            return None
+
+        self.name = definition.name
+        self.code = definition.code
+        self.name_en = definition.name_en
+        self.name_ru = definition.name_ru
+        self.name_me = definition.name_me
+        self.name_de = definition.name_de
+        self.description = definition.description
+        self.requires_issue_date = definition.requires_issue_date
+        self.requires_expiry_date = definition.requires_expiry_date
+        self.requires_issuing_authority = definition.requires_issuing_authority
+        self.requires_document_number = definition.requires_document_number
+        return definition
+
     def clean(self):
         """Валидация модели"""
         super().clean()
+        definition = self._resolve_catalog_definition()
+        if definition is None:
+            raise ValidationError({
+                'name': _('Document type name must be selected from the approved catalog')
+            })
+        self._sync_catalog_fields(definition)
         if self.requires_expiry_date and not self.requires_issue_date:
             raise ValidationError(_('Issue date is required if expiry date is required'))
+
+    def save(self, *args, **kwargs):
+        """
+        Сохраняет модель только после синхронизации с каталогом типов документов.
+        """
+        self._sync_catalog_fields()
+        self.full_clean()
+        super().save(*args, **kwargs)
 
 
 class PetOwnerIncapacity(models.Model):
@@ -1692,7 +1704,7 @@ class PetOwnerIncapacity(models.Model):
             deadline_days = settings.get_pet_confirmation_deadline_days()
             self.confirmation_deadline = timezone.now() + timedelta(days=deadline_days)
         super().save(*args, **kwargs)
-    
+
     def is_deadline_passed(self):
         """Проверяет, истек ли дедлайн подтверждения"""
         return timezone.now() > self.confirmation_deadline

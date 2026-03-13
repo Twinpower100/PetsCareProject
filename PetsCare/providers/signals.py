@@ -15,6 +15,11 @@ from django.db import transaction
 from django.conf import settings
 from django.urls import reverse
 import logging
+from booking.constants import (
+    ACTIVE_BOOKING_STATUS_NAMES,
+    CANCELLED_BY_PROVIDER,
+    CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,35 +47,40 @@ def handle_location_deactivation(sender, instance, **kwargs):
                 
                 with transaction.atomic():
                     # Импортируем модели здесь, чтобы избежать циклических импортов
-                    from booking.models import Booking, BookingStatus
+                    from booking.models import Booking, BookingCancellationReason
                     from django.utils import timezone
-                    
-                    # Получаем статус "отменено"
-                    cancelled_status, created = BookingStatus.objects.get_or_create(
-                        name='cancelled',
-                        defaults={'description': _('Booking cancelled')}
-                    )
+                    cancellation_reason = BookingCancellationReason.objects.filter(
+                        code=CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
+                        is_active=True,
+                    ).first() or BookingCancellationReason.get_default_reason(CANCELLED_BY_PROVIDER)
                     
                     # Находим все активные и будущие бронирования для этой локации
                     now = timezone.now()
                     active_bookings = Booking.objects.filter(
                         provider_location=instance,
-                        status__name__in=['active', 'pending_confirmation', 'confirmed']
+                        status__name__in=ACTIVE_BOOKING_STATUS_NAMES
                     ).exclude(
                         start_time__lt=now  # Исключаем прошедшие бронирования
                     )
                     
                     cancelled_count = 0
                     for booking in active_bookings:
+                        if cancellation_reason is None:
+                            continue
                         # Отменяем бронирование
-                        booking.status = cancelled_status
+                        booking.cancel_booking(
+                            cancelled_by=CANCELLED_BY_PROVIDER,
+                            cancelled_by_user=None,
+                            cancellation_reason=cancellation_reason,
+                            cancellation_reason_text=str(_('Cancelled due to provider location deactivation.')),
+                        )
                         # Добавляем сообщение о причине отмены
                         deactivation_note = _('Cancelled due to provider location deactivation.')
                         if booking.notes:
                             booking.notes = f"{booking.notes}\n{deactivation_note}"
                         else:
                             booking.notes = deactivation_note
-                        booking.save()
+                        booking.save(update_fields=['notes', 'updated_at'])
                         cancelled_count += 1
                         
                         # TODO: Отправить уведомление пользователю
@@ -324,4 +334,3 @@ def _send_activation_email(provider, admin_user, recipient_email=None, is_admin=
     except Exception as e:
         logger.error(f"Error rendering or sending activation email: {e}", exc_info=True)
         raise
-

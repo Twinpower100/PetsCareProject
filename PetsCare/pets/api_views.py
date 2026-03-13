@@ -5,18 +5,23 @@ from django.core.exceptions import ObjectDoesNotExist
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext_lazy as _
 from rest_framework.views import APIView
+from rest_framework.exceptions import PermissionDenied
 from django.utils import timezone
 from datetime import timedelta
 from users.models import User
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction
-from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
+from .models import Pet, PetHealthNote, VisitRecord, PetAccess, PetDocument, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
 from .serializers import (
     PetSerializer,
-    MedicalRecordSerializer,
-    PetRecordSerializer,
+    PetHealthNoteSerializer,
+    VisitRecordSerializer,
+    VisitRecordDetailSerializer,
     PetAccessSerializer,
-    PetRecordFileSerializer,
+    PetDocumentSerializer,
+    PetDocumentSummarySerializer,
+    PetMedicalCardSerializer,
+    VisitRecordAddendumSerializer,
     DocumentTypeSerializer,
     ChronicConditionSerializer,
     PhysicalFeatureSerializer,
@@ -29,7 +34,7 @@ from .serializers import (
 )
 from invites.models import Invite
 from invites.serializers import InviteSerializer
-from providers.models import EmployeeProvider, Employee, Provider, ProviderLocation
+from providers.models import Employee, Provider, ProviderLocation
 from catalog.models import Service
 from catalog.serializers import ServiceSerializer as CatalogServiceSerializer
 from django.core.mail import send_mail
@@ -43,6 +48,16 @@ import logging
 from .filters import PetFilter, PetTypeFilter, BreedFilter
 from .models import PetType, Breed, SizeRule
 from .constants import get_pet_photo_constraints_for_api
+from .medical_card_access import (
+    can_manage_visit_record_as_provider,
+    can_view_health_notes,
+    can_view_pet_medical_card,
+    get_accessible_documents_queryset,
+    get_globally_accessible_documents_queryset,
+    get_globally_accessible_visit_records_queryset,
+    is_pet_owner,
+)
+from .document_type_catalog import get_document_type_order_expression
 from rest_framework.filters import OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.pagination import PageNumberPagination
@@ -50,6 +65,15 @@ from django.db.models import Q
 
 
 logger = logging.getLogger(__name__)
+
+
+def _with_base_pet_related(queryset):
+    return queryset.select_related('pet_type', 'breed').prefetch_related(
+        'petowner_set',
+        'petowner_set__user',
+        'chronic_conditions',
+        'accesses',
+    )
 
 
 class PetViewSet(viewsets.ModelViewSet):
@@ -69,10 +93,9 @@ class PetViewSet(viewsets.ModelViewSet):
         """Возвращает список питомцев текущего пользователя с prefetch для избежания N+1"""
         if getattr(self, 'swagger_fake_view', False):
             return Pet._default_manager.none()
-        return (
+        return _with_base_pet_related(
             self.queryset
             .filter(owners=self.request.user, is_active=True)
-            .prefetch_related('petowner_set', 'petowner_set__user')
         )
 
     def perform_destroy(self, instance):
@@ -388,77 +411,65 @@ class PetViewSet(viewsets.ModelViewSet):
             pass
 
 
-class MedicalRecordViewSet(viewsets.ModelViewSet):
+class VisitRecordViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    ViewSet for managing medical records.
+    Canonical read-only API for visit protocols.
+
+    Provider-side writes remain booking-centric via booking completion / visit_record
+    endpoints to avoid parallel write workflows.
     """
-    queryset = MedicalRecord._default_manager.all()
-    serializer_class = MedicalRecordSerializer
+    serializer_class = VisitRecordDetailSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """Возвращает медицинские записи питомцев текущего пользователя"""
         if getattr(self, 'swagger_fake_view', False):
-            return MedicalRecord._default_manager.none()
-        return self.queryset.filter(pet__owners=self.request.user)
+            return VisitRecord._default_manager.none()
 
-    def perform_create(self, serializer):
-        """Создает медицинскую запись"""
-        pet = get_object_or_404(Pet, pk=self.request.data.get('pet'))
-        if self.request.user not in pet.owners.all():
-            raise permissions.PermissionDenied(_('You do not have permission to create medical records for this pet'))
-        serializer.save()
+        queryset = get_globally_accessible_visit_records_queryset(self.request.user)
+        pet_id = self.request.query_params.get('pet')
+        booking_id = self.request.query_params.get('booking_id')
+        if pet_id:
+            queryset = queryset.filter(pet_id=pet_id)
+        if booking_id:
+            queryset = queryset.filter(source_bookings__id=booking_id)
+        return queryset.distinct()
+
+    @action(detail=True, methods=['get'])
+    def addenda(self, request, pk=None):
+        record = self.get_object()
+        serializer = VisitRecordAddendumSerializer(
+            record.addenda.select_related('author').order_by('created_at'),
+            many=True,
+            context={'request': request},
+        )
+        return Response(serializer.data)
 
 
-class PetRecordViewSet(viewsets.ModelViewSet):
+class PetDocumentViewSet(viewsets.ReadOnlyModelViewSet):
     """
-    ViewSet for managing pet records in the pet's map (PetRecord).
+    Canonical read-only API for the single document entity.
 
-    - This class manages CONTENT (medical, procedural, service records) in the pet's history.
-    - Allows creating, viewing, editing, deleting records about procedures, services, medical manipulations for the pet.
-    - A record can be created only by the pet owner (owners) or an employee of the provider, if specified in the employee field and active in this provider.
-    - Does not manage access rights to other users' information about the pet.
+    Writes stay pet-centric through /pets/{pet_id}/documents/ to keep the target
+    workflow explicit about document ownership and context.
     """
-    queryset = PetRecord._default_manager.all()
-    serializer_class = PetRecordSerializer
+    serializer_class = PetDocumentSummarySerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """Владельцы видят записи своих питомцев; сотрудник — записи, где он исполнитель (по полю employee)."""
         if getattr(self, 'swagger_fake_view', False):
-            return PetRecord._default_manager.none()
-        user = self.request.user
-        from django.db.models import Q
-        return self.queryset.filter(
-            Q(pet__owners=user) | Q(employee__user=user)
-        ).distinct()
+            return PetDocument._default_manager.none()
 
-    def perform_create(self, serializer):
-        """Создает запись в карте питомца"""
-        pet = get_object_or_404(Pet, pk=self.request.data.get('pet'))
-        provider_id = self.request.data.get('provider')
-        employee_id = self.request.data.get('employee')
-        user = self.request.user
-
-        is_owner = user in pet.owners.all()
-        is_employee_for_provider = False
-
-        if provider_id and employee_id:
-            from providers.models import Employee, EmployeeProvider
-            try:
-                employee = Employee._default_manager.get(pk=employee_id)
-                # Проверяем, что этот сотрудник — текущий пользователь и может проводить приёмы (не technical_worker)
-                if employee.user == user:
-                    ep = EmployeeProvider.get_active_ep_for_user_provider(user, get_object_or_404(Provider, pk=provider_id))
-                    if ep and ep.can_conduct_visits():
-                        is_employee_for_provider = True
-            except Employee.DoesNotExist:
-                pass
-
-        if not (is_owner or is_employee_for_provider):
-            raise permissions.PermissionDenied(_('You do not have permission to add records for this pet'))
-
-        serializer.save(created_by=user)
+        queryset = get_globally_accessible_documents_queryset(self.request.user)
+        pet_id = self.request.query_params.get('pet')
+        visit_record_id = self.request.query_params.get('visit_record')
+        health_note_id = self.request.query_params.get('health_note')
+        if pet_id:
+            queryset = queryset.filter(pet_id=pet_id)
+        if visit_record_id:
+            queryset = queryset.filter(visit_record_id=visit_record_id)
+        if health_note_id:
+            queryset = queryset.filter(health_note_id=health_note_id)
+        return queryset.distinct()
 
 
 class PetAccessViewSet(viewsets.ModelViewSet):
@@ -484,7 +495,7 @@ class PetAccessViewSet(viewsets.ModelViewSet):
         """Создает доступ к карте питомца"""
         pet = get_object_or_404(Pet, pk=self.request.data.get('pet'))
         if self.request.user not in pet.owners.all():
-            raise permissions.PermissionDenied(_('You do not have permission to grant access to this pet'))
+            raise PermissionDenied(_('You do not have permission to grant access to this pet'))
         serializer.save(granted_by=self.request.user)
 
     @action(detail=True, methods=['post'])
@@ -492,20 +503,19 @@ class PetAccessViewSet(viewsets.ModelViewSet):
         """Отзывает доступ к карте питомца"""
         access = self.get_object()
         if request.user not in access.pet.owners.all():
-            raise permissions.PermissionDenied(_('You do not have permission to revoke access to this pet'))
+            raise PermissionDenied(_('You do not have permission to revoke access to this pet'))
         access.delete()
         return Response({'status': 'Access revoked'})
 
 
 class DocumentTypeViewSet(viewsets.ModelViewSet):
     """
-    ViewSet for managing pet document types.
-    
+    ViewSet for approved pet document types.
+
     Features:
-    - CRUD operations for document types
-    - Link with service categories
-    - Setting mandatory fields
-    - Filtering by activity
+    - Returns only active catalog items
+    - Keeps a stable business order for the fixed catalog
+    - Allows administrators to toggle activity without editing derived fields
     """
     queryset = DocumentType._default_manager.all()
     serializer_class = DocumentTypeSerializer
@@ -513,41 +523,37 @@ class DocumentTypeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Возвращает активные типы документов"""
-        return self.queryset.filter(is_active=True)
+        return self.queryset.filter(is_active=True).order_by(
+            get_document_type_order_expression(),
+            'id',
+        )
 
     def perform_create(self, serializer):
         """Создает тип документа"""
         # Только системные администраторы могут создавать типы документов
         if not (self.request.user.is_staff or self.request.user.is_superuser):
-            raise permissions.PermissionDenied(_('Only administrators can create document types'))
+            raise PermissionDenied(_('Only administrators can create document types'))
         serializer.save()
 
     def perform_update(self, serializer):
         """Обновляет тип документа"""
         # Только системные администраторы могут обновлять типы документов
         if not (self.request.user.is_staff or self.request.user.is_superuser):
-            raise permissions.PermissionDenied(_('Only administrators can update document types'))
+            raise PermissionDenied(_('Only administrators can update document types'))
         serializer.save()
 
     def perform_destroy(self, instance):
         """Удаляет тип документа"""
         # Только системные администраторы могут удалять типы документов
         if not (self.request.user.is_staff or self.request.user.is_superuser):
-            raise permissions.PermissionDenied(_('Only administrators can delete document types'))
+            raise PermissionDenied(_('Only administrators can delete document types'))
         instance.delete()
 
     @action(detail=False, methods=['get'])
     def by_service_category(self, request):
-        """Возвращает типы документов для конкретной категории услуг"""
-        category_id = request.query_params.get('category_id')
-        if category_id and hasattr(self.queryset.model, 'service_categories'):
-            document_types = self.queryset.filter(
-                service_categories__id=category_id,
-                is_active=True
-            )
-            serializer = self.get_serializer(document_types, many=True)
-            return Response(serializer.data)
-        return Response([])
+        """Возвращает активный каталог типов документов для текущей версии продукта."""
+        serializer = self.get_serializer(self.get_queryset(), many=True)
+        return Response(serializer.data)
 
 
 class PetDeleteAPIView(APIView):
@@ -571,7 +577,7 @@ class PetDeleteAPIView(APIView):
         is_admin = user.is_staff or user.is_superuser
 
         if not (is_main_owner or is_admin):
-            raise permissions.PermissionDenied(_('Only main owner or admin can delete this pet'))
+            raise PermissionDenied(_('Only main owner or admin can delete this pet'))
         pet.is_active = False
         pet.save()
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -589,7 +595,9 @@ class PetListCreateAPIView(generics.ListCreateAPIView):
         """Возвращает список питомцев текущего пользователя"""
         if getattr(self, 'swagger_fake_view', False):
             return Pet._default_manager.none()
-        return self.queryset.filter(owners=self.request.user, is_active=True)
+        return _with_base_pet_related(
+            self.queryset.filter(owners=self.request.user, is_active=True)
+        )
 
 
 class PetRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -600,7 +608,9 @@ class PetRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
             return Pet._default_manager.none()
-        return self.queryset.filter(owners=self.request.user, is_active=True)
+        return _with_base_pet_related(
+            self.queryset.filter(owners=self.request.user, is_active=True)
+        )
 
     def perform_destroy(self, instance):
         """Мягкое удаление питомца"""
@@ -608,52 +618,110 @@ class PetRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
         instance.save()
 
 
-class MedicalRecordListCreateAPIView(generics.ListCreateAPIView):
-    serializer_class = MedicalRecordSerializer
+class PetMedicalCardAPIView(APIView):
+    """
+    Canonical pet-centric medical card read endpoint.
+
+    Owners get the full card. Provider-side access is limited to visit records
+    and visit-linked documents available to that provider context.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pet_id):
+        pet = get_object_or_404(Pet, pk=pet_id)
+        if not can_view_pet_medical_card(request.user, pet):
+            raise PermissionDenied(
+                _('You do not have permission to access this pet medical card')
+            )
+        serializer = PetMedicalCardSerializer(pet, context={'request': request})
+        return Response(serializer.data)
+
+
+class PetDocumentListCreateAPIView(APIView):
+    """
+    Canonical pet-centric document endpoint.
+
+    - Owners can list and upload standalone or visit-linked documents.
+    - Provider staff can list only visit-linked documents they are allowed to see.
+    - Provider staff can upload only when attaching the document to a visit record.
+    """
+    parser_classes = (MultiPartParser, FormParser)
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pet_id):
+        pet = get_object_or_404(Pet, pk=pet_id)
+        if not can_view_pet_medical_card(request.user, pet):
+            raise PermissionDenied(
+                _('You do not have permission to access documents for this pet')
+            )
+        queryset = get_accessible_documents_queryset(request.user, pet)
+        serializer = PetDocumentSummarySerializer(
+            queryset,
+            many=True,
+            context={'request': request},
+        )
+        return Response(serializer.data)
+
+    def post(self, request, pet_id):
+        pet = get_object_or_404(Pet, pk=pet_id)
+        serializer = PetDocumentSerializer(
+            data=request.data,
+            context={'request': request, 'pet': pet},
+        )
+        serializer.is_valid(raise_exception=True)
+        document = serializer.save(
+            pet=pet,
+            uploaded_by=request.user,
+        )
+        response_serializer = PetDocumentSummarySerializer(
+            document,
+            context={'request': request},
+        )
+        return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class PetHealthNoteListCreateAPIView(generics.ListCreateAPIView):
+    serializer_class = PetHealthNoteSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def _get_pet(self):
+        return get_object_or_404(Pet, pk=self.kwargs['pet_id'])
+
+    def _check_write_permission(self, pet):
+        if self.request.user.is_superuser or self.request.user.is_system_admin():
+            return
+        if not is_pet_owner(self.request.user, pet):
+            raise PermissionDenied(
+                _('You do not have permission to manage health notes for this pet')
+            )
+
+    def get_queryset(self):
+        pet = self._get_pet()
+        if not can_view_pet_medical_card(self.request.user, pet):
+            raise PermissionDenied(
+                _('You do not have permission to access this pet medical card')
+            )
+        if not can_view_health_notes(self.request.user, pet):
+            return PetHealthNote._default_manager.none()
+        return pet.health_notes.order_by('-date', '-created_at')
+
+    def perform_create(self, serializer):
+        pet = self._get_pet()
+        self._check_write_permission(pet)
+        serializer.save(pet=pet)
+
+
+class PetHealthNoteRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    serializer_class = PetHealthNoteSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
-            return MedicalRecord._default_manager.none()
-        return MedicalRecord._default_manager.filter(pet__owners=self.request.user)
-
-
-class MedicalRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    serializer_class = MedicalRecordSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        if getattr(self, 'swagger_fake_view', False):
-            return MedicalRecord._default_manager.none()
-        return MedicalRecord._default_manager.filter(pet__owners=self.request.user)
-
-
-class PetRecordListCreateAPIView(generics.ListCreateAPIView):
-    serializer_class = PetRecordSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        if getattr(self, 'swagger_fake_view', False):
-            return PetRecord._default_manager.none()
-        from django.db.models import Q
-        user = self.request.user
-        return PetRecord._default_manager.filter(
-            Q(pet__owners=user) | Q(employee__user=user)
-        ).distinct()
-
-
-class PetRecordRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    serializer_class = PetRecordSerializer
-    permission_classes = [permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        if getattr(self, 'swagger_fake_view', False):
-            return PetRecord._default_manager.none()
-        from django.db.models import Q
-        user = self.request.user
-        return PetRecord._default_manager.filter(
-            Q(pet__owners=user) | Q(employee__user=user)
-        ).distinct()
+            return PetHealthNote._default_manager.none()
+        queryset = PetHealthNote._default_manager.select_related('pet').order_by('-date', '-created_at')
+        if self.request.user.is_superuser or self.request.user.is_system_admin():
+            return queryset
+        return queryset.filter(pet__owners=self.request.user)
 
 
 class PetAccessListCreateAPIView(generics.ListCreateAPIView):
@@ -676,163 +744,6 @@ class PetAccessRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIVie
         return PetAccess._default_manager.filter(pet__owners=self.request.user)
 
 
-class PetRecordFileUploadAPIView(APIView):
-    """
-    API for uploading a file to a record in the pet's map.
-    
-    Access rights:
-    - Employee (employee): can upload to records where he is executor or his institution
-    - Pet owner: can upload to records of his pets
-    - Institution administrator (provider_admin): can upload to records of his institution
-    - System administrator (system_admin): can upload everywhere
-    """
-    parser_classes = (MultiPartParser, FormParser)
-    permission_classes = [permissions.IsAuthenticated]
-
-    def validate_file(self, file):
-        """
-        File validation.
-        
-        Args:
-            file: Uploaded file
-            
-        Raises:
-            ValidationError: If the file failed validation
-        """
-        # Проверка размера файла (10MB)
-        if file.size > 10 * 1024 * 1024:
-            raise ValidationError(_('File is too large (max 10MB)'))
-        
-        # Разрешенные типы файлов
-        allowed_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.doc', '.docx', '.xls', '.xlsx']
-        file_extension = file.name.lower()
-        
-        if not any(file_extension.endswith(ext) for ext in allowed_extensions):
-            raise ValidationError(_('Unsupported file type. Allowed: PDF, images, Excel/Word documents'))
-        
-        # Проверка MIME-типа
-        allowed_mime_types = [
-            'application/pdf',
-            'image/jpeg',
-            'image/png',
-            'application/msword',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            'application/vnd.ms-excel',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        ]
-        
-        if hasattr(file, 'content_type') and file.content_type not in allowed_mime_types:
-            raise ValidationError(_('Unsupported MIME type'))
-
-    def check_permissions(self, user, record):
-        """
-        Check access rights for uploading a file.
-        
-        Args:
-            user: User trying to upload a file
-            record: PetRecord
-            
-        Returns:
-            bool: True if the user has rights
-        """
-        # Системный администратор может все
-        if user.has_role('system_admin') or user.is_superuser:
-            return True
-        
-        # Владелец питомца может загружать в записи своих питомцев
-        if user in record.pet.owners.all():
-            return True
-        
-        # Сотрудник с правом приёмов (service_worker, provider_admin, provider_manager, owner) может загружать в записи, где он исполнитель или в записи своего учреждения
-        ep = EmployeeProvider.get_active_ep_for_user_provider(user, record.provider)
-        if ep and ep.can_conduct_visits():
-            if record.employee_id == ep.employee_id:
-                return True
-            if ep.provider_id == record.provider_id:
-                return True
-
-        return False
-
-    def post(self, request, record_id):
-        """
-        Uploads a document to a record in the pet's map.
-        
-        Args:
-            request: HTTP request with file and metadata
-            record_id: ID of PetRecord
-            
-        Returns:
-            Response: Document upload result
-        """
-        # Получаем запись
-        record = get_object_or_404(PetRecord, pk=record_id)
-        
-        # Проверяем права доступа
-        if not self.check_permissions(request.user, record):
-            raise permissions.PermissionDenied(
-                _('You do not have permission to upload documents to this record')
-            )
-        
-        # Проверяем наличие файла в запросе
-        if 'file' not in request.FILES:
-            return Response(
-                {'error': _('File is required')},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        file = request.FILES['file']
-        
-        # Валидируем файл
-        try:
-            self.validate_file(file)
-        except ValidationError as e:
-            return Response(
-                {'error': str(e)}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        # Создаем документ
-        try:
-            # Подготавливаем данные для создания документа
-            document_data = {
-                'file': file,
-                'name': request.data.get('name', file.name),
-                'description': request.data.get('description', ''),
-                'pet': record.pet,
-                'pet_record': record,
-                'uploaded_by': request.user,
-            }
-            
-            # Добавляем опциональные поля
-            if 'document_type' in request.data:
-                document_data['document_type'] = request.data['document_type']
-            
-            if 'issue_date' in request.data:
-                document_data['issue_date'] = request.data['issue_date']
-            
-            if 'expiry_date' in request.data:
-                document_data['expiry_date'] = request.data['expiry_date']
-            
-            if 'document_number' in request.data:
-                document_data['document_number'] = request.data['document_number']
-            
-            if 'issuing_authority' in request.data:
-                document_data['issuing_authority'] = request.data['issuing_authority']
-            
-            # Создаем документ
-            pet_record_file = PetRecordFile._default_manager.create(**document_data)
-            
-            # Сериализуем результат
-            serializer = PetRecordFileSerializer(pet_record_file)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-            
-        except Exception as e:
-            return Response(
-                {'error': _('Error saving document')},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
-
-
 class PetDocumentDownloadAPIView(APIView):
     """
     API for downloading a pet document with access rights check.
@@ -845,13 +756,13 @@ class PetDocumentDownloadAPIView(APIView):
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    def check_permissions(self, user, document):
+    def has_document_permission(self, user, document):
         """
         Check access rights for downloading a document.
         
         Args:
             user: User trying to download a document
-            document: PetRecordFile
+            document: PetDocument
             
         Returns:
             bool: True if the user has rights
@@ -861,59 +772,13 @@ class PetDocumentDownloadAPIView(APIView):
             return True
         
         # Владелец питомца может скачивать документы своих питомцев
-        if user in document.pet.owners.all():
+        if is_pet_owner(user, document.pet):
             return True
-        
-        # Сотрудник может скачивать документы питомцев, которых обслуживает
-        if user.has_role('employee'):
-            from providers.models import Employee, EmployeeProvider
-            
-            try:
-                employee = Employee._default_manager.get(user=user)
-                # Проверяем, что сотрудник работает в учреждении, где есть записи питомца
-                has_records_for_pet = PetRecord._default_manager.filter(
-                    pet=document.pet,
-                    employee=employee
-                ).exists()
-                
-                if has_records_for_pet:
-                    return True
-                
-                # Проверяем, что сотрудник работает в учреждении, где есть записи питомца
-                provider_records = PetRecord._default_manager.filter(
-                    pet=document.pet
-                ).values_list('provider', flat=True).distinct()
-                
-                is_employee_for_providers = EmployeeProvider._default_manager.filter(
-                    employee=employee,
-                    provider__in=provider_records,
-                    status__in=['active', 'temporary']
-                ).exists()
-                
-                if is_employee_for_providers:
-                    return True
-            except Employee.DoesNotExist:
-                pass
-        
-        # Администратор учреждения может скачивать документы питомцев своего учреждения
-        if user.has_role('provider_admin'):
-            from providers.models import EmployeeProvider
-            
-            provider_records = PetRecord._default_manager.filter(
-                pet=document.pet
-            ).values_list('provider', flat=True).distinct()
-            
-            is_admin_for_providers = EmployeeProvider._default_manager.filter(
-                employee__user=user,
-                provider__in=provider_records,
-                is_manager=True,
-                status__in=['active', 'temporary']
-            ).exists()
-            
-            if is_admin_for_providers:
-                return True
-        
-        return False
+
+        if document.visit_record_id is None:
+            return False
+
+        return can_manage_visit_record_as_provider(user, document.visit_record)
 
     def get(self, request, document_id):
         """
@@ -921,16 +786,16 @@ class PetDocumentDownloadAPIView(APIView):
         
         Args:
             request: HTTP request
-            document_id: ID of PetRecordFile
+            document_id: ID of PetDocument
             
         Returns:
             Response: Download file
         """
-        document = get_object_or_404(PetRecordFile, pk=document_id)
+        document = get_object_or_404(PetDocument, pk=document_id)
         
         # Проверяем права доступа
-        if not self.check_permissions(request.user, document):
-            raise permissions.PermissionDenied(
+        if not self.has_document_permission(request.user, document):
+            raise PermissionDenied(
                 _('You do not have permission to download this document')
             )
         
@@ -947,7 +812,7 @@ class PetDocumentDownloadAPIView(APIView):
             
             # Определяем MIME-тип
             import mimetypes
-            content_type, _ = mimetypes.guess_type(document.file.name)
+            content_type, encoding = mimetypes.guess_type(document.file.name)
             if not content_type:
                 content_type = 'application/octet-stream'
             
@@ -979,13 +844,13 @@ class PetDocumentPreviewAPIView(APIView):
     """
     permission_classes = [permissions.IsAuthenticated]
 
-    def check_permissions(self, user, document):
+    def has_document_permission(self, user, document):
         """
         Check access rights for previewing a document.
         """
         # Используем ту же логику, что и для скачивания
         download_view = PetDocumentDownloadAPIView()
-        return download_view.check_permissions(user, document)
+        return download_view.has_document_permission(user, document)
 
     def get(self, request, document_id):
         """
@@ -993,16 +858,16 @@ class PetDocumentPreviewAPIView(APIView):
         
         Args:
             request: HTTP request
-            document_id: ID of PetRecordFile
+            document_id: ID of PetDocument
             
         Returns:
             Response: Preview image
         """
-        document = get_object_or_404(PetRecordFile, pk=document_id)
+        document = get_object_or_404(PetDocument, pk=document_id)
         
         # Проверяем права доступа
-        if not self.check_permissions(request.user, document):
-            raise permissions.PermissionDenied(
+        if not self.has_document_permission(request.user, document):
+            raise PermissionDenied(
                 _('You do not have permission to view this document')
             )
         
@@ -1029,7 +894,7 @@ class PetDocumentPreviewAPIView(APIView):
             
             # Определяем MIME-тип
             import mimetypes
-            content_type, _ = mimetypes.guess_type(document.file.name)
+            content_type, encoding = mimetypes.guess_type(document.file.name)
             if not content_type:
                 content_type = 'image/jpeg'
             

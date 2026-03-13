@@ -11,11 +11,39 @@
 """
 
 from rest_framework import serializers
-from .models import Pet, MedicalRecord, PetRecord, PetAccess, PetRecordFile, PetType, Breed, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
+from django.urls import reverse
+from .models import (
+    Pet,
+    PetHealthNote,
+    VisitRecord,
+    PetAccess,
+    PetDocument,
+    PetType,
+    Breed,
+    DocumentType,
+    ChronicCondition,
+    PhysicalFeature,
+    BehavioralTrait,
+    PetOwner,
+    VisitRecordAddendum,
+)
 from users.models import User
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.db import transaction
+from .medical_card_access import (
+    can_manage_visit_record_as_provider,
+    can_view_health_notes,
+    can_view_visit_record,
+    get_accessible_documents_queryset,
+    get_accessible_visit_records_queryset,
+    is_pet_owner,
+)
+from .document_type_catalog import (
+    DOCUMENT_TYPE_ALLOWED_EXTENSIONS,
+    DOCUMENT_TYPE_ALLOWED_MIME_TYPES,
+    get_document_type_definition_by_name,
+)
 
 from .models import PetOwnerIncapacity, PetIncapacityNotification
 from .constants import (
@@ -27,39 +55,229 @@ from .constants import (
 )
 
 
-class MedicalRecordSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для медицинских записей.
-    
-    Особенности:
-    - Валидация даты
-    - Защита от будущих дат
-    """
+class PetHealthNoteSerializer(serializers.ModelSerializer):
+    kind = serializers.SerializerMethodField()
+
     class Meta:
-        model = MedicalRecord
+        model = PetHealthNote
         fields = [
             'id',
             'pet',
             'date',
             'title',
             'description',
-            'attachments',
             'next_visit',
+            'kind',
             'created_at',
-            'updated_at'
+            'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'pet', 'created_at', 'updated_at']
+
+    def get_kind(self, obj):
+        return 'health_note'
 
     def validate(self, data):
-        """Проверяет корректность даты"""
-        if data.get('date') and data['date'] > timezone.now().date():
+        if data.get('date') and data['date'] > timezone.localdate():
             raise serializers.ValidationError(
                 {'date': _('Date cannot be in the future')}
             )
         return data
 
 
-class PetRecordSerializer(serializers.ModelSerializer):
+class VisitRecordAddendumSerializer(serializers.ModelSerializer):
+    author_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VisitRecordAddendum
+        fields = [
+            'id',
+            'visit_record',
+            'author',
+            'author_name',
+            'content',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['id', 'visit_record', 'author', 'author_name', 'created_at', 'updated_at']
+
+    def get_author_name(self, obj):
+        return obj.author.get_full_name() or obj.author.email
+
+
+class PetDocumentSummarySerializer(serializers.ModelSerializer):
+    document_type_name = serializers.SerializerMethodField()
+    visit_record = serializers.IntegerField(source='visit_record_id', read_only=True)
+    health_note = serializers.IntegerField(source='health_note_id', read_only=True)
+    uploaded_by_name = serializers.SerializerMethodField()
+    is_expired = serializers.BooleanField(read_only=True)
+    days_until_expiry = serializers.IntegerField(read_only=True)
+    download_url = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PetDocument
+        fields = [
+            'id',
+            'file',
+            'name',
+            'description',
+            'document_type',
+            'document_type_name',
+            'pet',
+            'visit_record',
+            'health_note',
+            'issue_date',
+            'expiry_date',
+            'document_number',
+            'issuing_authority',
+            'uploaded_by',
+            'uploaded_by_name',
+            'uploaded_at',
+            'is_expired',
+            'days_until_expiry',
+            'download_url',
+            'preview_url',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'pet',
+            'uploaded_by',
+            'uploaded_by_name',
+            'uploaded_at',
+            'is_expired',
+            'days_until_expiry',
+            'download_url',
+            'preview_url',
+            'created_at',
+            'updated_at',
+        ]
+
+    def get_uploaded_by_name(self, obj):
+        return obj.uploaded_by.get_full_name() or obj.uploaded_by.email
+
+    def get_document_type_name(self, obj):
+        if not obj.document_type:
+            return None
+        request = self.context.get('request')
+        lang = request.GET.get('lang') if request else None
+        if not lang and request and request.META.get('HTTP_ACCEPT_LANGUAGE'):
+            raw = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+            lang = raw.split(',')[0].split('-')[0].strip().lower() if raw else None
+        return obj.document_type.get_localized_name(lang) if lang else obj.document_type.get_localized_name()
+
+    def _build_url(self, obj, route_name):
+        request = self.context.get('request')
+        url = reverse(route_name, kwargs={'document_id': obj.id})
+        return request.build_absolute_uri(url) if request else url
+
+    def get_download_url(self, obj):
+        return self._build_url(obj, 'pets:document-download')
+
+    def get_preview_url(self, obj):
+        return self._build_url(obj, 'pets:document-preview')
+
+
+class PetDocumentSerializer(PetDocumentSummarySerializer):
+    visit_record = serializers.PrimaryKeyRelatedField(
+        queryset=VisitRecord._default_manager.all(),
+        required=False,
+        allow_null=True,
+    )
+    health_note = serializers.PrimaryKeyRelatedField(
+        queryset=PetHealthNote._default_manager.all(),
+        required=False,
+        allow_null=True,
+    )
+
+    def validate_file(self, value):
+        if value.size > 10 * 1024 * 1024:
+            raise serializers.ValidationError(_('File is too large (max 10MB)'))
+
+        file_name = value.name.lower()
+        if not any(file_name.endswith(ext) for ext in DOCUMENT_TYPE_ALLOWED_EXTENSIONS):
+            raise serializers.ValidationError(
+                _('Unsupported file type. Allowed: PDF and JPG/PNG images')
+            )
+
+        content_type = getattr(value, 'content_type', None)
+        if content_type and content_type not in DOCUMENT_TYPE_ALLOWED_MIME_TYPES:
+            raise serializers.ValidationError(_('Unsupported MIME type'))
+
+        return value
+
+    def validate(self, data):
+        pet = self.context.get('pet')
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        visit_record = data.get('visit_record')
+        health_note = data.get('health_note')
+
+        if pet is None:
+            raise serializers.ValidationError({'pet': _('Pet is required')})
+
+        if visit_record and visit_record.pet_id != pet.id:
+            raise serializers.ValidationError({'visit_record': _('Visit record belongs to another pet')})
+
+        if health_note and health_note.pet_id != pet.id:
+            raise serializers.ValidationError(
+                {'health_note': _('Health note belongs to another pet')}
+            )
+
+        record_count = sum([
+            1 if visit_record else 0,
+            1 if health_note else 0,
+        ])
+        if record_count > 1:
+            raise serializers.ValidationError(_('Document can only be attached to one record'))
+
+        is_owner_upload = bool(user and is_pet_owner(user, pet))
+        is_system_upload = bool(user and (user.is_superuser or user.is_system_admin()))
+
+        if not (is_owner_upload or is_system_upload):
+            if not visit_record:
+                raise serializers.ValidationError(
+                    {'visit_record': _('Provider staff can upload documents only for a specific visit record')}
+                )
+            if not can_manage_visit_record_as_provider(user, visit_record):
+                raise serializers.ValidationError(
+                    {'visit_record': _('You do not have permission to upload documents for this visit record')}
+                )
+
+        if health_note and not (is_owner_upload or is_system_upload):
+            raise serializers.ValidationError(
+                {'health_note': _('Only pet owners can attach documents to health notes')}
+            )
+
+        document_type = data.get('document_type')
+        if document_type:
+            if document_type.requires_issue_date and not data.get('issue_date'):
+                raise serializers.ValidationError(
+                    {'issue_date': _('Issue date is required for this document type')}
+                )
+            if document_type.requires_expiry_date and not data.get('expiry_date'):
+                raise serializers.ValidationError(
+                    {'expiry_date': _('Expiry date is required for this document type')}
+                )
+            if document_type.requires_issuing_authority and not data.get('issuing_authority'):
+                raise serializers.ValidationError(
+                    {'issuing_authority': _('Issuing authority is required for this document type')}
+                )
+            if document_type.requires_document_number and not data.get('document_number'):
+                raise serializers.ValidationError(
+                    {'document_number': _('Document number is required for this document type')}
+                )
+
+        if data.get('issue_date') and data.get('expiry_date') and data['issue_date'] > data['expiry_date']:
+            raise serializers.ValidationError(
+                {'expiry_date': _('Issue date cannot be after expiry date')}
+            )
+
+        return data
+
+
+class VisitRecordSerializer(serializers.ModelSerializer):
     """
     Сериализатор для записей в карте питомца.
     
@@ -72,16 +290,22 @@ class PetRecordSerializer(serializers.ModelSerializer):
         queryset=User.objects.all(),
         default=serializers.CurrentUserDefault()
     )
+    service_name = serializers.SerializerMethodField()
+    employee_name = serializers.SerializerMethodField()
+    provider_location_name = serializers.CharField(source='provider_location.name', read_only=True)
 
     class Meta:
-        model = PetRecord
+        model = VisitRecord
         fields = [
             'id',
             'pet',
             'provider',
             'provider_location',
+            'provider_location_name',
             'service',
+            'service_name',
             'employee',
+            'employee_name',
             'date',
             'next_date',
             'description',
@@ -91,7 +315,6 @@ class PetRecordSerializer(serializers.ModelSerializer):
             'recommendations',
             'notes',
             'serial_number',
-            'files',
             'created_by',
             'created_at',
             'updated_at'
@@ -102,6 +325,34 @@ class PetRecordSerializer(serializers.ModelSerializer):
             'description': {'required': False, 'allow_blank': True},
             'provider_location': {'required': False, 'allow_null': True},
         }
+
+    def get_service_name(self, obj):
+        if not obj.service:
+            return None
+        return obj.service.get_localized_name()
+
+    def get_employee_name(self, obj):
+        if not obj.employee or not obj.employee.user:
+            return None
+        return obj.employee.user.get_full_name() or obj.employee.user.email
+
+
+class VisitRecordDetailSerializer(VisitRecordSerializer):
+    documents = PetDocumentSummarySerializer(many=True, read_only=True)
+    addenda = VisitRecordAddendumSerializer(many=True, read_only=True)
+    booking_id = serializers.SerializerMethodField()
+
+    class Meta(VisitRecordSerializer.Meta):
+        fields = VisitRecordSerializer.Meta.fields + ['documents', 'addenda', 'booking_id']
+
+    def get_booking_id(self, obj):
+        prefetched = getattr(obj, '_prefetched_objects_cache', {})
+        source_bookings = prefetched.get('source_bookings')
+        if source_bookings is not None:
+            booking = source_bookings[0] if source_bookings else None
+            return booking.id if booking else None
+        booking_id = obj.source_bookings.values_list('id', flat=True).order_by('-created_at').first()
+        return booking_id
 
 
 class PetAccessSerializer(serializers.ModelSerializer):
@@ -250,13 +501,11 @@ class PetSerializer(serializers.ModelSerializer):
     )
     description = serializers.CharField(required=False, allow_blank=True, allow_null=True, default='')
     age = serializers.SerializerMethodField()
-    medical_records = MedicalRecordSerializer(many=True, read_only=True)
-    records = PetRecordSerializer(many=True, read_only=True)
-    access_list = PetAccessSerializer(many=True, read_only=True)
+    access_list = PetAccessSerializer(source='accesses', many=True, read_only=True)
     
     # Дополнительные поля для поиска
-    pet_type_name = serializers.CharField(source='pet_type.name', read_only=True)
-    breed_name = serializers.CharField(source='breed.name', read_only=True)
+    pet_type_name = serializers.SerializerMethodField()
+    breed_name = serializers.SerializerMethodField()
     main_owner_name = serializers.SerializerMethodField()
     main_owner_email = serializers.SerializerMethodField()
     records_count = serializers.SerializerMethodField()
@@ -291,8 +540,6 @@ class PetSerializer(serializers.ModelSerializer):
             'medical_conditions',
             'chronic_conditions',
             'photo',
-            'medical_records',
-            'records',
             'access_list',
             'main_owner_name',
             'main_owner_email',
@@ -333,6 +580,16 @@ class PetSerializer(serializers.ModelSerializer):
     def get_main_owner_email(self, obj):
         mo = obj.main_owner
         return mo.email if mo else None
+
+    def get_pet_type_name(self, obj):
+        if not obj.pet_type:
+            return None
+        return obj.pet_type.get_localized_name()
+
+    def get_breed_name(self, obj):
+        if not obj.breed:
+            return None
+        return obj.breed.get_localized_name()
 
     def get_age(self, obj):
         """Возвращает возраст питомца"""
@@ -463,87 +720,43 @@ class PetSerializer(serializers.ModelSerializer):
         return data
 
 
-class PetRecordFileSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для документов питомца.
-    
-    Особенности:
-    - Загрузка файлов
-    - Метаданные документа (даты, номер, орган выдачи)
-    - Связь с типом документа
-    - Аудит (кто загрузил, дата загрузки)
-    - Связи с записями
-    """
-    uploaded_by = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(),
-        default=serializers.CurrentUserDefault()
-    )
-    document_type_name = serializers.CharField(source='document_type.name', read_only=True)
-    pet_name = serializers.CharField(source='pet.name', read_only=True)
-    is_expired = serializers.BooleanField(read_only=True)
-    days_until_expiry = serializers.IntegerField(read_only=True)
+class PetMedicalCardSerializer(PetSerializer):
+    visit_records = serializers.SerializerMethodField()
+    health_notes = serializers.SerializerMethodField()
+    documents = serializers.SerializerMethodField()
 
-    class Meta:
-        model = PetRecordFile
+    class Meta(PetSerializer.Meta):
         fields = [
-            'id', 'file', 'name', 'description',
-            'pet', 'pet_name', 'document_type', 'document_type_name',
-            'medical_record', 'pet_record',
-            'issue_date', 'expiry_date', 'document_number', 'issuing_authority',
-            'uploaded_by', 'uploaded_at',
-            'is_expired', 'days_until_expiry',
-            'created_at', 'updated_at'
+            field
+            for field in PetSerializer.Meta.fields
+            if field != 'access_list'
+        ] + [
+            'visit_records',
+            'health_notes',
+            'documents',
         ]
-        read_only_fields = [
-            'id', 'uploaded_at', 'created_at', 'updated_at',
-            'document_type_name', 'pet_name', 'is_expired', 'days_until_expiry'
+        read_only_fields = list(PetSerializer.Meta.read_only_fields) + [
+            'visit_records',
+            'health_notes',
+            'documents',
         ]
 
-    def validate(self, data):
-        """Проверяет корректность данных"""
-        # Проверяем, что документ привязан к питомцу
-        if not data.get('pet'):
-            raise serializers.ValidationError(_('Document must be attached to a pet'))
-        
-        # Проверяем, что документ привязан только к одной записи
-        record_count = sum([
-            1 if data.get('medical_record') else 0,
-            1 if data.get('pet_record') else 0
-        ])
-        if record_count > 1:
-            raise serializers.ValidationError(_('Document can only be attached to one record'))
-        
-        # Проверяем требования типа документа
-        document_type = data.get('document_type')
-        if document_type:
-            if document_type.requires_issue_date and not data.get('issue_date'):
-                raise serializers.ValidationError(
-                    _('Issue date is required for this document type')
-                )
-            
-            if document_type.requires_expiry_date and not data.get('expiry_date'):
-                raise serializers.ValidationError(
-                    _('Expiry date is required for this document type')
-                )
-            
-            if document_type.requires_issuing_authority and not data.get('issuing_authority'):
-                raise serializers.ValidationError(
-                    _('Issuing authority is required for this document type')
-                )
-            
-            if document_type.requires_document_number and not data.get('document_number'):
-                raise serializers.ValidationError(
-                    _('Document number is required for this document type')
-                )
-        
-        # Проверяем даты
-        if data.get('issue_date') and data.get('expiry_date'):
-            if data['issue_date'] > data['expiry_date']:
-                raise serializers.ValidationError(
-                    _('Issue date cannot be after expiry date')
-                )
-        
-        return data
+    def get_visit_records(self, obj):
+        request = self.context.get('request')
+        queryset = get_accessible_visit_records_queryset(request.user, obj)
+        return VisitRecordDetailSerializer(queryset, many=True, context=self.context).data
+
+    def get_health_notes(self, obj):
+        request = self.context.get('request')
+        if not can_view_health_notes(request.user, obj):
+            return []
+        queryset = obj.health_notes.order_by('-date', '-created_at')
+        return PetHealthNoteSerializer(queryset, many=True, context=self.context).data
+
+    def get_documents(self, obj):
+        request = self.context.get('request')
+        queryset = get_accessible_documents_queryset(request.user, obj)
+        return PetDocumentSummarySerializer(queryset, many=True, context=self.context).data
 
 
 class PetTypeSerializer(serializers.ModelSerializer):
@@ -571,26 +784,59 @@ class PetTypeSerializer(serializers.ModelSerializer):
 class DocumentTypeSerializer(serializers.ModelSerializer):
     """
     Сериализатор для типа документа питомца.
-    
+
     Особенности:
-    - Валидация технического кода
-    - Связь с категориями услуг
-    - Настройка обязательных полей
+    - Возвращает локализованное отображаемое имя
+    - Разрешает только согласованные типы документов
+    - Не принимает ручное редактирование технического кода и служебных полей
     """
+    name_display = serializers.SerializerMethodField()
+
     class Meta:
         model = DocumentType
         fields = [
-            'id', 'name', 'code', 'description',
+            'id', 'name', 'name_display', 'code', 'description',
+            'name_en', 'name_ru', 'name_me', 'name_de',
             'requires_issue_date', 'requires_expiry_date', 
             'requires_issuing_authority', 'requires_document_number',
             'is_active', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id',
+            'name_display',
+            'code',
+            'description',
+            'name_en',
+            'name_ru',
+            'name_me',
+            'name_de',
+            'requires_issue_date',
+            'requires_expiry_date',
+            'requires_issuing_authority',
+            'requires_document_number',
+            'created_at',
+            'updated_at',
+        ]
 
-    def validate_code(self, value):
-        """Проверяет уникальность кода"""
-        if DocumentType._default_manager.filter(code=value).exists():
-            raise serializers.ValidationError(_('Document type code must be unique'))
+    def get_name_display(self, obj):
+        request = self.context.get('request')
+        lang = request.GET.get('lang') if request else None
+        if not lang and request and request.META.get('HTTP_ACCEPT_LANGUAGE'):
+            raw = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+            lang = raw.split(',')[0].split('-')[0].strip().lower() if raw else None
+        return obj.get_localized_name(lang) if lang else obj.get_localized_name()
+
+    def validate_name(self, value):
+        """Проверяет, что имя принадлежит согласованному каталогу."""
+        definition = get_document_type_definition_by_name(value)
+        if definition is None:
+            raise serializers.ValidationError(
+                _('Document type name must be selected from the approved catalog')
+            )
+
+        queryset = DocumentType._default_manager.exclude(pk=getattr(self.instance, 'pk', None))
+        if queryset.filter(code=definition.code).exists():
+            raise serializers.ValidationError(_('Document type already exists'))
         return value
 
     def validate(self, data):

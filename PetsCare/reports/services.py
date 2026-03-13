@@ -641,8 +641,11 @@ class CancellationReportService(ReportService):
                                  if cancellation.booking.provider_location 
                                  else cancellation.booking.provider.name),
                 'service_name': cancellation.booking.service.name,
-                'cancelled_by': f"{cancellation.cancelled_by.first_name} {cancellation.cancelled_by.last_name}",
-                'reason': cancellation.reason,
+                'cancelled_by': (
+                    f"{cancellation.cancelled_by.first_name} {cancellation.cancelled_by.last_name}".strip()
+                    if cancellation.cancelled_by else cancellation.cancelled_by_side
+                ),
+                'reason': cancellation.reason or (cancellation.reason_code.label if cancellation.reason_code else ''),
                 'is_abuse': cancellation.is_abuse,
                 'created_at': cancellation.created_at
             })

@@ -5,7 +5,7 @@ Services for the booking module.
 Основной компонент - BookingTransactionService для защиты от конкурентного доступа.
 """
 
-from django.db import transaction, models
+from django.db import transaction, models, IntegrityError
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -19,6 +19,16 @@ from pets.models import Pet
 from providers.models import Employee, Provider, Schedule, LocationSchedule, ProviderLocationService, ProviderLocation
 from catalog.models import Service
 from users.models import User
+from .constants import (
+    ACTIVE_BOOKING_STATUS_NAMES,
+    BOOKING_STATUS_CANCELLED,
+    BOOKING_STATUS_COMPLETED,
+    CANCELLED_BY_CLIENT,
+    CANCELLED_BY_PROVIDER,
+    COMPLETED_BY_SYSTEM,
+    COMPLETION_REASON_AUTO_TIMEOUT,
+    COMPLETION_REASON_MANUAL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +152,7 @@ class BookingTransactionService:
             employee=employee,
             start_time__lt=end_time,
             end_time__gt=start_time,
-            status__name__in=['active', 'pending_confirmation']
+            status__name__in=ACTIVE_BOOKING_STATUS_NAMES
         ).first()
         
         if conflicting_booking:
@@ -190,7 +200,7 @@ class BookingTransactionService:
         # Блокируем бронирование для изменения
         booking = Booking.objects.select_for_update().get(id=booking_id)
         
-        if booking.status.name in ['cancelled_by_client', 'cancelled_by_provider', 'completed']:
+        if booking.status.name in [BOOKING_STATUS_CANCELLED, 'completed']:
             raise ValidationError(_("Booking is already cancelled or completed"))
         
         # Валидация бизнес-правил для отмены
@@ -205,9 +215,9 @@ class BookingTransactionService:
         
         # Получаем статус отмены
         if cancelled_by == booking.user:
-            cancel_status = BookingStatus.objects.get(name='cancelled_by_client')
+            cancel_status = BookingStatus.objects.get(name='cancelled')
         else:
-            cancel_status = BookingStatus.objects.get(name='cancelled_by_provider')
+            cancel_status = BookingStatus.objects.get(name='cancelled')
         
         # Обновляем статус
         booking.status = cancel_status
@@ -259,11 +269,11 @@ class BookingTransactionService:
         # Блокируем бронирование для изменения
         booking = Booking.objects.select_for_update().get(id=booking_id)
         
-        if booking.status.name in ['cancelled_by_client', 'cancelled_by_provider', 'completed']:
+        if booking.status.name in [BOOKING_STATUS_CANCELLED, 'completed']:
             raise ValidationError(_("Cannot update cancelled or completed booking"))
         
         # Если меняется время или сотрудник, проверяем доступность нового слота
-        if (new_start_time or new_end_time or new_employee) and booking.status.name in ['active', 'pending_confirmation']:
+        if (new_start_time or new_end_time or new_employee) and booking.status.name in ACTIVE_BOOKING_STATUS_NAMES:
             start_time = new_start_time or booking.start_time
             end_time = new_end_time or booking.end_time
             employee = new_employee or booking.employee
@@ -273,7 +283,7 @@ class BookingTransactionService:
                 employee=employee,
                 start_time__lt=end_time,
                 end_time__gt=start_time,
-                status__name__in=['active', 'pending_confirmation']
+                status__name__in=ACTIVE_BOOKING_STATUS_NAMES
             ).exclude(id=booking_id).first()
             
             if conflicting_booking:
@@ -322,7 +332,7 @@ class BookingTransactionService:
             employee=employee,
             start_time__lt=end_time,
             end_time__gt=start_time,
-            status__name__in=['active', 'pending_confirmation']
+            status__name__in=ACTIVE_BOOKING_STATUS_NAMES
         ).first()
         
         if conflicting_booking:
@@ -363,7 +373,7 @@ class BookingCompletionService:
     """Сервис для завершения бронирований"""
     
     @staticmethod
-    def complete_booking(booking, user, status='completed'):
+    def complete_booking(booking, user, status='completed', pet_record_data=None):
         """
         Завершить бронирование
         
@@ -371,12 +381,137 @@ class BookingCompletionService:
             booking: Объект бронирования
             user: Пользователь, завершающий бронирование
             status: Статус завершения
+            pet_record_data: Данные для записи в карте питомца
         """
         with transaction.atomic():
-            booking.complete_booking(user, status)
+            actor = COMPLETED_BY_SYSTEM if user is None else 'user'
+            reason_code = COMPLETION_REASON_AUTO_TIMEOUT if actor == COMPLETED_BY_SYSTEM else COMPLETION_REASON_MANUAL
+            booking.complete_booking(
+                user,
+                actor=actor,
+                reason_code=reason_code,
+            )
+            visit_record = BookingCompletionService._create_visit_record_from_booking(
+                booking,
+                user,
+                pet_record_data,
+            )
+            if visit_record is not None:
+                booking.visit_record = visit_record
+                booking.save(update_fields=['visit_record', 'updated_at'])
             
             # Отправляем уведомления
             BookingCompletionService._send_completion_notifications(booking, user)
+
+    @staticmethod
+    def save_visit_record(booking, user, pet_record_data):
+        """
+        Создать или обновить структурированный протокол уже завершённого визита.
+        """
+        if booking.status.name != BOOKING_STATUS_COMPLETED:
+            raise BookingDomainError(
+                code='visit_record_unavailable',
+                message=_('Visit protocol can only be saved for completed bookings.'),
+            )
+
+        has_meaningful_data = any(
+            value not in (None, '', [], {})
+            for value in pet_record_data.values()
+        )
+        if not has_meaningful_data:
+            raise BookingDomainError(
+                code='visit_record_empty',
+                message=_('Visit protocol cannot be empty.'),
+            )
+
+        from pets.models import VisitRecord
+
+        provider = booking.provider
+        if provider is None and booking.provider_location:
+            provider = booking.provider_location.provider
+
+        field_values = {
+            'provider': provider,
+            'provider_location': booking.provider_location,
+            'service': booking.service,
+            'employee': booking.employee,
+            'date': booking.completed_at or timezone.now(),
+            'description': pet_record_data.get('description', ''),
+            'diagnosis': pet_record_data.get('diagnosis') or '',
+            'anamnesis': pet_record_data.get('anamnesis') or '',
+            'results': pet_record_data.get('results', ''),
+            'recommendations': pet_record_data.get('recommendations', ''),
+            'notes': pet_record_data.get('notes', ''),
+            'serial_number': pet_record_data.get('serial_number', ''),
+            'next_date': pet_record_data.get('next_date'),
+        }
+
+        try:
+            with transaction.atomic():
+                if booking.visit_record_id:
+                    record = booking.visit_record
+                    for field_name, value in field_values.items():
+                        setattr(record, field_name, value)
+                    record.save()
+                else:
+                    record = VisitRecord.objects.create(
+                        pet=booking.pet,
+                        created_by=user,
+                        **field_values,
+                    )
+                    booking.visit_record = record
+                    booking.save(update_fields=['visit_record', 'updated_at'])
+        except (IntegrityError, ValidationError) as exc:
+            logger.exception("Failed to save VisitRecord for completed booking %s", booking.id)
+            raise BookingDomainError(
+                code='visit_record_save_failed',
+                message=_('Visit protocol could not be saved to the pet card.'),
+            ) from exc
+
+        return record
+
+    @staticmethod
+    def _create_visit_record_from_booking(booking, user, pet_record_data):
+        if user is None or not pet_record_data:
+            return None
+
+        has_meaningful_data = any(
+            value not in (None, '', [], {})
+            for value in pet_record_data.values()
+        )
+        if not has_meaningful_data:
+            return None
+
+        from pets.models import VisitRecord
+
+        provider = booking.provider
+        if provider is None and booking.provider_location:
+            provider = booking.provider_location.provider
+
+        try:
+            return VisitRecord.objects.create(
+                pet=booking.pet,
+                provider=provider,
+                provider_location=booking.provider_location,
+                service=booking.service,
+                employee=booking.employee,
+                date=booking.completed_at or timezone.now(),
+                description=pet_record_data.get('description', ''),
+                diagnosis=pet_record_data.get('diagnosis') or '',
+                anamnesis=pet_record_data.get('anamnesis') or '',
+                results=pet_record_data.get('results', ''),
+                recommendations=pet_record_data.get('recommendations', ''),
+                notes=pet_record_data.get('notes', ''),
+                serial_number=pet_record_data.get('serial_number', ''),
+                next_date=pet_record_data.get('next_date'),
+                created_by=user,
+            )
+        except (IntegrityError, ValidationError) as exc:
+            logger.exception("Failed to create VisitRecord while completing booking %s", booking.id)
+            raise BookingDomainError(
+                code='visit_record_save_failed',
+                message=_('Visit could not be completed because the pet record could not be saved.'),
+            ) from exc
     
     @staticmethod
     def cancel_booking(booking, user, reason=''):
@@ -389,7 +524,18 @@ class BookingCompletionService:
             reason: Причина отмены
         """
         with transaction.atomic():
-            booking.cancel_booking(user, reason)
+            from .models import BookingCancellationReason
+
+            side = CANCELLED_BY_CLIENT if user == booking.user else CANCELLED_BY_PROVIDER
+            cancellation_reason = BookingCancellationReason.get_default_reason(side)
+            if cancellation_reason is None:
+                raise ValidationError(_("No default cancellation reason configured"))
+            booking.cancel_booking(
+                cancelled_by=side,
+                cancelled_by_user=user,
+                cancellation_reason=cancellation_reason,
+                cancellation_reason_text=reason,
+            )
             
             # Отправляем уведомления
             BookingCompletionService._send_cancellation_notifications(booking, user)
@@ -402,29 +548,24 @@ class BookingCompletionService:
         settings = BookingAutoCompleteSettings.get_settings()
         
         if not settings.auto_complete_enabled:
-            return
-        
-        # Вычисляем диапазон дат для проверки
-        today = timezone.now().date()
-        start_date = today - timedelta(days=settings.auto_complete_days)
-        end_date = today - timedelta(days=1)  # Вчера включительно
-        
-        # Находим "зависшие" бронирования
+            return 0
+
+        threshold = timezone.now() - timedelta(days=settings.auto_complete_days)
         stale_bookings = Booking.objects.filter(
-            status__name='confirmed',
-            start_time__date__range=[start_date, end_date],
+            status__name='active',
+            end_time__lte=threshold,
             completed_at__isnull=True,
             cancelled_at__isnull=True
         )
-        
-        # Системный пользователь для автоматических операций
-        system_user = BookingCompletionService._get_system_user()
-        
+
         completed_count = 0
         for booking in stale_bookings:
             try:
                 with transaction.atomic():
-                    booking.complete_booking(system_user, settings.auto_complete_status)
+                    booking.complete_booking(
+                        actor=COMPLETED_BY_SYSTEM,
+                        reason_code=COMPLETION_REASON_AUTO_TIMEOUT,
+                    )
                     completed_count += 1
                     
                     # Отправляем уведомление о автоматическом завершении
@@ -435,20 +576,6 @@ class BookingCompletionService:
                 logger.error(_("Error auto-completing booking {}: {}").format(booking.id, e))
         
         return completed_count
-    
-    @staticmethod
-    def _get_system_user():
-        """Получить системного пользователя для автоматических операций"""
-        try:
-            return User.objects.get(username='system')
-        except User.DoesNotExist:
-            # Создаем системного пользователя, если его нет
-            return User.objects.create_user(
-                username='system',
-                email='system@petscare.com',
-                password='system_password_123',
-                is_active=False  # Неактивный пользователь
-            )
     
     @staticmethod
     def _send_completion_notifications(booking, user):
@@ -473,8 +600,11 @@ class BookingCompletionService:
             data={
                 'booking_id': booking.id,
                 'service_name': booking.service.name,
-                'provider_name': booking.provider.name,
-                'completed_by': user.get_full_name() or user.username
+                'provider_name': provider.name if provider else '',
+                'completed_by': (
+                    (user.get_full_name() or user.username)
+                    if user else 'system'
+                )
             }
         )
     
@@ -484,8 +614,13 @@ class BookingCompletionService:
         from notifications.models import Notification
         from providers.models import EmployeeProvider
 
-        # Определяем тип отмены
-        if user.has_role('pet_owner') and user == booking.user:
+        reason_label = (
+            booking.cancellation_reason.label
+            if booking.cancellation_reason else booking.cancellation_reason_text
+        )
+        provider = getattr(booking, 'provider', None) or (booking.provider_location.provider if booking.provider_location else None)
+
+        if booking.cancelled_by == CANCELLED_BY_CLIENT:
             # Отменил клиент - уведомляем специалиста и админа учреждения
             Notification.objects.create(
                 user=booking.employee.user,
@@ -497,11 +632,10 @@ class BookingCompletionService:
                 data={
                     'booking_id': booking.id,
                     'client_name': booking.user.get_full_name() or booking.user.username,
-                    'cancellation_reason': booking.cancellation_reason
+                    'cancellation_reason': reason_label,
                 }
             )
 
-            provider = getattr(booking, 'provider', None) or (booking.provider_location.provider if booking.provider_location else None)
             # Уведомляем админа учреждения
             if provider:
                 for ep in EmployeeProvider.get_active_admin_links(provider):
@@ -531,9 +665,9 @@ class BookingCompletionService:
                 data={
                     'booking_id': booking.id,
                     'service_name': booking.service.name,
-                    'provider_name': booking.provider.name,
+                    'provider_name': provider.name if provider else '',
                     'cancelled_by': user.get_full_name() or user.username,
-                    'cancellation_reason': booking.cancellation_reason
+                    'cancellation_reason': reason_label,
                 }
             )
     
@@ -582,9 +716,9 @@ class BookingReportService:
         """
         queryset = Booking.objects.filter(
             cancelled_at__range=[start_date, end_date],
-            status__name__in=['cancelled_by_client', 'cancelled_by_provider']
+            status__name=BOOKING_STATUS_CANCELLED
         ).select_related(
-            'user', 'pet', 'provider', 'service', 'cancelled_by'
+            'user', 'pet', 'provider', 'service', 'cancelled_by_user', 'cancellation_reason'
         )
         
         # Ограничиваем доступ по учреждениям
@@ -614,11 +748,11 @@ class BookingReportService:
         
         # Статистика по инициаторам отмен
         client_cancellations = queryset.filter(
-            status__name='cancelled_by_client'
+            cancelled_by=CANCELLED_BY_CLIENT
         ).count()
         
         provider_cancellations = queryset.filter(
-            status__name='cancelled_by_provider'
+            cancelled_by=CANCELLED_BY_PROVIDER
         ).count()
         
         # Статистика по учреждениям
@@ -674,7 +808,7 @@ class BookingAvailabilityService:
             employee=employee,
             start_time__lt=end_time,
             end_time__gt=start_time,
-            status__name__in=['active', 'pending_confirmation']
+            status__name__in=ACTIVE_BOOKING_STATUS_NAMES
         )
         
         # Если указана локация, фильтруем по ней
@@ -786,7 +920,7 @@ class BookingAvailabilityService:
         existing_bookings = Booking.objects.filter(
             employee=employee,
             start_time__date=date,
-            status__name__in=['active', 'pending_confirmation']
+            status__name__in=ACTIVE_BOOKING_STATUS_NAMES
         ).order_by('start_time')
         
         available_slots = []
@@ -950,7 +1084,7 @@ class BookingAvailabilityService:
         bookings = Booking.objects.filter(
             employee=employee,
             start_time__date=date,
-            status__name__in=['active', 'pending_confirmation']
+            status__name__in=ACTIVE_BOOKING_STATUS_NAMES
         )
         
         total_hours = 0
@@ -1168,7 +1302,7 @@ class EmployeeAutoBookingService:
         bookings = Booking.objects.filter(
             employee=employee,
             start_time__date=date,
-            status__name__in=['active', 'pending_confirmation']
+            status__name__in=ACTIVE_BOOKING_STATUS_NAMES
         )
         
         total_hours = 0

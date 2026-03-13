@@ -81,9 +81,9 @@ class Command(BaseCommand):
             ('booking', 'BookingAutoCompleteSettings'),
             
             # Записи о питомцах
-            ('pets', 'PetRecordFile'),
-            ('pets', 'PetRecord'),
-            ('pets', 'MedicalRecord'),
+            ('pets', 'PetDocument'),
+            ('pets', 'VisitRecord'),
+            ('pets', 'PetHealthNote'),
             ('pets', 'PetAccess'),
             ('pets', 'PetOwnerIncapacity'),
             ('pets', 'PetIncapacityNotification'),

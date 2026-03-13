@@ -13,6 +13,7 @@ import io
 from .models import Booking, BookingAutoCompleteSettings
 from .services import BookingReportService
 from users.models import User
+from .constants import CANCELLED_BY_CLIENT
 
 
 def is_billing_manager(user):
@@ -132,10 +133,10 @@ def cancellations_report_csv(request):
             cancellation.provider.name,
             cancellation.service.name,
             cancellation.service.service_type.name if cancellation.service.service_type else '',
-            _('Client') if cancellation.status.name == 'cancelled_by_client' else _('Provider'),
+            _('Client') if cancellation.cancelled_by == CANCELLED_BY_CLIENT else _('Provider'),
             _("{} {}").format(cancellation.user.first_name, cancellation.user.last_name).strip() or cancellation.user.username,
             cancellation.cancelled_at.strftime('%Y-%m-%d %H:%M:%S'),
-            cancellation.cancellation_reason or ''
+            cancellation.cancellation_reason.label if cancellation.cancellation_reason else (cancellation.cancellation_reason_text or '')
         ])
     
     return response

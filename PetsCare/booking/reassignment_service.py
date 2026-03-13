@@ -18,6 +18,13 @@ from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
+from .constants import (
+    ACTIVE_BOOKING_STATUS_NAMES,
+    BOOKING_STATUS_CANCELLED,
+    BOOKING_STATUS_COMPLETED,
+    CANCELLED_BY_PROVIDER,
+    CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
+)
 
 
 class BookingReassignmentService:
@@ -25,7 +32,7 @@ class BookingReassignmentService:
     Universal service for mass booking cancellation or reassignment.
 
     Supports two operations:
-    - cancel: Move bookings to 'cancelled_by_provider' status
+    - cancel: Move bookings to canonical 'cancelled' status with provider-side metadata
     - reassign: Change the employee on bookings to a target employee
     """
 
@@ -48,19 +55,14 @@ class BookingReassignmentService:
         Returns:
             QuerySet of Booking objects
         """
-        from booking.models import Booking, BookingStatus
+        from booking.models import Booking
 
         now = start_date or timezone.now()
-
-        # Get active/pending status objects
-        active_statuses = BookingStatus.objects.filter(
-            name__in=['active', 'pending_confirmation']
-        )
 
         qs = Booking.objects.filter(
             employee_id=employee_id,
             provider_location_id=location_id,
-            status__in=active_statuses,
+            status__name__in=ACTIVE_BOOKING_STATUS_NAMES,
             start_time__gt=now,
         )
         if end_date:
@@ -99,7 +101,7 @@ class BookingReassignmentService:
         reason: str = '',
     ) -> Dict[str, Any]:
         """
-        Cancel a set of bookings (mark as cancelled_by_provider).
+        Cancel a set of bookings with provider-side cancellation metadata.
 
         Args:
             bookings: QuerySet or list of Booking objects
@@ -109,38 +111,29 @@ class BookingReassignmentService:
         Returns:
             dict with 'cancelled_count' and 'cancelled_booking_ids'
         """
-        from booking.models import BookingStatus, BookingCancellation
+        from booking.models import BookingCancellationReason
 
-        cancelled_status = BookingStatus.objects.get(name='cancelled_by_provider')
+        cancellation_reason = BookingCancellationReason.objects.filter(
+            code=CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
+            is_active=True,
+        ).first() or BookingCancellationReason.get_default_reason(CANCELLED_BY_PROVIDER)
 
         cancelled_ids = []
         cancelled_bookings = []
-        now = timezone.now()
 
         for booking in bookings:
-            if booking.status.name in ('cancelled_by_client', 'cancelled_by_provider'):
+            if booking.status.name == BOOKING_STATUS_CANCELLED:
                 continue
-            if booking.completed_at:
+            if booking.status.name == BOOKING_STATUS_COMPLETED:
                 continue
 
-            booking.status = cancelled_status
-            booking.cancelled_by = cancelled_by
-            booking.cancelled_at = now
-            booking.cancellation_reason = reason or str(
-                _("Specialist is no longer available at this location")
-            )
-            booking.save(update_fields=[
-                'status', 'cancelled_by', 'cancelled_at',
-                'cancellation_reason', 'updated_at'
-            ])
-
-            # Create cancellation record
-            BookingCancellation.objects.create(
-                booking=booking,
-                cancelled_by=cancelled_by,
-                reason=reason or str(
-                    _("Specialist is no longer available at this location")
-                ),
+            if cancellation_reason is None:
+                continue
+            booking.cancel_booking(
+                cancelled_by=CANCELLED_BY_PROVIDER,
+                cancelled_by_user=cancelled_by,
+                cancellation_reason=cancellation_reason,
+                cancellation_reason_text=reason or str(_("Specialist is no longer available at this location")),
             )
 
             cancelled_ids.append(booking.id)
@@ -204,9 +197,9 @@ class BookingReassignmentService:
                 )
 
         for booking in bookings:
-            if booking.status.name in ('cancelled_by_client', 'cancelled_by_provider'):
+            if booking.status.name == BOOKING_STATUS_CANCELLED:
                 continue
-            if booking.completed_at:
+            if booking.status.name == BOOKING_STATUS_COMPLETED:
                 continue
 
             # Check that target employee can provide the service at this location
@@ -230,7 +223,7 @@ class BookingReassignmentService:
                 employee=target_employee,
                 start_time__lt=booking.end_time,
                 end_time__gt=booking.start_time,
-                status__name__in=['active', 'pending_confirmation'],
+                status__name__in=ACTIVE_BOOKING_STATUS_NAMES,
             ).exclude(pk=booking.pk).exists()
 
             if conflicting:

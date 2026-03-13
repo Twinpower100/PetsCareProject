@@ -21,6 +21,8 @@ class ServiceSerializer(serializers.ModelSerializer):
     """
     Сериализатор для модели Service.
     """
+    name_display = serializers.CharField(source='get_localized_name', read_only=True)
+    root_category_code = serializers.SerializerMethodField()
     allowed_pet_types = PetTypeSerializer(many=True, read_only=True)
     allowed_pet_type_ids = serializers.PrimaryKeyRelatedField(
         many=True,
@@ -34,6 +36,13 @@ class ServiceSerializer(serializers.ModelSerializer):
         model = Service
         fields = '__all__'
         read_only_fields = ['created_at', 'updated_at', 'level']
+
+    def get_root_category_code(self, obj):
+        """Код корневой категории (veterinary, grooming и т.д.) для определения семейства услуги."""
+        current = obj
+        while current.parent_id:
+            current = current.parent
+        return current.code if current else None
 
     def validate(self, data):
         if data.get('is_periodic') and not data.get('period_days'):

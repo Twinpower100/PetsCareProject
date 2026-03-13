@@ -12,6 +12,11 @@ from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 from django.db import transaction
 import logging
+from booking.constants import (
+    ACTIVE_BOOKING_STATUS_NAMES,
+    CANCELLED_BY_PROVIDER,
+    CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +37,7 @@ def handle_provider_blocking(sender, instance, created, **kwargs):
     # Импортируем модели здесь, чтобы избежать циклических импортов
     from .models import ProviderBlocking
     from providers.models import ProviderLocation
-    from booking.models import Booking, BookingStatus
+    from booking.models import Booking, BookingCancellationReason
     
     # Проверяем, что это действительно ProviderBlocking
     if not isinstance(instance, ProviderBlocking):
@@ -53,11 +58,10 @@ def handle_provider_blocking(sender, instance, created, **kwargs):
             deactivated_count = 0
             cancelled_bookings_count = 0
             
-            # Получаем статус "отменено"
-            cancelled_status, _ = BookingStatus.objects.get_or_create(
-                name='cancelled',
-                defaults={'description': _('Booking cancelled due to provider blocking')}
-            )
+            reason = BookingCancellationReason.objects.filter(
+                code=CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
+                is_active=True,
+            ).first() or BookingCancellationReason.get_default_reason(CANCELLED_BY_PROVIDER)
             
             now = timezone.now()
             
@@ -71,18 +75,25 @@ def handle_provider_blocking(sender, instance, created, **kwargs):
                 # Отменяем все активные и будущие бронирования для этой локации
                 active_bookings = Booking.objects.filter(
                     provider_location=location,
-                    status__name__in=['active', 'pending_confirmation', 'confirmed']
+                    status__name__in=ACTIVE_BOOKING_STATUS_NAMES
                 ).exclude(
                     start_time__lt=now  # Исключаем прошедшие бронирования
                 )
                 
                 for booking in active_bookings:
-                    booking.status = cancelled_status
+                    if reason is None:
+                        continue
+                    booking.cancel_booking(
+                        cancelled_by=CANCELLED_BY_PROVIDER,
+                        cancelled_by_user=None,
+                        cancellation_reason=reason,
+                        cancellation_reason_text=str(_('Cancelled due to provider organization blocking.')),
+                    )
                     if booking.notes:
                         booking.notes += f"\n{_('Cancelled due to provider organization blocking.')}"
                     else:
                         booking.notes = _('Cancelled due to provider organization blocking.')
-                    booking.save()
+                    booking.save(update_fields=['notes', 'updated_at'])
                     cancelled_bookings_count += 1
                     
                     # TODO: Отправить уведомление пользователю

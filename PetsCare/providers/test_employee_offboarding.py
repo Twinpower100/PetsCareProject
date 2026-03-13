@@ -99,7 +99,7 @@ class EmployeeOffboardingAPITest(APITestCase):
         
         # Booking Statuses
         self.status_active, _ = BookingStatus.objects.get_or_create(name='active', defaults={'name_en': 'Active'})
-        self.status_cancelled, _ = BookingStatus.objects.get_or_create(name='cancelled_by_provider', defaults={'name_en': 'Cancelled'})
+        self.status_cancelled, _ = BookingStatus.objects.get_or_create(name='cancelled', defaults={'name_en': 'Cancelled'})
         
         # Create Client User and Pet
         self.client_user = User.objects.create_user(
@@ -178,6 +178,7 @@ class EmployeeOffboardingAPITest(APITestCase):
         
         booking.refresh_from_db()
         self.assertEqual(booking.status, self.status_cancelled)
+        self.assertEqual(booking.cancelled_by, 'provider')
         
     def test_deactivate_staff_reassign_resolution(self):
         future_date = timezone.now() + timedelta(days=2)

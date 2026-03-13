@@ -1,13 +1,15 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import api_views
+from . import legacy_api
 from .api_views import (
     PetListCreateAPIView, PetRetrieveUpdateDestroyAPIView,
-    MedicalRecordListCreateAPIView, MedicalRecordRetrieveUpdateDestroyAPIView,
-    PetRecordListCreateAPIView, PetRecordRetrieveUpdateDestroyAPIView,
+    PetHealthNoteListCreateAPIView, PetHealthNoteRetrieveUpdateDestroyAPIView,
     PetAccessListCreateAPIView, PetAccessRetrieveUpdateDestroyAPIView,
     PetDeleteAPIView,
-    PetRecordFileUploadAPIView, PetDocumentDownloadAPIView, PetDocumentPreviewAPIView,
+    PetMedicalCardAPIView,
+    PetDocumentListCreateAPIView,
+    PetDocumentDownloadAPIView, PetDocumentPreviewAPIView,
     PetSearchAPIView, PetTypeSearchAPIView, BreedSearchAPIView,
     ChronicConditionListAPIView,
     PhysicalFeatureListAPIView,
@@ -20,8 +22,10 @@ from .api_views import (
 
 router = DefaultRouter()
 router.register(r'pets', api_views.PetViewSet)
-router.register(r'medical-records', api_views.MedicalRecordViewSet)
-router.register(r'pet-records', api_views.PetRecordViewSet)
+router.register(r'visit-records', api_views.VisitRecordViewSet, basename='visit-record')
+router.register(r'pet-documents', api_views.PetDocumentViewSet, basename='pet-document')
+router.register(r'medical-records', legacy_api.LegacyMedicalRecordViewSet, basename='legacy-medical-record')
+router.register(r'pet-records', legacy_api.LegacyVisitRecordViewSet, basename='legacy-pet-record')
 router.register(r'pet-access', api_views.PetAccessViewSet)
 router.register(r'document-types', api_views.DocumentTypeViewSet)
 router.register(r'incapacity', api_views.PetOwnerIncapacityViewSet, basename='incapacity')
@@ -34,11 +38,13 @@ urlpatterns = [
 
     # Pet endpoints
     path('pets/<int:pk>/delete/', PetDeleteAPIView.as_view(), name='pet-delete'),
-
-    # Pet records endpoints
-    path('records/', PetRecordListCreateAPIView.as_view(), name='pet-record-list-create'),
-    path('records/<int:pk>/', PetRecordRetrieveUpdateDestroyAPIView.as_view(), name='pet-record-retrieve-update-destroy'),
-    path('records/<int:record_id>/upload_file/', PetRecordFileUploadAPIView.as_view(), name='petrecordfile-upload'),
+    path('pets/<int:pet_id>/medical-card/', PetMedicalCardAPIView.as_view(), name='pet-medical-card'),
+    path('pets/<int:pet_id>/health-notes/', PetHealthNoteListCreateAPIView.as_view(), name='pet-health-note-list-create'),
+    path('pets/<int:pet_id>/documents/', PetDocumentListCreateAPIView.as_view(), name='pet-document-list-create'),
+    path('health-notes/<int:pk>/', PetHealthNoteRetrieveUpdateDestroyAPIView.as_view(), name='pet-health-note-retrieve-update-destroy'),
+    path('records/', legacy_api.LegacyVisitRecordListCreateAPIView.as_view(), name='legacy-record-list-create'),
+    path('records/<int:pk>/', legacy_api.LegacyVisitRecordRetrieveUpdateDestroyAPIView.as_view(), name='legacy-record-retrieve-update-destroy'),
+    path('records/<int:record_id>/upload_file/', legacy_api.LegacyVisitRecordFileUploadAPIView.as_view(), name='legacy-record-upload-file'),
 
     # Pet access endpoints
     path('access/', PetAccessListCreateAPIView.as_view(), name='pet-access-list-create'),

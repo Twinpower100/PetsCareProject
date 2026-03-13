@@ -29,9 +29,8 @@ from users.models import User
 
 from .models import Booking, BookingStatus
 from .routing import RoutingService
+from .constants import ACTIVE_BOOKING_STATUS_NAMES
 
-
-ACTIVE_BOOKING_STATUS_NAMES = ('active', 'pending_confirmation')
 
 
 class BookingDomainError(Exception):

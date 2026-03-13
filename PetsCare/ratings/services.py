@@ -22,6 +22,13 @@ from decimal import Decimal
 from datetime import timedelta
 from .models import Rating, Review, Complaint, SuspiciousActivity
 from booking.models import Booking
+from booking.constants import (
+    BOOKING_STATUS_ACTIVE,
+    BOOKING_STATUS_COMPLETED,
+    BOOKING_STATUS_CANCELLED,
+    CANCELLED_BY_PROVIDER,
+    CLIENT_ATTENDANCE_ARRIVED,
+)
 from sitters.models import PetSitting
 from pets.models import Pet
 from googleapiclient.discovery import build
@@ -242,7 +249,8 @@ class RatingCalculationService:
         
         total_bookings = bookings.count()
         cancelled_by_provider = bookings.filter(
-            status__name='cancelled_by_provider'
+            status__name=BOOKING_STATUS_CANCELLED,
+            cancelled_by=CANCELLED_BY_PROVIDER,
         ).count()
         
         # Рассчитываем штраф за отмены
@@ -277,7 +285,9 @@ class RatingCalculationService:
         
         total_bookings = bookings.count()
         no_show_by_provider = bookings.filter(
-            status__name='no_show_by_provider'
+            status__name=BOOKING_STATUS_CANCELLED,
+            cancelled_by=CANCELLED_BY_PROVIDER,
+            client_attendance=CLIENT_ATTENDANCE_ARRIVED,
         ).count()
         
         # Рассчитываем штраф за no-show
@@ -373,7 +383,7 @@ class ReviewService:
             user_bookings = Booking.objects.filter(
                 user=user,
                 employee=obj,
-                status__name__in=['completed', 'active']
+                status__name__in=[BOOKING_STATUS_COMPLETED, BOOKING_STATUS_ACTIVE]
             )
             if not user_bookings.exists():
                 raise PermissionDenied(_("You can only review employees you have booked services from."))

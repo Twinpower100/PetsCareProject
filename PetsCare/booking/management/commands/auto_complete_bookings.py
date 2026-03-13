@@ -1,10 +1,9 @@
-"""
-Команда для автоматического завершения "зависших" бронирований.
-"""
+"""Команда для автоматического завершения просроченных активных бронирований."""
 
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from booking.services import BookingCompletionService
+from booking.constants import BOOKING_STATUS_ACTIVE
 from django.utils.translation import gettext_lazy as _
 import logging
 
@@ -65,15 +64,10 @@ class Command(BaseCommand):
         
         settings = BookingAutoCompleteSettings.get_settings()
         
-        # Вычисляем диапазон дат для проверки
-        today = timezone.now().date()
-        start_date = today - timedelta(days=settings.auto_complete_days)
-        end_date = today - timedelta(days=1)  # Вчера включительно
-        
-        # Находим "зависшие" бронирования
+        threshold = timezone.now() - timedelta(days=settings.auto_complete_days)
         stale_bookings = Booking.objects.filter(
-            status__name='confirmed',
-            start_time__date__range=[start_date, end_date],
+            status__name=BOOKING_STATUS_ACTIVE,
+            end_time__lte=threshold,
             completed_at__isnull=True,
             cancelled_at__isnull=True
         ).select_related('user', 'pet', 'provider', 'service')
