@@ -1,0 +1,91 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{{ index_url }}">{% translate 'Home' %}</a>
+&rsaquo; <a href="{{ invoice_list_url }}">Billing</a>
+&rsaquo; <a href="{{ invoice_list_url }}">{% translate 'Invoices' %}</a>
+&rsaquo; <a href="{{ invoice_change_url }}">{{ invoice.number }}</a>
+&rsaquo; {% translate 'Booking Breakdown' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <h1>{% translate "Booking breakdown" %}: {{ invoice.number }}</h1>
+
+    <div class="module aligned" style="margin-bottom: 20px;">
+        <div class="form-row">
+            <div>
+                <strong>{% translate "Provider" %}:</strong> {{ invoice.provider }}
+            </div>
+            <div>
+                <strong>{% translate "Service period" %}:</strong> {{ period_label }}
+            </div>
+            <div>
+                <strong>{% translate "Bookings" %}:</strong> {{ booking_count }}
+            </div>
+            <div>
+                <strong>{% translate "Invoice amount" %}:</strong> {{ invoice.amount }} {{ currency_code }}
+            </div>
+        </div>
+        <div class="form-row">
+            <div>
+                <strong>{% translate "Booking amount total" %}:</strong> {{ booking_amount_total }} {{ currency_code }}
+            </div>
+            <div>
+                <strong>{% translate "Commission total" %}:</strong> {{ commission_total }} {{ currency_code }}
+            </div>
+            <div>
+                <strong>{% translate "VAT total" %}:</strong> {{ vat_total }} {{ currency_code }}
+            </div>
+        </div>
+    </div>
+
+    <div class="submit-row" style="margin-bottom: 16px;">
+        <a href="{{ export_url }}" class="button default">{% translate "Export to Excel" %}</a>
+    </div>
+
+    <div class="module">
+        <table id="result_list" style="width: 100%;">
+            <thead>
+                <tr>
+                    <th>{% translate "Booking" %}</th>
+                    <th>{% translate "Completed at" %}</th>
+                    <th>{% translate "Service" %}</th>
+                    <th>{% translate "Client" %}</th>
+                    <th>{% translate "Pet" %}</th>
+                    <th>{% translate "Location" %}</th>
+                    <th>{% translate "Booking amount" %}</th>
+                    <th>{% translate "Commission" %}</th>
+                    <th>{% translate "VAT" %}</th>
+                    <th>{% translate "Total" %}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td>
+                        <a href="{{ row.booking_url }}">{{ row.booking_label }}</a>
+                    </td>
+                    <td>{{ row.completed_at_label }}</td>
+                    <td>{{ row.service }}</td>
+                    <td>{{ row.client }}</td>
+                    <td>{{ row.pet }}</td>
+                    <td>{{ row.location }}</td>
+                    <td>{{ row.amount }} {{ currency_code }}</td>
+                    <td>{{ row.commission }} {{ currency_code }}</td>
+                    <td>{{ row.vat_amount }} {{ currency_code }}</td>
+                    <td>{{ row.total_with_vat }} {{ currency_code }}</td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="10">{% translate "No bookings linked to this invoice." %}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

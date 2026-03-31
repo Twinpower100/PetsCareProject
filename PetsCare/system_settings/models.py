@@ -6,6 +6,9 @@
 2. Глобальных системных настроек
 """
 
+from datetime import time
+from decimal import Decimal
+
 from django.db import models
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils.translation import gettext_lazy as _
@@ -390,7 +393,7 @@ class RatingDecaySettings(models.Model):
         _('Minimum weight'),
         max_digits=3,
         decimal_places=2,
-        default=0.10,  # 10% от исходного веса
+        default=Decimal('0.10'),  # 10% от исходного веса
         validators=[MinValueValidator(0.01), MaxValueValidator(1.00)],
         help_text=_('Minimum weight for old reviews (0.01-1.00)')
     )
@@ -563,7 +566,7 @@ class BlockingScheduleSettings(models.Model):
     # === ВРЕМЯ ПРОВЕРОК ===
     check_time = models.TimeField(
         _('Check Time'),
-        default='02:00',
+        default=time(2, 0),
         help_text=_('Time of day to perform checks (HH:MM format)')
     )
     
@@ -725,7 +728,7 @@ class BlockingScheduleSettings(models.Model):
             return timedelta(hours=1)
         
         elif self.frequency == 'daily':
-            return crontab(hour=self.check_time.hour, minute=self.check_time.minute)
+            return crontab(hour=str(self.check_time.hour), minute=str(self.check_time.minute))
         
         elif self.frequency == 'weekly':
             if self.days_of_week:
@@ -735,23 +738,23 @@ class BlockingScheduleSettings(models.Model):
                 # По умолчанию понедельник (0)
                 day_of_week = 0
             return crontab(
-                day_of_week=day_of_week,
-                hour=self.check_time.hour,
-                minute=self.check_time.minute
+                day_of_week=str(day_of_week),
+                hour=str(self.check_time.hour),
+                minute=str(self.check_time.minute)
             )
         
         elif self.frequency == 'monthly':
             return crontab(
-                day_of_month=self.day_of_month or 1,
-                hour=self.check_time.hour,
-                minute=self.check_time.minute
+                day_of_month=str(self.day_of_month or 1),
+                hour=str(self.check_time.hour),
+                minute=str(self.check_time.minute)
             )
         
         elif self.frequency == 'custom':
             return timedelta(hours=self.custom_interval_hours or 24)
         
         # По умолчанию ежедневно в 02:00
-        return crontab(hour=2, minute=0)
+        return crontab(hour='2', minute='0')
     
     def get_schedule_description(self):
         """Возвращает человекочитаемое описание расписания."""

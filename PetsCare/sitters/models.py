@@ -72,6 +72,11 @@ class SitterProfile(models.Model):
         default=5,
         help_text=_('Maximum distance for pet sitting services')
     )
+    is_active = models.BooleanField(
+        _('Is Active'),
+        default=True,
+        help_text=_('Whether the sitter profile is currently visible in search')
+    )
     
     compensation_type = models.CharField(
         _('Compensation Type'),
@@ -235,7 +240,7 @@ class PetSitting(models.Model):
         choices=[
             ('waiting_start', _('Waiting Start')),
             ('active', _('Active')),
-            ('waiting_end', _('Waiting End')),
+            ('waiting_review', _('Waiting Review')),
             ('completed', _('Completed')),
             ('cancelled', _('Cancelled'))
         ],

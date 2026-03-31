@@ -2,16 +2,15 @@ from django.contrib import admin
 from django.contrib.admin import widgets as admin_widgets
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
-from .models import Provider, Employee, Schedule, SchedulePattern, PatternDay, EmployeeWorkSlot, EmployeeProvider, LocationSchedule, HolidayShift, ProviderLocation, ProviderLocationService, EmployeeLocationService
+from .models import Provider, Employee, Schedule, SchedulePattern, PatternDay, EmployeeWorkSlot, EmployeeProvider, LocationSchedule, HolidayShift, ProviderLocation, ProviderLocationService, EmployeeLocationService, ProviderRole, ProviderResource, ProviderRolePermission
 from django import forms
 from django.shortcuts import render, redirect
 from django.urls import path, reverse
 from django.contrib import messages
 from django.http import JsonResponse
 from django.utils import timezone
+from django.utils.html import format_html
 import datetime
-import openpyxl
-from django.http import HttpResponse
 from custom_admin import custom_admin_site
 
 
@@ -97,17 +96,14 @@ class PatternDayInline(admin.TabularInline):
 
 class ProviderAdmin(admin.ModelAdmin):
     """
-    Админка для провайдеров. Стандартный список + отдельная страница-отчет для экспорта расписания.
-    - Стандартный changelist
-    - Кнопка для перехода на страницу экспорта расписания
-    - Отдельный URL для отчета
+    Админка провайдеров с управлением реквизитами и биллинговыми действиями.
     """
     list_display = ('name', 'email', 'phone_number', 'get_address', 'activation_status', 'is_active', 'get_application_categories', 'created_at')
     list_filter = ('activation_status', 'is_active', 'created_at', 'vat_verification_status')
     search_fields = ('name', 'email', 'phone_number', 'tax_id', 'registration_number', 'vat_number')
     readonly_fields = ('created_at', 'updated_at', 'get_application_categories', 'get_address', 'vat_verification_status_display', 'vat_verification_result_display', 'vat_verification_date', 'vat_verification_manual_by', 'vat_verification_manual_at')
     filter_horizontal = ('available_category_levels',)
-    actions = ['check_vat_id_selected']
+    actions = ['check_vat_id_selected', 'generate_invoices_for_period']
     
     def get_form(self, request, obj=None, **kwargs):
         """Ограничивает доступные категории - всегда только категории уровня 0"""
@@ -244,9 +240,9 @@ class ProviderAdmin(admin.ModelAdmin):
                 # Добавляем ссылку на VIES сайт
                 if provider.vat_number and provider.country:
                     vies_url = f"https://ec.europa.eu/taxation_customs/vies/?locale=en#/vat-validation"
-                    extra_context['vies_url'] = vies_url
-                    extra_context['vat_number'] = provider.vat_number
-                    extra_context['check_vat_id_url'] = reverse('admin:providers_provider_check_vat_id', args=[object_id])
+                    extra_context['vies_url'] = vies_url  # type: ignore[arg-type]
+                    extra_context['vat_number'] = provider.vat_number  # type: ignore[arg-type]
+                    extra_context['check_vat_id_url'] = reverse('admin:providers_provider_check_vat_id', args=[object_id])  # type: ignore[arg-type]
             except Provider.DoesNotExist:
                 pass
         
@@ -544,11 +540,10 @@ class ProviderAdmin(admin.ModelAdmin):
 
     def get_urls(self):
         """
-        Добавляет кастомные URL для страницы экспорта расписания и проверки VAT ID.
+        Добавляет кастомные URL для проверки VAT ID.
         """
         urls = super().get_urls()
         custom_urls = [
-            path('provider-schedule-export/', self.admin_site.admin_view(self.provider_schedule_export_view), name='provider-schedule-export'),
             path('<path:object_id>/check-vat-id/', self.admin_site.admin_view(self.check_vat_id_view), name='providers_provider_check_vat_id'),
         ]
         return custom_urls + urls
@@ -628,6 +623,62 @@ class ProviderAdmin(admin.ModelAdmin):
                     messages.error(request, error)
     
     check_vat_id_selected.short_description = _('Check VAT ID via VIES API')
+
+    def generate_invoices_for_period(self, request, queryset):
+        """
+        Генерирует счета выбранным провайдерам за указанный период.
+        """
+        from billing.forms import GenerateInvoicesForm
+        from billing.invoice_services import InvoiceGenerationService
+
+        form = GenerateInvoicesForm(request.POST or None)
+        if 'apply' in request.POST and form.is_valid():
+            service = InvoiceGenerationService()
+            generated_count = 0
+            skipped_providers = []
+            failed_providers = []
+
+            for provider in queryset:
+                try:
+                    invoice = service.generate_for_provider(
+                        provider=provider,
+                        start_date=form.cleaned_data['start_date'],
+                        end_date=form.cleaned_data['end_date'],
+                    )
+                    if invoice is None:
+                        skipped_providers.append(provider.name)
+                    else:
+                        generated_count += 1
+                except Exception as exc:
+                    failed_providers.append(f'{provider.name}: {exc}')
+
+            if generated_count:
+                messages.success(
+                    request,
+                    _('Generated %(count)s invoice(s).') % {'count': generated_count},
+                )
+            if skipped_providers:
+                messages.warning(
+                    request,
+                    _('No eligible online completed bookings were found for: %(providers)s') % {
+                        'providers': ', '.join(skipped_providers)
+                    },
+                )
+            for failure_message in failed_providers[:10]:
+                messages.error(request, failure_message)
+
+            return redirect(request.get_full_path())
+
+        context = dict(
+            self.admin_site.each_context(request),
+            title=_('Generate Invoices'),
+            providers=queryset,
+            form=form,
+            action_name='generate_invoices_for_period',
+            action_checkbox_name=admin.helpers.ACTION_CHECKBOX_NAME,
+        )
+        return render(request, 'admin/providers/generate_invoices.html', context)
+    generate_invoices_for_period.short_description = _('Generate invoice(s) for selected providers and period')
     
     def vat_verification_status_display(self, obj):
         """Отображает статус проверки VAT ID с цветовой индикацией"""
@@ -665,87 +716,6 @@ class ProviderAdmin(admin.ModelAdmin):
         return str(result)
     
     vat_verification_result_display.short_description = _('VAT Verification Result')
-
-    def changelist_view(self, request, extra_context=None):
-        """
-        Добавляет ссылку на отчет в контекст changelist.
-        """
-        if extra_context is None:
-            extra_context = {}
-        extra_context['provider_schedule_export_url'] = reverse('admin:provider-schedule-export')
-        return super().changelist_view(request, extra_context=extra_context)
-
-    def provider_schedule_export_view(self, request):
-        """
-        Кастомная страница-отчет для экспорта расписания провайдеров.
-        """
-        from django.db.models import Q
-        if _has_role(request.user, 'billing_manager'):
-            # Менеджер по биллингу видит все активные провайдеры
-            providers = Provider.objects.filter(is_active=True)
-        else:
-            providers = Provider.objects.all()
-        employees = Employee.objects.filter(is_active=True).prefetch_related('providers', 'user')
-        employees_for_template = []
-        for emp in employees:
-            provider_ids = list(emp.providers.values_list('id', flat=True))
-            employees_for_template.append({
-                'id': emp.id,
-                'provider_ids': provider_ids,
-                '__str__': str(emp),
-            })
-        if request.method == 'POST':
-            provider_ids = request.POST.getlist('provider_ids')
-            employee_ids = request.POST.getlist('employee_ids')
-            if not employee_ids:
-                employees_qs = Employee.objects.filter(providers__id__in=provider_ids).distinct()
-            else:
-                employees_qs = Employee.objects.filter(id__in=employee_ids)
-            slots = EmployeeWorkSlot.objects.filter(employee__in=employees_qs).select_related('employee')
-            wb = openpyxl.Workbook()
-            ws = wb.active
-            ws.title = _("Schedule")
-            ws.append([_("Employee"), _("Date"), _("Start Time"), _("End Time"), _("Slot Type"), _("Provider(s)")])
-            for slot in slots:
-                ws.append([
-                    str(slot.employee),
-                    slot.date.strftime('%Y-%m-%d'),
-                    slot.start_time.strftime('%H:%M'),
-                    slot.end_time.strftime('%H:%M'),
-                    slot.get_slot_type_display(),
-                    ", ".join([p.name for p in slot.employee.providers.all()]),
-                ])
-            response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-            response['Content-Disposition'] = f'attachment; filename={_("LocationScheduleExport")}.xlsx'
-            wb.save(response)
-            return response
-        context = dict(
-            self.admin_site.each_context(request),
-            providers=providers,
-            employees=employees_for_template,
-        )
-        return render(request, "admin/providers/provider_schedule_export.html", context)
-
-    def export_schedule_excel(self, request, provider_id):
-        provider = Provider.objects.get(id=provider_id)
-        slots = EmployeeWorkSlot.objects.filter(employee__providers=provider).select_related('employee')
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = _("Schedule")
-        ws.append([_("Employee"), _("Date"), _("Start Time"), _("End Time"), _("Slot Type"), _("Provider")])
-        for slot in slots:
-            ws.append([
-                str(slot.employee),
-                slot.date.strftime('%Y-%m-%d'),
-                slot.start_time.strftime('%H:%M'),
-                slot.end_time.strftime('%H:%M'),
-                slot.get_slot_type_display(),
-                str(provider),
-            ])
-        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-        response['Content-Disposition'] = f'attachment; filename={_("LocationSchedule")}_{provider.id}.xlsx'
-        wb.save(response)
-        return response
 
 
 class EmployeeAdmin(admin.ModelAdmin):
@@ -1311,6 +1281,99 @@ class ProviderLocationServiceAdmin(admin.ModelAdmin):
         super().save_model(request, obj, form, change)
 
 
+class ProviderRolePermissionInline(admin.TabularInline):
+    model = ProviderRolePermission
+    extra = 0
+    autocomplete_fields = ('resource',)
+    fields = ('resource', 'can_create', 'can_read', 'can_update', 'can_delete', 'scope')
+
+
+class ProviderRoleAdmin(admin.ModelAdmin):
+    list_display = ('code', 'name', 'level', 'is_active', 'updated_at')
+    list_filter = ('is_active', 'level')
+    search_fields = ('code', 'name', 'description')
+    readonly_fields = ('created_at', 'updated_at')
+    inlines = [ProviderRolePermissionInline]
+
+
+class ProviderResourceAdmin(admin.ModelAdmin):
+    list_display = ('name', 'code', 'parent', 'sort_order', 'is_active')
+    list_filter = ('is_active', 'parent')
+    search_fields = ('code', 'name', 'description')
+    list_editable = ('sort_order', 'is_active')
+    readonly_fields = ('created_at', 'updated_at')
+    ordering = ('sort_order', 'code')
+
+
+class ProviderRolePermissionAdmin(admin.ModelAdmin):
+    list_display = ('role', 'resource_label', 'actions_label', 'scope', 'updated_at')
+    list_filter = ('role', 'scope', 'resource__parent', 'resource__is_active')
+    search_fields = ('role__code', 'resource__code', 'resource__name')
+    autocomplete_fields = ('role', 'resource')
+    readonly_fields = ('created_at', 'updated_at')
+    change_list_template = 'admin/providers/providerrolepermission/change_list.html'
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                'matrix/',
+                self.admin_site.admin_view(self.matrix_view),
+                name='providers_providerrolepermission_matrix',
+            ),
+        ]
+        return custom_urls + urls
+
+    def resource_label(self, obj):
+        return f'{obj.resource.name} ({obj.resource.code})'
+    resource_label.short_description = _('Resource')
+
+    def actions_label(self, obj):
+        actions = ''.join([
+            'C' if obj.can_create else '',
+            'R' if obj.can_read else '',
+            'U' if obj.can_update else '',
+            'D' if obj.can_delete else '',
+        ]) or '-'
+        return format_html('<strong>{}</strong>', actions)
+    actions_label.short_description = _('Actions')
+
+    def changelist_view(self, request, extra_context=None):
+        extra_context = extra_context or {}
+        extra_context['matrix_url'] = reverse('admin:providers_providerrolepermission_matrix')
+        return super().changelist_view(request, extra_context=extra_context)
+
+    def matrix_view(self, request):
+        roles = list(ProviderRole.objects.filter(is_active=True).order_by('level', 'code'))
+        resources = list(
+            ProviderResource.objects.filter(is_active=True).select_related('parent').order_by('sort_order', 'code')
+        )
+        permission_map = {
+            (item.role_id, item.resource_id): ''.join([
+                'C' if item.can_create else '',
+                'R' if item.can_read else '',
+                'U' if item.can_update else '',
+                'D' if item.can_delete else '',
+            ]) or '-'
+            for item in ProviderRolePermission.objects.select_related('role', 'resource')
+        }
+        matrix_rows = [
+            {
+                'resource': resource,
+                'cells': [permission_map.get((role.id, resource.id), '-') for role in roles],
+            }
+            for resource in resources
+        ]
+        context = {
+            **self.admin_site.each_context(request),
+            'opts': self.model._meta,
+            'title': _('Provider RBAC Matrix'),
+            'roles': roles,
+            'matrix_rows': matrix_rows,
+        }
+        return render(request, 'admin/providers/providerrolepermission/matrix.html', context)
+
+
 class ApplyPatternForm(forms.Form):
     pattern = forms.ModelChoiceField(queryset=SchedulePattern.objects.all(), label=_('Schedule pattern'))
     date_from = forms.DateField(label=_('Date from'))
@@ -1329,6 +1392,9 @@ custom_admin_site.register(LocationSchedule, LocationScheduleAdmin)
 custom_admin_site.register(HolidayShift, HolidayShiftAdmin)
 custom_admin_site.register(ProviderLocation, ProviderLocationAdmin)
 custom_admin_site.register(ProviderLocationService, ProviderLocationServiceAdmin)
+custom_admin_site.register(ProviderRole, ProviderRoleAdmin)
+custom_admin_site.register(ProviderResource, ProviderResourceAdmin)
+custom_admin_site.register(ProviderRolePermission, ProviderRolePermissionAdmin)
 
 
 class EmployeeLocationServiceAdmin(admin.ModelAdmin):

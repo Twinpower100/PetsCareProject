@@ -338,7 +338,7 @@ class AuditContext:
         import time
         
         # Вычисляем время выполнения
-        execution_time = time.time() - self.start_time
+        execution_time = time.time() - (self.start_time or 0)
         
         # Определяем результат операции
         if exc_type is None:

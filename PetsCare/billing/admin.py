@@ -9,6 +9,7 @@ Admin views for the billing module.
 5. Генерации отчетов по биллингу
 """
 
+from decimal import Decimal
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import PermissionDenied
@@ -16,15 +17,17 @@ from django.http import Http404
 from modeltranslation.admin import TranslationAdmin
 from .models import (
     Currency, VATRate,
-    Invoice, Payment, Refund, BillingManagerProvider, BillingManagerEvent,
+    Invoice, InvoiceLine, PaymentHistory, Payment, Refund, BillingManagerProvider, BillingManagerEvent,
     BlockingRule, ProviderBlocking, BlockingNotification, BlockingTemplate, BlockingTemplateHistory, BlockingSystemSettings, BlockingSchedule,
-    BillingConfig
+    BillingConfig, BillingReport, PlatformCompany
 )
 # УДАЛЕНО: ProviderSpecialTerms, SideLetter - используйте LegalDocument с типом side_letter в приложении legal
 from django.urls import path, reverse
 from django.shortcuts import render, redirect
 from django.http import HttpResponseRedirect
 from django.utils.html import format_html
+from .export_utils import build_excel_response
+from .invoice_services import build_invoice_breakdown_rows, summarize_invoice_breakdown
 
 def user_has_role(user, role_name):
     """Безопасная проверка роли пользователя"""
@@ -51,7 +54,6 @@ from django.contrib import messages
 from providers.models import Provider
 from django.utils import timezone
 from django.contrib.admin.views.decorators import staff_member_required
-import openpyxl
 from django.http import HttpResponse
 from custom_admin import custom_admin_site
 from django.forms import HiddenInput
@@ -61,17 +63,53 @@ from django.forms import HiddenInput
 # Используется LegalDocument и DocumentAcceptance из приложения legal
 
 
+class InvoiceLineInline(admin.TabularInline):
+    """Строки счета доступны только для просмотра из карточки invoice."""
+    model = InvoiceLine
+    extra = 0
+    can_delete = False
+    fields = (
+        'booking',
+        'amount',
+        'rate',
+        'commission',
+        'vat_rate',
+        'vat_amount',
+        'total_with_vat',
+        'currency',
+    )
+    readonly_fields = fields
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+
 class InvoiceAdmin(admin.ModelAdmin):
     """
     Административное представление для счетов.
     """
-    list_display = ('number', 'provider', 'start_date', 'end_date', 'amount', 'currency', 'status', 'issued_at')
-    list_filter = ('status', 'currency', 'issued_at')
+    list_display = (
+        'number',
+        'provider',
+        'platform_company',
+        'start_date',
+        'end_date',
+        'amount',
+        'currency',
+        'status',
+        'payment_status_display',
+        'outstanding_amount_display',
+        'booking_breakdown_link',
+        'download_pdf_link',
+        'issued_at',
+    )
+    list_filter = ('status', 'currency', 'issued_at', 'provider')
     search_fields = ('number', 'provider__name')
     date_hierarchy = 'issued_at'
+    inlines = [InvoiceLineInline]
     fieldsets = (
         (_('Basic Information'), {
-            'fields': ('provider', 'number', 'status')
+            'fields': ('provider', 'platform_company', 'number', 'status')
         }),
         (_('Period'), {
             'fields': ('start_date', 'end_date')
@@ -79,12 +117,202 @@ class InvoiceAdmin(admin.ModelAdmin):
         (_('Financial Details'), {
             'fields': ('amount', 'currency')
         }),
+        (_('Booking Breakdown'), {
+            'fields': ('booking_count_display', 'booking_breakdown_link')
+        }),
+        (_('Files'), {
+            'fields': ('pdf_file', 'download_pdf_link')
+        }),
+        (_('Payment Summary'), {
+            'fields': (
+                'payment_status_display',
+                'due_date_display',
+                'payment_date_display',
+                'paid_amount_display',
+                'refunded_amount_display',
+                'outstanding_amount_display',
+            )
+        }),
         (_('Metadata'), {
             'fields': ('issued_at', 'created_at', 'updated_at'),
             'classes': ('collapse',)
         })
     )
-    readonly_fields = ('issued_at', 'created_at', 'updated_at')
+    readonly_fields = (
+        'issued_at',
+        'created_at',
+        'updated_at',
+        'pdf_file',
+        'download_pdf_link',
+        'booking_count_display',
+        'booking_breakdown_link',
+        'payment_status_display',
+        'due_date_display',
+        'payment_date_display',
+        'paid_amount_display',
+        'refunded_amount_display',
+        'outstanding_amount_display',
+    )
+
+    def get_urls(self):
+        """
+        Добавляет страницу детализации бронирований и выгрузку Excel по счету.
+        """
+        urls = super().get_urls()
+        custom_urls = [
+            path(
+                '<path:object_id>/bookings/',
+                self.admin_site.admin_view(self.booking_breakdown_view),
+                name='billing_invoice_booking_breakdown',
+            ),
+        ]
+        return custom_urls + urls
+
+    @admin.display(description=_('Payment Status'))
+    def payment_status_display(self, obj):
+        payment = obj.payment_record
+        return payment.get_status_display() if payment else '—'
+
+    @admin.display(description=_('Due Date'))
+    def due_date_display(self, obj):
+        payment = obj.payment_record
+        return payment.due_date if payment else '—'
+
+    @admin.display(description=_('Payment Date'))
+    def payment_date_display(self, obj):
+        payment = obj.payment_record
+        return payment.payment_date if payment and payment.payment_date else '—'
+
+    @admin.display(description=_('Paid Amount'))
+    def paid_amount_display(self, obj):
+        payment = obj.payment_record
+        return payment.paid_amount if payment else Decimal('0.00')
+
+    @admin.display(description=_('Refunded Amount'))
+    def refunded_amount_display(self, obj):
+        payment = obj.payment_record
+        return payment.refunded_amount if payment else Decimal('0.00')
+
+    @admin.display(description=_('Outstanding Amount'))
+    def outstanding_amount_display(self, obj):
+        return obj.outstanding_amount
+
+    @admin.display(description=_('Bookings'))
+    def booking_count_display(self, obj):
+        return obj.lines.count() if obj.pk else 0
+
+    @admin.display(description=_('Booking Breakdown'))
+    def booking_breakdown_link(self, obj):
+        if not obj.pk:
+            return '—'
+        url = reverse(f'{self.admin_site.name}:billing_invoice_booking_breakdown', args=[obj.pk])
+        return format_html(
+            '<a href="{}">{}</a>',
+            url,
+            _('View bookings / Export Excel'),
+        )
+
+    @admin.display(description=_('Download PDF'))
+    def download_pdf_link(self, obj):
+        if not obj.pk:
+            return '—'
+        if not obj.pdf_file:
+            try:
+                obj.ensure_pdf_file()
+            except Exception:
+                return '—'
+        if not obj.pdf_file:
+            return '—'
+        return format_html(
+            '<a href="{}" target="_blank">{}</a>',
+            obj.pdf_file.url,
+            _('Download PDF'),
+        )
+
+    def booking_breakdown_view(self, request, object_id):
+        """
+        Показывает детализацию бронирований по счету и отдает Excel при запросе export=xlsx.
+        """
+        invoice = self.get_object(request, object_id)
+        if invoice is None:
+            raise Http404(_('Invoice not found'))
+        if not self.has_view_permission(request, invoice):
+            raise PermissionDenied
+
+        rows = self._build_admin_booking_breakdown_rows(invoice)
+        summary = summarize_invoice_breakdown(invoice, rows=rows)
+        breakdown_url = reverse(
+            f'{self.admin_site.name}:billing_invoice_booking_breakdown',
+            args=[invoice.pk],
+        )
+
+        if request.GET.get('export') == 'xlsx':
+            return build_excel_response(
+                f'invoice-{invoice.number}-bookings.xlsx',
+                'Invoice Bookings',
+                [
+                    str(_('Booking ID')),
+                    str(_('Booking Code')),
+                    str(_('Completed At')),
+                    str(_('Service')),
+                    str(_('Client')),
+                    str(_('Pet')),
+                    str(_('Location')),
+                    str(_('Booking Amount')),
+                    str(_('Commission')),
+                    str(_('VAT')),
+                    str(_('Total')),
+                ],
+                [
+                    [
+                        row['booking_id'],
+                        row['booking_code'],
+                        row['completed_at_label'],
+                        row['service'],
+                        row['client'],
+                        row['pet'],
+                        row['location'],
+                        row['amount'],
+                        row['commission'],
+                        row['vat_amount'],
+                        row['total_with_vat'],
+                    ]
+                    for row in rows
+                ],
+            )
+
+        context = dict(
+            self.admin_site.each_context(request),
+            title=_('Booking breakdown'),
+            opts=self.model._meta,
+            original=invoice,
+            invoice=invoice,
+            rows=rows,
+            period_label=summary['period_label'],
+            booking_count=summary['booking_count'],
+            booking_amount_total=summary['booking_amount_total'],
+            commission_total=summary['commission_total'],
+            vat_total=summary['vat_total'],
+            currency_code=summary['currency_code'],
+            export_url=f'{breakdown_url}?export=xlsx',
+            index_url=reverse(f'{self.admin_site.name}:index'),
+            invoice_list_url=reverse(f'{self.admin_site.name}:billing_invoice_changelist'),
+            invoice_change_url=reverse(f'{self.admin_site.name}:billing_invoice_change', args=[invoice.pk]),
+        )
+        request.current_app = self.admin_site.name
+        return render(request, 'admin/billing/invoice_booking_breakdown.html', context)
+
+    def _build_admin_booking_breakdown_rows(self, invoice):
+        """
+        Добавляет к общей детализации ссылки на booking change view для Django admin.
+        """
+        rows = build_invoice_breakdown_rows(invoice)
+        for row in rows:
+            row['booking_url'] = reverse(
+                f'{self.admin_site.name}:booking_booking_change',
+                args=[row['booking_id']],
+            )
+        return rows
     
     def has_module_permission(self, request):
         """
@@ -109,23 +337,85 @@ class PaymentAdmin(admin.ModelAdmin):
     """
     Административное представление для платежей.
     """
-    list_display = ('booking', 'amount', 'status', 'payment_method', 'created_at')
-    list_filter = ('status', 'payment_method', 'created_at')
-    search_fields = ('booking__pet__name', 'booking__provider_service__service__name', 'transaction_id')
+    list_display = (
+        'provider',
+        'invoice',
+        'booking',
+        'amount',
+        'status',
+        'payment_method',
+        'applied_at',
+        'created_at',
+    )
+    list_filter = ('status', 'payment_method', 'created_at', 'provider')
+    search_fields = ('provider__name', 'invoice__number', 'booking__pet__name', 'transaction_id')
     date_hierarchy = 'created_at'
+    actions = ['export_as_excel']
     fieldsets = (
         (_('Basic Information'), {
-            'fields': ('booking', 'amount', 'status', 'payment_method')
+            'fields': ('provider', 'invoice', 'booking', 'amount', 'status', 'payment_method')
         }),
         (_('Transaction Details'), {
-            'fields': ('transaction_id',)
+            'fields': ('transaction_id', 'notes')
         }),
         (_('Metadata'), {
-            'fields': ('created_at', 'updated_at'),
+            'fields': ('applied_at', 'created_at', 'updated_at'),
             'classes': ('collapse',)
         })
     )
-    readonly_fields = ('created_at', 'updated_at')
+    readonly_fields = ('applied_at', 'created_at', 'updated_at')
+
+    def get_changeform_initial_data(self, request):
+        """
+        Подставляет значения по умолчанию для бухгалтерского ввода платежа.
+        """
+        return {
+            'status': 'completed',
+            'payment_method': 'bank_transfer',
+        }
+
+    def save_model(self, request, obj, form, change):
+        """
+        Сохраняет платеж через модельный сервис проводки.
+        """
+        if obj.provider_id is None:
+            if obj.invoice_id:
+                obj.provider = obj.invoice.provider
+            elif obj.booking_id:
+                obj.provider = obj.booking.provider or getattr(obj.booking.provider_location, 'provider', None)
+        super().save_model(request, obj, form, change)
+
+    def export_as_excel(self, request, queryset):
+        """
+        Экспортирует реестр поступлений в Excel.
+        """
+        rows = [
+            [
+                payment.created_at.strftime('%Y-%m-%d %H:%M') if payment.created_at else '',
+                payment.provider.name if payment.provider else '',
+                payment.invoice.number if payment.invoice else '',
+                payment.amount,
+                payment.get_status_display(),
+                payment.get_payment_method_display(),
+                payment.applied_at.strftime('%Y-%m-%d %H:%M') if payment.applied_at else '',
+            ]
+            for payment in queryset.select_related('provider', 'invoice')
+        ]
+        return build_excel_response(
+            'PaymentHistory.xlsx',
+            'Payments',
+            [
+                str(_('Received At')),
+                str(_('Provider')),
+                str(_('Invoice')),
+                str(_('Amount')),
+                str(_('Status')),
+                str(_('Payment Method')),
+                str(_('Applied At')),
+            ],
+            rows,
+        )
+    export_as_excel.short_description = _('Export selected payments to Excel')
     
     def has_module_permission(self, request):
         """
@@ -144,6 +434,75 @@ class PaymentAdmin(admin.ModelAdmin):
     def has_view_permission(self, request, obj=None):
         """Биллинг-менеджер может просматривать платежи"""
         return self.has_module_permission(request)
+
+
+class PaymentHistoryAdmin(admin.ModelAdmin):
+    """Административное представление для истории расчетов по инвойсам."""
+    list_display = (
+        'provider',
+        'invoice',
+        'status',
+        'amount',
+        'paid_amount',
+        'refunded_amount',
+        'outstanding_amount_display',
+        'due_date',
+        'payment_date',
+    )
+    list_filter = ('status', 'currency', 'due_date')
+    search_fields = ('provider__name', 'invoice__number', 'description')
+    date_hierarchy = 'due_date'
+    fieldsets = (
+        (_('Basic Information'), {
+            'fields': ('provider', 'invoice', 'offer_acceptance', 'status')
+        }),
+        (_('Amounts'), {
+            'fields': (
+                'amount',
+                'paid_amount',
+                'refunded_amount',
+                'outstanding_amount_display',
+                'currency',
+            )
+        }),
+        (_('Dates'), {
+            'fields': ('due_date', 'payment_date')
+        }),
+        (_('Additional Information'), {
+            'fields': ('description',)
+        }),
+        (_('Metadata'), {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    readonly_fields = ('outstanding_amount_display', 'created_at', 'updated_at')
+
+    @admin.display(description=_('Outstanding Amount'))
+    def outstanding_amount_display(self, obj):
+        return obj.outstanding_amount
+
+    def has_module_permission(self, request):
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        return (
+            user.is_superuser or
+            _is_system_admin(user) or
+            user.is_billing_manager()
+        )
+
+    def has_view_permission(self, request, obj=None):
+        return self.has_module_permission(request)
+
+    def has_add_permission(self, request):
+        return request.user.is_superuser or user_has_role(request.user, 'system_admin')
+
+    def has_change_permission(self, request, obj=None):
+        return request.user.is_superuser or user_has_role(request.user, 'system_admin')
+
+    def has_delete_permission(self, request, obj=None):
+        return request.user.is_superuser or user_has_role(request.user, 'system_admin')
 
 
 class RefundAdmin(admin.ModelAdmin):
@@ -285,7 +644,7 @@ class BillingManagerProviderAdmin(admin.ModelAdmin):
         
         # Используем стандартный метод Django - он правильно обработает все связанные объекты
         # BillingManagerEvent теперь разрешены для удаления системным админам
-        return get_deleted_objects(objs, request, self.admin_site)
+        return get_deleted_objects(list(objs), request, self.admin_site)
     
     def delete_model(self, request, obj):
         """
@@ -479,15 +838,55 @@ class BlockingRuleAdmin(admin.ModelAdmin):
 
 
 class ProviderBlockingAdmin(admin.ModelAdmin):
-    list_display = ('provider', 'blocking_rule', 'status', 'debt_amount', 'overdue_days', 'blocked_at', 'resolved_at')
-    list_filter = ('status', 'blocking_rule', 'blocked_at')
+    list_display = (
+        'provider',
+        'blocking_level',
+        'blocking_rule',
+        'status',
+        'debt_amount',
+        'overdue_days',
+        'blocked_at',
+        'resolved_at',
+    )
+    list_filter = ('blocking_level', 'status', 'blocking_rule', 'blocked_at')
     search_fields = ('provider__name', 'notes')
-    actions = ['resolve_blockings']
+    actions = ['resolve_blockings', 'export_as_excel']
 
     def resolve_blockings(self, request, queryset):
+        """Ручное снятие выбранных блокировок."""
         for blocking in queryset.filter(status='active'):
-            blocking.resolve(resolved_by=request.user, notes='Снято через админку')
-    resolve_blockings.short_description = 'Снять выбранные блокировки (разблокировать)'
+            blocking.resolve(resolved_by=request.user, notes='Resolved through admin panel')
+    resolve_blockings.short_description = _('Unblock selected providers manually')
+
+    def export_as_excel(self, request, queryset):
+        """Экспортирует отчет по блокировкам в Excel."""
+        rows = [
+            [
+                blocking.provider.name if blocking.provider else '',
+                blocking.blocking_level,
+                blocking.blocking_rule.name if blocking.blocking_rule else '',
+                blocking.debt_amount,
+                blocking.overdue_days,
+                blocking.blocked_at.strftime('%Y-%m-%d %H:%M') if blocking.blocked_at else '',
+                blocking.get_status_display(),
+            ]
+            for blocking in queryset.select_related('provider', 'blocking_rule')
+        ]
+        return build_excel_response(
+            'BlockedProviders.xlsx',
+            'Blocked Providers',
+            [
+                str(_('Provider')),
+                str(_('Blocking Level')),
+                str(_('Blocking Rule')),
+                str(_('Debt Amount')),
+                str(_('Overdue Days')),
+                str(_('Blocked At')),
+                str(_('Status')),
+            ],
+            rows,
+        )
+    export_as_excel.short_description = _('Export selected blockings to Excel')
     
     def has_module_permission(self, request):
         """
@@ -991,6 +1390,40 @@ class VATRateAdmin(admin.ModelAdmin):
         return request.user.is_superuser or user_has_role(request.user, 'system_admin')
 
 
+class PlatformCompanyAdmin(admin.ModelAdmin):
+    """
+    Административное представление для реквизитов платформы.
+    """
+    list_display = ('name', 'tax_id', 'bank_name', 'is_active', 'updated_at')
+    list_filter = ('is_active',)
+    search_fields = ('name', 'tax_id', 'bank_name', 'countries__country')
+    filter_horizontal = ('countries',)
+    fieldsets = (
+        (_('Basic Information'), {
+            'fields': ('name', 'address', 'tax_id', 'is_active')
+        }),
+        (_('Bank Details'), {
+            'fields': ('bank_name', 'iban', 'bic', 'swift')
+        }),
+        (_('Coverage'), {
+            'fields': ('countries',)
+        }),
+        (_('Signature Assets'), {
+            'fields': ('seal_scan', 'signature_scan'),
+            'classes': ('collapse',)
+        }),
+        (_('Metadata'), {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    readonly_fields = ('created_at', 'updated_at')
+
+    def has_module_permission(self, request):
+        """Только системный админ имеет доступ к реквизитам платформы."""
+        return request.user.is_superuser or _is_system_admin(request.user)
+
+
 # ============================================================================
 # АДМИН-ПАНЕЛЬ ДЛЯ BILLING CONFIG
 # ============================================================================
@@ -1050,8 +1483,10 @@ class BillingConfigAdmin(admin.ModelAdmin):
 
 # Регистрация моделей в админ-панели
 custom_admin_site.register(Currency, CurrencyAdmin)
+custom_admin_site.register(PlatformCompany, PlatformCompanyAdmin)
 # Регистрации Contract, ContractType, ContractCommission, ContractDiscount удалены
 custom_admin_site.register(Invoice, InvoiceAdmin)
+custom_admin_site.register(PaymentHistory, PaymentHistoryAdmin)
 custom_admin_site.register(Payment, PaymentAdmin)
 custom_admin_site.register(Refund, RefundAdmin)
 custom_admin_site.register(BillingManagerProvider, BillingManagerProviderAdmin)
@@ -1074,3 +1509,355 @@ custom_admin_site.register(BillingConfig, BillingConfigAdmin)
 
 # Регистрация VATRate
 custom_admin_site.register(VATRate, VATRateAdmin)
+
+
+class BillingReportAdmin(admin.ModelAdmin):
+    """
+    Кастомный раздел отчетов по биллингу (экспорт и дашборд).
+    """
+    change_list_template = "admin/billing/reports_dashboard.html"
+
+    def get_urls(self):
+        """Добавляет кастомные страницы отчетов в раздел billing."""
+        urls = super().get_urls()
+        custom_urls = [
+            path('', self.admin_site.admin_view(self.reports_dashboard), name='billing-reports-dashboard'),
+            path('invoice-export/', self.admin_site.admin_view(self.invoice_export_view), name='billing-invoice-export'),
+            path('provider-debt/', self.admin_site.admin_view(self.provider_debt_report_view), name='billing-provider-debt-report'),
+            path('revenue/', self.admin_site.admin_view(self.revenue_report_view), name='billing-revenue-report'),
+            path('aging/', self.admin_site.admin_view(self.aging_report_view), name='billing-aging-report'),
+        ]
+        return custom_urls + urls
+
+    def reports_dashboard(self, request):
+        """Отображает дашборд ссылок на биллинговые отчеты."""
+        context = dict(
+            self.admin_site.each_context(request),
+            provider_debt_url=reverse('admin:billing-provider-debt-report'),
+            revenue_report_url=reverse('admin:billing-revenue-report'),
+            aging_report_url=reverse('admin:billing-aging-report'),
+            blocked_providers_url=reverse('admin:billing_providerblocking_changelist'),
+            payment_history_url=reverse('admin:billing_payment_changelist'),
+            invoice_list_url=reverse('admin:billing_invoice_changelist'),
+            invoice_export_url=reverse('admin:billing-invoice-export'),
+        )
+        return render(request, "admin/billing/reports_dashboard.html", context)
+
+    def invoice_export_view(self, request):
+        """Экспортирует список счетов в Excel."""
+        invoices = Invoice.objects.all().select_related('provider', 'currency')
+        rows = [
+            [
+                inv.number,
+                str(inv.provider) if inv.provider else "",
+                str(inv.amount),
+                inv.currency.code if inv.currency else "",
+                inv.status,
+                inv.issued_at.strftime('%Y-%m-%d') if inv.issued_at else "",
+            ]
+            for inv in invoices
+        ]
+        return build_excel_response(
+            'InvoicesExport.xlsx',
+            'Invoices',
+            [
+                str(_("Number")),
+                str(_("Provider")),
+                str(_("Amount")),
+                str(_("Currency")),
+                str(_("Status")),
+                str(_("Issued At")),
+            ],
+            rows,
+        )
+
+    def provider_debt_report_view(self, request):
+        """Отображает отчет по задолженности провайдеров."""
+        rows = self._build_provider_debt_rows(request)
+        columns = [
+            {'key': 'provider', 'label': _('Provider')},
+            {'key': 'total_debt', 'label': _('Total Debt')},
+            {'key': 'currency', 'label': _('Currency')},
+            {'key': 'unpaid_invoices', 'label': _('Unpaid Invoices')},
+            {'key': 'max_overdue_days', 'label': _('Max Overdue Days')},
+            {'key': 'country', 'label': _('Country')},
+        ]
+        return self._render_report(
+            request=request,
+            title=_('Provider Debt Report'),
+            sheet_title='Provider Debt',
+            file_name='ProviderDebtReport.xlsx',
+            columns=columns,
+            rows=rows,
+            export_name='billing-provider-debt-report',
+        )
+
+    def revenue_report_view(self, request):
+        """Отображает агрегированный отчет по выручке."""
+        rows = self._build_revenue_rows(request)
+        columns = [
+            {'key': 'period', 'label': _('Period')},
+            {'key': 'currency', 'label': _('Currency')},
+            {'key': 'invoice_count', 'label': _('Invoice Count')},
+            {'key': 'invoiced_amount', 'label': _('Invoiced Amount')},
+            {'key': 'paid_amount', 'label': _('Paid Amount')},
+        ]
+        return self._render_report(
+            request=request,
+            title=_('Revenue Report'),
+            sheet_title='Revenue',
+            file_name='RevenueReport.xlsx',
+            columns=columns,
+            rows=rows,
+            export_name='billing-revenue-report',
+        )
+
+    def aging_report_view(self, request):
+        """Отображает отчет по aging buckets дебиторской задолженности."""
+        rows = self._build_aging_rows(request)
+        columns = [
+            {'key': 'provider', 'label': _('Provider')},
+            {'key': 'currency', 'label': _('Currency')},
+            {'key': 'bucket_0_30', 'label': _('0-30 Days')},
+            {'key': 'bucket_31_60', 'label': _('31-60 Days')},
+            {'key': 'bucket_61_90', 'label': _('61-90 Days')},
+            {'key': 'bucket_over_90', 'label': _('Over 90 Days')},
+            {'key': 'total', 'label': _('Total')},
+        ]
+        return self._render_report(
+            request=request,
+            title=_('Aging Report'),
+            sheet_title='Aging',
+            file_name='AgingReport.xlsx',
+            columns=columns,
+            rows=rows,
+            export_name='billing-aging-report',
+        )
+
+    def _render_report(self, request, title, sheet_title, file_name, columns, rows, export_name):
+        """
+        Унифицированно рендерит HTML-страницу отчета или отдает Excel.
+        """
+        if request.GET.get('export') == 'xlsx':
+            return build_excel_response(
+                file_name,
+                sheet_title,
+                [str(column['label']) for column in columns],
+                [[row[column['key']] for column in columns] for row in rows],
+            )
+
+        export_query = request.GET.copy()
+        export_query['export'] = 'xlsx'
+        table_rows = [
+            {
+                'raw': row,
+                'values': [row[column['key']] for column in columns],
+            }
+            for row in rows
+        ]
+        context = dict(
+            self.admin_site.each_context(request),
+            title=title,
+            report_title=title,
+            columns=columns,
+            rows=table_rows,
+            export_url=f"{reverse(f'admin:{export_name}')}?{export_query.urlencode()}",
+            q=request.GET.get('q', ''),
+            country=request.GET.get('country', ''),
+            currency=request.GET.get('currency', ''),
+            has_debt=request.GET.get('has_debt', ''),
+            year=request.GET.get('year', ''),
+            month=request.GET.get('month', ''),
+            ordering=request.GET.get('ordering', ''),
+        )
+        return render(request, 'admin/billing/report_list.html', context)
+
+    def _build_provider_debt_rows(self, request):
+        """
+        Собирает строки отчета по задолженности провайдеров.
+        """
+        providers = Provider.objects.filter(is_active=True).prefetch_related(
+            'payment_history__currency',
+            'invoices',
+        ).select_related('invoice_currency')
+
+        search_query = request.GET.get('q', '').strip()
+        country = request.GET.get('country', '').strip()
+        currency = request.GET.get('currency', '').strip()
+        has_debt = request.GET.get('has_debt', '').strip()
+        ordering = request.GET.get('ordering', 'provider')
+        today = timezone.now().date()
+
+        if search_query:
+            providers = providers.filter(name__icontains=search_query)
+        if country:
+            providers = providers.filter(country=country)
+
+        rows = []
+        for provider in providers:
+            payment_records = [
+                record for record in provider.payment_history.all()
+                if record.outstanding_amount > Decimal('0.00')
+            ]
+            total_debt = sum((record.outstanding_amount for record in payment_records), Decimal('0.00'))
+            invoice_ids = {record.invoice_id for record in payment_records if record.invoice_id}
+            max_overdue_days = max(
+                (
+                    (today - record.due_date).days
+                    for record in payment_records
+                    if record.due_date < today
+                ),
+                default=0,
+            )
+            currency_code = (
+                provider.invoice_currency.code if provider.invoice_currency
+                else (payment_records[0].currency.code if payment_records else '')
+            )
+
+            if currency and currency_code != currency:
+                continue
+            if has_debt == 'yes' and total_debt <= Decimal('0.00'):
+                continue
+            if has_debt == 'no' and total_debt > Decimal('0.00'):
+                continue
+
+            rows.append({
+                'provider': provider.name,
+                'total_debt': total_debt,
+                'currency': currency_code,
+                'unpaid_invoices': len(invoice_ids),
+                'max_overdue_days': max_overdue_days,
+                'country': str(provider.country or ''),
+            })
+
+        return self._sort_rows(rows, ordering, default_key='provider')
+
+    def _build_revenue_rows(self, request):
+        """
+        Собирает строки отчета по выручке по месяцам и годам.
+        """
+        invoices = Invoice.objects.select_related('currency').prefetch_related('payment_history').exclude(status='draft')
+        year = request.GET.get('year', '').strip()
+        month = request.GET.get('month', '').strip()
+        ordering = request.GET.get('ordering', '-period')
+
+        if year.isdigit():
+            invoices = invoices.filter(issued_at__year=int(year))
+        if month.isdigit():
+            invoices = invoices.filter(issued_at__month=int(month))
+
+        grouped_rows = {}
+        for invoice in invoices:
+            period = invoice.issued_at.strftime('%Y-%m')
+            currency_code = invoice.currency.code if invoice.currency else ''
+            key = (period, currency_code)
+            payment_record = invoice.payment_record
+            paid_amount = Decimal('0.00')
+            if payment_record is not None:
+                paid_amount = max(
+                    payment_record.paid_amount - payment_record.refunded_amount,
+                    Decimal('0.00'),
+                )
+
+            row = grouped_rows.setdefault(
+                key,
+                {
+                    'period': period,
+                    'currency': currency_code,
+                    'invoice_count': 0,
+                    'invoiced_amount': Decimal('0.00'),
+                    'paid_amount': Decimal('0.00'),
+                }
+            )
+            row['invoice_count'] += 1
+            row['invoiced_amount'] += invoice.amount
+            row['paid_amount'] += paid_amount
+
+        return self._sort_rows(list(grouped_rows.values()), ordering, default_key='period')
+
+    def _build_aging_rows(self, request):
+        """
+        Собирает строки aging report по провайдерам.
+        """
+        providers = Provider.objects.filter(is_active=True).prefetch_related(
+            'payment_history__currency'
+        ).select_related('invoice_currency')
+        search_query = request.GET.get('q', '').strip()
+        currency = request.GET.get('currency', '').strip()
+        ordering = request.GET.get('ordering', 'provider')
+        today = timezone.now().date()
+
+        if search_query:
+            providers = providers.filter(name__icontains=search_query)
+
+        rows = []
+        for provider in providers:
+            buckets = {
+                'bucket_0_30': Decimal('0.00'),
+                'bucket_31_60': Decimal('0.00'),
+                'bucket_61_90': Decimal('0.00'),
+                'bucket_over_90': Decimal('0.00'),
+            }
+            payment_records = [
+                record for record in provider.payment_history.all()
+                if record.outstanding_amount > Decimal('0.00')
+            ]
+            currency_code = (
+                provider.invoice_currency.code if provider.invoice_currency
+                else (payment_records[0].currency.code if payment_records else '')
+            )
+            if currency and currency_code != currency:
+                continue
+
+            for record in payment_records:
+                overdue_days = max((today - record.due_date).days, 0)
+                if overdue_days <= 30:
+                    buckets['bucket_0_30'] += record.outstanding_amount
+                elif overdue_days <= 60:
+                    buckets['bucket_31_60'] += record.outstanding_amount
+                elif overdue_days <= 90:
+                    buckets['bucket_61_90'] += record.outstanding_amount
+                else:
+                    buckets['bucket_over_90'] += record.outstanding_amount
+
+            total_amount = sum(buckets.values(), Decimal('0.00'))
+            if total_amount <= Decimal('0.00'):
+                continue
+
+            rows.append({
+                'provider': provider.name,
+                'currency': currency_code,
+                'bucket_0_30': buckets['bucket_0_30'],
+                'bucket_31_60': buckets['bucket_31_60'],
+                'bucket_61_90': buckets['bucket_61_90'],
+                'bucket_over_90': buckets['bucket_over_90'],
+                'total': total_amount,
+            })
+
+        return self._sort_rows(rows, ordering, default_key='provider')
+
+    def _sort_rows(self, rows, ordering, default_key):
+        """
+        Сортирует подготовленные строки отчета.
+        """
+        if not rows:
+            return rows
+
+        reverse_order = ordering.startswith('-')
+        sort_key = ordering[1:] if reverse_order else ordering
+        if sort_key not in rows[0]:
+            sort_key = default_key
+        return sorted(rows, key=lambda row: row[sort_key], reverse=reverse_order)
+
+    def has_module_permission(self, request):
+        """Проверяет доступ к разделу отчетов биллинга."""
+        user = request.user
+        if not user.is_authenticated:
+            return False
+        return user.is_superuser or _is_system_admin(user) or user.is_billing_manager()
+
+    def has_view_permission(self, request, obj=None):
+        """Проверяет право просмотра отчетов биллинга."""
+        return self.has_module_permission(request)
+
+custom_admin_site.register(BillingReport, BillingReportAdmin)

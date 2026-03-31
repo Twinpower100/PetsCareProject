@@ -25,6 +25,8 @@ from .serializers import (
     BookingCancellationActionSerializer,
     BookingCompletionActionSerializer,
     BookingVisitRecordUpsertSerializer,
+    ManualBookingCreateSerializer,
+    ManualBookingSearchSerializer,
     BookingUpdateSerializer,
     BookingListSerializer,
     BookingPaymentSerializer,
@@ -52,11 +54,14 @@ from .services import (
     BookingTransactionService,
     EmployeeAutoBookingService,
 )
+from .manual_v2_services import ProtocolDocumentService
+from .manual_services import ManualBookingPermissionService, ManualBookingService
 from .constants import (
     BOOKING_STATUS_COMPLETED,
     CANCELLED_BY_CLIENT,
     CANCELLED_BY_PROVIDER,
     CANCELLATION_REASON_CLIENT_NO_SHOW,
+    CANCELLATION_REASON_PROVIDER_EMERGENCY_PREEMPTION,
     ISSUE_STATUS_ACKNOWLEDGED,
     ISSUE_STATUS_OPEN,
     RESOLUTION_OUTCOME_PROVIDER_CANCELLED,
@@ -70,33 +75,104 @@ from .constants import (
 from pets.models import Pet, PetDocument, PetHealthNote, PetOwner, VisitRecord
 from pets.serializers import VisitRecordAddendumSerializer
 from providers.models import Provider, Service
+from providers.permission_service import ProviderPermissionService
 from users.models import User
 from rest_framework.permissions import IsAuthenticated
+
+
+def _get_user_provider_queryset(user):
+    if user.is_superuser or user.is_system_admin():
+        return Provider.objects.all()
+
+    provider_ids = set(user.get_managed_providers().values_list('id', flat=True))
+    provider_ids.update(
+        Provider.objects.filter(locations__manager=user).values_list('id', flat=True)
+    )
+
+    employee = getattr(user, 'employee_profile', None)
+    if employee is not None:
+        provider_ids.update(
+            Provider.objects.filter(locations__employee_roles__employee=employee).values_list('id', flat=True)
+        )
+
+    return Provider.objects.filter(id__in=provider_ids).distinct()
+
+
+def _get_booking_provider(booking):
+    provider = getattr(booking, 'provider', None)
+    if provider is None and getattr(booking, 'provider_location', None) is not None:
+        provider = booking.provider_location.provider
+    return provider
+
+
+def _user_is_booking_employee(user, booking):
+    return bool(
+        user.is_employee()
+        and getattr(booking, 'employee', None) is not None
+        and booking.employee.user_id == user.id
+    )
+
+
+def _user_can_manage_booking_provider_side(user, booking):
+    provider = _get_booking_provider(booking)
+    if provider is None:
+        return False
+    return ProviderPermissionService.check_permission(
+        user,
+        provider,
+        'bookings',
+        'update',
+        target_location=getattr(booking, 'provider_location', None),
+        target_employee=getattr(booking, 'employee', None),
+    )
 
 
 def scope_bookings_for_user(queryset, user):
     if user.is_superuser or user.is_system_admin():
         return queryset
 
+    role_scopes = []
+
     if user.is_client():
-        return queryset.filter(user=user)
+        role_scopes.append(Q(user=user))
 
     if user.is_employee():
-        return queryset.filter(employee__user=user)
+        role_scopes.append(Q(employee__user=user))
 
-    if user.is_provider_admin():
-        managed_providers = user.get_managed_providers()
-        return queryset.filter(
-            Q(provider__in=managed_providers) |
-            Q(provider_location__provider__in=managed_providers)
-        )
+    for provider in _get_user_provider_queryset(user).only('id'):
+        if not ProviderPermissionService.check_permission(user, provider, 'bookings', 'read'):
+            continue
+        permission = ProviderPermissionService.get_user_permissions(user, provider).get('bookings', {})
+        scope = permission.get('scope')
+        if scope == 'all':
+            role_scopes.append(
+                Q(provider_id=provider.id) | Q(provider_location__provider_id=provider.id)
+            )
+        elif scope == 'own_branch':
+            branch_location_ids = list(
+                ProviderPermissionService.get_user_branch_locations(user, provider).values_list('id', flat=True)
+            )
+            if branch_location_ids:
+                role_scopes.append(Q(provider_location_id__in=branch_location_ids))
+        else:
+            employee = getattr(user, 'employee_profile', None)
+            if employee is not None:
+                role_scopes.append(Q(employee=employee))
 
-    return queryset.none()
+    if not role_scopes:
+        return queryset.none()
+
+    combined_scope = role_scopes[0]
+    for scope in role_scopes[1:]:
+        combined_scope |= scope
+
+    return queryset.filter(combined_scope).distinct()
 
 
 def with_booking_list_related(queryset):
     return queryset.select_related(
         'user',
+        'escort_owner',
         'pet',
         'pet__pet_type',
         'pet__breed',
@@ -216,15 +292,41 @@ class TimeSlotViewSet(viewsets.ModelViewSet):
         
         # Для специалистов - только их слоты
         if self.request.user.is_employee():
-            queryset = queryset.filter(employee=self.request.user)
+            queryset = queryset.filter(employee__user=self.request.user)
         
-        # Для админов учреждений - слоты их учреждения
-        elif self.request.user.is_provider_admin():
-            managed_providers = self.request.user.get_managed_providers()
-            queryset = queryset.filter(
-                Q(provider__in=managed_providers) |
-                Q(provider_location__provider__in=managed_providers)
-            )
+        else:
+            allowed_provider_ids = set()
+            allowed_location_ids = set()
+            employee = getattr(self.request.user, 'employee_profile', None)
+            allow_own_employee_scope = False
+            for provider in _get_user_provider_queryset(self.request.user).only('id'):
+                permission = ProviderPermissionService.get_user_permissions(self.request.user, provider).get('bookings')
+                if not permission or not permission.get('can_read'):
+                    continue
+                scope = permission.get('scope')
+                if scope == 'all':
+                    allowed_provider_ids.add(provider.id)
+                elif scope == 'own_branch':
+                    allowed_location_ids.update(
+                        ProviderPermissionService.get_user_branch_locations(
+                            self.request.user,
+                            provider,
+                        ).values_list('id', flat=True)
+                    )
+                elif employee is not None:
+                    allow_own_employee_scope = True
+
+            scope_filter = Q()
+            if allowed_provider_ids:
+                scope_filter |= Q(provider_id__in=allowed_provider_ids) | Q(provider_location__provider_id__in=allowed_provider_ids)
+            if allowed_location_ids:
+                scope_filter |= Q(provider_location_id__in=allowed_location_ids)
+            if allow_own_employee_scope and employee is not None:
+                scope_filter |= Q(employee=employee)
+            if scope_filter:
+                queryset = queryset.filter(scope_filter)
+            else:
+                queryset = queryset.none()
             
         return queryset
 
@@ -276,7 +378,7 @@ class BookingViewSet(viewsets.ModelViewSet):
     serializer_class = BookingSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['status', 'provider', 'employee', 'service']
+    filterset_fields = ['status', 'provider', 'provider_location', 'employee', 'service', 'source']
     ordering_fields = ['start_time', 'created_at']
     
     def get_queryset(self):
@@ -308,14 +410,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         """
         Проверяет, может ли админ учреждения управлять бронированием.
         """
-        if not user.is_provider_admin():
-            return False
-        provider = booking.provider
-        if not provider and booking.provider_location:
-            provider = booking.provider_location.provider
-        if not provider:
-            return False
-        return user.get_managed_providers().filter(id=provider.id).exists()
+        return _user_can_manage_booking_provider_side(user, booking)
 
     def _get_booking_for_service_issue_action(self, pk):
         if self.request.user.is_superuser or self.request.user.is_system_admin():
@@ -325,22 +420,16 @@ class BookingViewSet(viewsets.ModelViewSet):
     def _get_service_issue_resolution_actor(self, user, booking):
         if user.is_superuser or user.is_system_admin():
             return RESOLVED_BY_SUPPORT
-        if user.is_employee():
-            if booking.employee and booking.employee.user == user:
-                return RESOLVED_BY_PROVIDER
-            return None
-        if user.is_provider_admin() and self._user_can_manage_provider(user, booking):
+        if _user_is_booking_employee(user, booking):
+            return RESOLVED_BY_PROVIDER
+        if self._user_can_manage_provider(user, booking):
             return RESOLVED_BY_PROVIDER
         return None
 
     def _user_can_edit_visit_record(self, user, booking):
         if user.is_superuser or user.is_system_admin():
             return True
-        if user.is_employee():
-            return booking.employee and booking.employee.user == user
-        if user.is_provider_admin():
-            return self._user_can_manage_provider(user, booking)
-        return False
+        return _user_is_booking_employee(user, booking) or self._user_can_manage_provider(user, booking)
 
     def _build_booking_detail_response(self, booking_id, *, status_code=status.HTTP_200_OK):
         booking = self.get_queryset().get(pk=booking_id)
@@ -392,11 +481,24 @@ class BookingViewSet(viewsets.ModelViewSet):
             context={'cancelled_by': cancelled_by},
         )
         serializer.is_valid(raise_exception=True)
+        cancellation_reason = serializer.validated_data['cancellation_reason']
+        if (
+            cancelled_by == CANCELLED_BY_PROVIDER
+            and cancellation_reason.code == CANCELLATION_REASON_PROVIDER_EMERGENCY_PREEMPTION
+        ):
+            if not ManualBookingPermissionService.can_use_emergency_override(request.user, booking.provider_location):
+                raise serializers.ValidationError(
+                    {'reason_code': _('You do not have permission to use emergency preemption.')}
+                )
+            try:
+                ManualBookingService._validate_emergency_window(booking.start_time)
+            except BookingDomainError as exc:
+                raise serializers.ValidationError(exc.to_dict())
         try:
             booking.cancel_booking(
                 cancelled_by=cancelled_by,
                 cancelled_by_user=request.user,
-                cancellation_reason=serializer.validated_data['cancellation_reason'],
+                cancellation_reason=cancellation_reason,
                 cancellation_reason_text=serializer.validated_data.get('cancellation_reason_text', ''),
                 client_attendance=serializer.validated_data.get('client_attendance'),
             )
@@ -463,25 +565,11 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking = self.get_object()
         
         # Проверяем права
-        if not (request.user.is_employee() or request.user.is_provider_admin()):
+        if not (_user_is_booking_employee(request.user, booking) or self._user_can_manage_provider(request.user, booking)):
             return Response(
                 {'error': _('Only employees and provider admins can cancel bookings')},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
-        # Проверяем принадлежность к учреждению
-        if request.user.is_employee():
-            if booking.employee.user != request.user:
-                return Response(
-                    {'error': _('You can only cancel your own bookings')},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-        else:  # provider admin
-            if not self._user_can_manage_provider(request.user, booking):
-                return Response(
-                    {'error': _('You can only cancel bookings of your provider')},
-                    status=status.HTTP_403_FORBIDDEN
-                )
         
         try:
             return self._cancel_booking(request, booking, CANCELLED_BY_PROVIDER)
@@ -499,25 +587,11 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking = self.get_object()
         
         # Проверяем права
-        if not (request.user.is_employee() or request.user.is_provider_admin()):
+        if not (_user_is_booking_employee(request.user, booking) or self._user_can_manage_provider(request.user, booking)):
             return Response(
                 {'error': _('Only employees and provider admins can complete bookings')},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
-        # Проверяем принадлежность к учреждению
-        if request.user.is_employee():
-            if booking.employee.user != request.user:
-                return Response(
-                    {'error': _('You can only complete your own bookings')},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-        else:  # provider admin
-            if not self._user_can_manage_provider(request.user, booking):
-                return Response(
-                    {'error': _('You can only complete bookings of your provider')},
-                    status=status.HTTP_403_FORBIDDEN
-                )
         
         try:
             return self._complete_booking(request, booking)
@@ -530,6 +604,15 @@ class BookingViewSet(viewsets.ModelViewSet):
         Создание или обновление протокола уже завершённого визита.
         """
         booking = self.get_object()
+
+        if booking.is_manual_guest_booking:
+            return Response(
+                {
+                    'code': 'visit_record_guest_unavailable',
+                    'error': _('Visit protocol is unavailable for guest manual bookings'),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if booking.status.name != BOOKING_STATUS_COMPLETED:
             return Response(
@@ -557,6 +640,15 @@ class BookingViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['get', 'post'], url_path='visit-record-addenda')
     def visit_record_addenda(self, request, pk=None):
         booking = self.get_object()
+
+        if booking.is_manual_guest_booking:
+            return Response(
+                {
+                    'code': 'visit_record_guest_unavailable',
+                    'error': _('Visit protocol is unavailable for guest manual bookings'),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if booking.visit_record_id is None:
             return Response(
@@ -605,25 +697,11 @@ class BookingViewSet(viewsets.ModelViewSet):
         booking = self.get_object()
         
         # Проверяем права
-        if not (request.user.is_employee() or request.user.is_provider_admin()):
+        if not (_user_is_booking_employee(request.user, booking) or self._user_can_manage_provider(request.user, booking)):
             return Response(
                 {'error': _('Only employees and provider admins can mark no-shows')},
                 status=status.HTTP_403_FORBIDDEN
             )
-        
-        # Проверяем принадлежность к учреждению
-        if request.user.is_employee():
-            if booking.employee.user != request.user:
-                return Response(
-                    {'error': _('You can only mark no-shows for your own bookings')},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-        else:  # provider admin
-            if not self._user_can_manage_provider(request.user, booking):
-                return Response(
-                    {'error': _('You can only mark no-shows for bookings of your provider')},
-                    status=status.HTTP_403_FORBIDDEN
-                )
         
         no_show_reason = BookingCancellationReason.objects.filter(
             code=CANCELLATION_REASON_CLIENT_NO_SHOW,
@@ -756,6 +834,77 @@ class BookingViewSet(viewsets.ModelViewSet):
         issue.save()
 
         return Response(BookingServiceIssueSerializer(issue, context=self.get_serializer_context()).data)
+
+
+class ManualBookingClientSearchAPIView(APIView):
+    """Поиск клиентов для ручного бронирования персоналом провайдера."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        serializer = ManualBookingSearchSerializer(data=request.query_params)
+        serializer.is_valid(raise_exception=True)
+        try:
+            results = ManualBookingService.search_clients(
+                actor=request.user,
+                query=serializer.validated_data.get('query', ''),
+                provider_location_id=serializer.validated_data.get('provider_location_id'),
+            )
+        except BookingDomainError as exc:
+            return Response(exc.to_dict(), status=exc.status_code)
+
+        provider_location_id = serializer.validated_data.get('provider_location_id')
+        can_emergency_override = False
+        if provider_location_id is not None:
+            try:
+                from providers.models import ProviderLocation
+
+                location = ProviderLocation.objects.get(id=provider_location_id)
+                can_emergency_override = ManualBookingPermissionService.can_use_emergency_override(
+                    request.user,
+                    location,
+                )
+            except ProviderLocation.DoesNotExist:
+                can_emergency_override = False
+
+        return Response(
+            {
+                'results': results,
+                'can_emergency_override': can_emergency_override,
+                'emergency_time_window_hours': ManualBookingService.get_emergency_time_window_hours(),
+            }
+        )
+
+
+class ManualBookingCreateAPIView(APIView):
+    """Создаёт ручное бронирование через provider admin flow."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = ManualBookingCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            booking = ManualBookingService.create_manual_booking(
+                actor=request.user,
+                data=serializer.validated_data,
+            )
+        except BookingDomainError as exc:
+            return Response(exc.to_dict(), status=exc.status_code)
+
+        booking_instance = with_booking_detail_related(Booking.objects.filter(id=booking.id)).get()
+        payload = BookingSerializer(booking_instance, context={'request': request}).data
+        payload['emergency_time_window_hours'] = ManualBookingService.get_emergency_time_window_hours()
+        payload['can_emergency_override'] = (
+            ManualBookingPermissionService.can_use_emergency_override(
+                request.user,
+                booking.provider_location,
+            )
+            if booking.provider_location
+            else False
+        )
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
 class BookingPaymentViewSet(viewsets.ModelViewSet):
@@ -971,7 +1120,7 @@ class CancelBookingAPIView(APIView):
             booking = booking_queryset.get(id=booking_id)
             cancelled_by = (
                 CANCELLED_BY_PROVIDER
-                if request.user.has_role('provider_admin') or request.user.has_role('employee')
+                if _user_is_booking_employee(request.user, booking) or _user_can_manage_booking_provider_side(request.user, booking)
                 else CANCELLED_BY_CLIENT
             )
             serializer = BookingCancellationActionSerializer(
@@ -1008,6 +1157,11 @@ class CompleteBookingAPIView(APIView):
                 scope_bookings_for_user(Booking.objects.all(), request.user)
             )
             booking = booking_queryset.get(id=booking_id)
+            if not (_user_is_booking_employee(request.user, booking) or _user_can_manage_booking_provider_side(request.user, booking)):
+                return Response(
+                    {'error': _('Only provider staff can complete bookings')},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             BookingCompletionService.complete_booking(booking, request.user)
             refreshed_booking = with_booking_detail_related(
                 scope_bookings_for_user(Booking.objects.all(), request.user)
@@ -1017,6 +1171,65 @@ class CompleteBookingAPIView(APIView):
             return Response({'error': _('Booking not found')}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class BookingVisitProtocolPrintAPIView(APIView):
+    """Printable HTML for regular booking visit protocol."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, booking_id):
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        booking = self._get_booking(request.user, booking_id)
+        if booking is None:
+            return Response({'error': _('Booking not found')}, status=status.HTTP_404_NOT_FOUND)
+        if booking.visit_record is None:
+            return Response(
+                {
+                    'code': 'visit_record_document_unavailable',
+                    'message': _('Visit protocol is not available for this booking.'),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            return ProtocolDocumentService.render_booking_print_response(booking)
+        except BookingDomainError as exc:
+            return Response(exc.to_dict(), status=exc.status_code)
+
+    @staticmethod
+    def _get_booking(user, booking_id):
+        try:
+            return with_booking_detail_related(
+                scope_bookings_for_user(Booking.objects.all(), user)
+            ).get(id=booking_id)
+        except Booking.DoesNotExist:
+            return None
+
+
+class BookingVisitProtocolPdfAPIView(APIView):
+    """Localized PDF for regular booking visit protocol."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, booking_id):
+        if getattr(self, 'swagger_fake_view', False):
+            return Response({})
+        booking = BookingVisitProtocolPrintAPIView._get_booking(request.user, booking_id)
+        if booking is None:
+            return Response({'error': _('Booking not found')}, status=status.HTTP_404_NOT_FOUND)
+        if booking.visit_record is None:
+            return Response(
+                {
+                    'code': 'visit_record_document_unavailable',
+                    'message': _('Visit protocol is not available for this booking.'),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            return ProtocolDocumentService.render_booking_pdf_response(booking)
+        except BookingDomainError as exc:
+            return Response(exc.to_dict(), status=exc.status_code)
 
 
 class MarkNoShowAPIView(APIView):
@@ -1032,7 +1245,7 @@ class MarkNoShowAPIView(APIView):
                 scope_bookings_for_user(Booking.objects.all(), request.user)
             )
             booking = booking_queryset.get(id=booking_id)
-            if not (request.user.has_role('provider_admin') or request.user.has_role('employee')):
+            if not (_user_is_booking_employee(request.user, booking) or _user_can_manage_booking_provider_side(request.user, booking)):
                 return Response(
                     {'error': _('Only provider staff can record no-shows')},
                     status=status.HTTP_403_FORBIDDEN,

@@ -49,6 +49,7 @@ from .constants import (
     CANCELLATION_REASON_DUPLICATE_BOOKING,
     CANCELLATION_REASON_NO_LONGER_NEEDED,
     CANCELLATION_REASON_OTHER,
+    CANCELLATION_REASON_PROVIDER_EMERGENCY_PREEMPTION,
     CANCELLATION_REASON_PROVIDER_PROBLEM,
     CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
     CANCELLATION_REASON_SERVICE_NOT_POSSIBLE,
@@ -63,6 +64,7 @@ from .constants import (
     RESOLUTION_ACTOR_CHOICES,
     REPORTED_BY_CLIENT,
 )
+from .manual_notes import extract_manual_booking_metadata, strip_manual_booking_metadata
 
 User = get_user_model()
 
@@ -183,10 +185,11 @@ class BookingCancellationReason(models.Model):
         defaults = [
             (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_CLIENT_NO_SHOW, _('Client did not arrive'), 10),
             (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_PROVIDER_UNAVAILABLE, _('Provider unavailable'), 20),
-            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_SERVICE_NOT_POSSIBLE, _('Service could not be delivered'), 30),
-            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_DUPLICATE_BOOKING, _('Duplicate booking'), 40),
-            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_TECHNICAL_ISSUE, _('Technical issue'), 50),
-            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_OTHER, _('Other'), 60),
+            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_PROVIDER_EMERGENCY_PREEMPTION, _('Provider emergency preemption'), 30),
+            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_SERVICE_NOT_POSSIBLE, _('Service could not be delivered'), 40),
+            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_DUPLICATE_BOOKING, _('Duplicate booking'), 50),
+            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_TECHNICAL_ISSUE, _('Technical issue'), 60),
+            (CANCELLED_BY_PROVIDER, CANCELLATION_REASON_OTHER, _('Other'), 70),
             (CANCELLED_BY_CLIENT, CANCELLATION_REASON_CHANGED_MIND, _('Changed mind'), 10),
             (CANCELLED_BY_CLIENT, CANCELLATION_REASON_WRONG_TIME, _('Wrong time'), 20),
             (CANCELLED_BY_CLIENT, CANCELLATION_REASON_NO_LONGER_NEEDED, _('No longer needed'), 30),
@@ -285,6 +288,12 @@ class Booking(models.Model):
     """
     Модель бронирования.
     """
+    class BookingSource(models.TextChoices):
+        """Источник создания бронирования для аналитики и manual flow."""
+
+        BOOKING_SERVICE = 'booking_service', _('Booking service')
+        MANUAL_ENTRY = 'manual_entry', _('Manual entry')
+
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -357,6 +366,13 @@ class Booking(models.Model):
         _('Occupied Duration Minutes'),
         default=0,
         help_text=_('Immutable occupied duration snapshot stored at booking creation time')
+    )
+    source = models.CharField(
+        _('Source'),
+        max_length=32,
+        choices=BookingSource.choices,
+        default=BookingSource.BOOKING_SERVICE,
+        help_text=_('How the booking was created')
     )
     notes = models.TextField(_('Notes'), blank=True)
     price = models.DecimalField(
@@ -642,6 +658,22 @@ class Booking(models.Model):
             reason_code=cancellation_reason,
             client_attendance=client_attendance,
         )
+        if cancellation_reason.code == CANCELLATION_REASON_PROVIDER_EMERGENCY_PREEMPTION:
+            from notifications.models import Notification
+
+            Notification.objects.create(
+                user=self.user,
+                pet=self.pet,
+                notification_type='cancellation',
+                title=_('Booking cancelled due to emergency'),
+                message=_('Your booking was cancelled because the provider had to free the slot for an emergency case.'),
+                priority='high',
+                channel='all',
+                data={
+                    'booking_id': self.id,
+                    'reason_code': cancellation_reason.code,
+                },
+            )
         self._free_time_slot()
     
     def _free_time_slot(self):
@@ -649,6 +681,21 @@ class Booking(models.Model):
         # При новом подходе слоты рассчитываются на лету
         # Дополнительных действий не требуется
         pass
+
+    def get_manual_entry_metadata(self):
+        """Возвращает служебную metadata ручного бронирования из notes."""
+        return extract_manual_booking_metadata(self.notes)
+
+    @property
+    def display_notes(self):
+        """Возвращает notes без служебной metadata ручного бронирования."""
+        return strip_manual_booking_metadata(self.notes)
+
+    @property
+    def is_manual_guest_booking(self):
+        """Показывает, что бронирование создано в гостевом ручном режиме."""
+        metadata = self.get_manual_entry_metadata() or {}
+        return self.source == self.BookingSource.MANUAL_ENTRY and bool(metadata.get('is_guest'))
 
     @property
     def is_cancelled(self):
@@ -948,6 +995,12 @@ class BookingAutoCompleteSettings(models.Model):
         verbose_name=_("Service Start Time"),
         help_text=_("When to start the auto-completion service")
     )
+
+    manual_booking_emergency_window_hours = models.PositiveIntegerField(
+        default=4,
+        verbose_name=_("Manual Booking Emergency Window (hours)"),
+        help_text=_("Emergency manual booking is allowed only from now until now plus this number of hours."),
+    )
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -969,6 +1022,7 @@ class BookingAutoCompleteSettings(models.Model):
                 'auto_complete_days': 7,
                 'service_periodicity_hours': 24,
                 'service_start_time': time(3, 0),
+                'manual_booking_emergency_window_hours': 4,
             }
         )
         return settings
@@ -1054,3 +1108,6 @@ class BookingServiceIssue(models.Model):
 
     def __str__(self):
         return f"Issue {self.id} for Booking {self.booking.code}"
+
+
+from .manual_v2_models import ManualBooking, ManualVisitProtocol, ProviderClientLead  # noqa: E402,F401

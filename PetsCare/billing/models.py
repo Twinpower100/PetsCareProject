@@ -17,12 +17,20 @@ from catalog.models import Service
 from users.models import User
 from booking.models import Booking
 from django.utils import timezone
-from decimal import Decimal
-from datetime import date, timedelta
+from decimal import Decimal, ROUND_HALF_UP
+from datetime import date, time, timedelta
 from dateutil.relativedelta import relativedelta
-from django.core.validators import RegexValidator
+from django.core.validators import RegexValidator, MinValueValidator, MaxValueValidator
 from django.core.exceptions import ValidationError
 import django_countries.fields
+
+
+MONEY_QUANTIZER = Decimal('0.01')
+
+
+def quantize_money(amount):
+    """Округляет денежные значения по банковскому правилу для счетов."""
+    return Decimal(amount).quantize(MONEY_QUANTIZER, rounding=ROUND_HALF_UP)
 
 
 class Currency(models.Model):
@@ -161,6 +169,135 @@ class VATRate(models.Model):
             return None
 
 
+class PlatformCompanyCountry(models.Model):
+    """
+    Справочник стран, доступных для реквизитов платформы.
+
+    Выделен в отдельную модель, чтобы PlatformCompany могла хранить
+    явную M2M-связь с наборами стран.
+    """
+    country = django_countries.fields.CountryField(
+        verbose_name=_('Country'),
+        unique=True,
+        help_text=_('Country code (ISO 3166-1 alpha-2)')
+    )
+
+    class Meta:
+        verbose_name = _('Platform Company Country')
+        verbose_name_plural = _('Platform Company Countries')
+        ordering = ['country']
+
+    def __str__(self):
+        return str(self.country)
+
+
+class PlatformCompany(models.Model):
+    """
+    Реквизиты юридического лица платформы для выставления счетов.
+
+    Модель позволяет хранить разные компании платформы для разных
+    стран и использовать их при генерации инвойсов.
+    """
+    name = models.CharField(
+        _('Name'),
+        max_length=255,
+        help_text=_('Legal entity name used in invoices')
+    )
+    address = models.TextField(
+        _('Address'),
+        help_text=_('Registered legal address used in invoices')
+    )
+    tax_id = models.CharField(
+        _('Tax ID'),
+        max_length=128,
+        help_text=_('Tax identification number of the platform company')
+    )
+    iban = models.CharField(
+        _('IBAN'),
+        max_length=34,
+        blank=True,
+        help_text=_('IBAN for incoming invoice payments')
+    )
+    bic = models.CharField(
+        _('BIC'),
+        max_length=32,
+        blank=True,
+        help_text=_('BIC or local bank identifier')
+    )
+    swift = models.CharField(
+        _('SWIFT'),
+        max_length=32,
+        blank=True,
+        help_text=_('SWIFT code of the bank')
+    )
+    bank_name = models.CharField(
+        _('Bank Name'),
+        max_length=255,
+        blank=True,
+        help_text=_('Bank name used in invoices')
+    )
+    countries = models.ManyToManyField(
+        PlatformCompanyCountry,
+        blank=True,
+        related_name='platform_companies',
+        verbose_name=_('Countries'),
+        help_text=_('Countries served by this platform legal entity')
+    )
+    seal_scan = models.ImageField(
+        _('Seal Scan'),
+        upload_to='billing/platform_companies/seals/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        help_text=_('Optional scan of the company seal')
+    )
+    signature_scan = models.ImageField(
+        _('Signature Scan'),
+        upload_to='billing/platform_companies/signatures/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        help_text=_('Optional scan of the company signature')
+    )
+    is_active = models.BooleanField(
+        _('Is Active'),
+        default=True,
+        help_text=_('Whether this company can be used for new invoices')
+    )
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Platform Company')
+        verbose_name_plural = _('Platform Companies')
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+    @classmethod
+    def resolve_for_provider(cls, provider):
+        """
+        Подбирает реквизиты платформы для провайдера по стране.
+
+        Возвращает первую активную запись по стране провайдера,
+        а если совпадение не найдено, использует любую активную
+        запись как глобальный fallback.
+        """
+        active_companies = cls.objects.filter(is_active=True).prefetch_related('countries')
+        provider_country = None
+
+        if provider and getattr(provider, 'country', None):
+            provider_country = getattr(provider.country, 'code', str(provider.country))
+
+        if provider_country:
+            matched_company = active_companies.filter(
+                countries__country=provider_country
+            ).distinct().first()
+            if matched_company is not None:
+                return matched_company
+
+        return active_companies.first()
+
+
 # Модели Contract, ContractType, ContractCommission, ContractDiscount, ContractApprovalHistory удалены
 # Используется LegalDocument и DocumentAcceptance из приложения legal
 
@@ -191,11 +328,31 @@ class Payment(models.Model):
         ('cash', _('Cash')),
     ]
 
+    provider = models.ForeignKey(
+        Provider,
+        on_delete=models.CASCADE,
+        related_name='billing_payments',
+        verbose_name=_('Provider'),
+        null=True,
+        blank=True,
+        help_text=_('Provider for whom the payment was received')
+    )
     booking = models.ForeignKey(
         Booking,
         on_delete=models.CASCADE,
         related_name='payments',
-        verbose_name=_('Booking')
+        verbose_name=_('Booking'),
+        null=True,
+        blank=True
+    )
+    invoice = models.ForeignKey(
+        'Invoice',
+        on_delete=models.SET_NULL,
+        related_name='payments',
+        verbose_name=_('Invoice'),
+        null=True,
+        blank=True,
+        help_text=_('Specific invoice to apply this payment to')
     )
     amount = models.DecimalField(
         max_digits=10,
@@ -219,6 +376,17 @@ class Payment(models.Model):
         null=True,
         verbose_name=_('Transaction ID')
     )
+    notes = models.TextField(
+        _('Notes'),
+        blank=True,
+        help_text=_('Internal notes for reconciliation')
+    )
+    applied_at = models.DateTimeField(
+        _('Applied At'),
+        null=True,
+        blank=True,
+        help_text=_('When the payment was applied to invoices')
+    )
     created_at = models.DateTimeField(
         auto_now_add=True,
         verbose_name=_('Created At')
@@ -234,7 +402,37 @@ class Payment(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        return f"{self.booking} - {self.amount}"
+        subject = self.invoice or self.booking or self.provider
+        return f"{subject} - {self.amount}"
+
+    def save(self, *args, **kwargs):
+        """
+        Сохраняет платеж и, при необходимости, запускает проводку по счетам.
+        """
+        previous_status = None
+        if self.pk:
+            previous_status = (
+                Payment.objects.filter(pk=self.pk)
+                .values_list('status', flat=True)
+                .first()
+            )
+
+        if self.invoice_id and self.provider_id is None:
+            self.provider = self.invoice.provider
+        elif self.booking_id and self.provider_id is None:
+            self.provider = self.booking.provider or getattr(self.booking.provider_location, 'provider', None)
+
+        super().save(*args, **kwargs)
+
+        should_apply_payment = (
+            self.status == 'completed' and
+            self.applied_at is None and
+            (previous_status != 'completed')
+        )
+        if should_apply_payment:
+            from billing.payment_services import PaymentAllocationService
+
+            PaymentAllocationService().apply_payment(self)
 
 
 def get_default_currency():
@@ -261,6 +459,7 @@ class Invoice(models.Model):
     STATUS_CHOICES = [
         ('draft', _('Draft')),
         ('sent', _('Sent')),
+        ('partially_paid', _('Partially Paid')),
         ('paid', _('Paid')),
         ('overdue', _('Overdue')),
         ('cancelled', _('Cancelled')),
@@ -277,6 +476,15 @@ class Invoice(models.Model):
         related_name='invoices',
         verbose_name=_('Provider'),
         null=True
+    )
+    platform_company = models.ForeignKey(
+        'PlatformCompany',
+        on_delete=models.SET_NULL,
+        related_name='invoices',
+        verbose_name=_('Platform Company'),
+        null=True,
+        blank=True,
+        help_text=_('Platform legal entity used for this invoice')
     )
     start_date = models.DateField(_('Start Date'), null=True)
     end_date = models.DateField(_('End Date'), null=True)
@@ -297,6 +505,13 @@ class Invoice(models.Model):
         default='draft',
         verbose_name=_('Status')
     )
+    pdf_file = models.FileField(
+        _('PDF File'),
+        upload_to='billing/invoices/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        help_text=_('Generated PDF invoice file')
+    )
     issued_at = models.DateTimeField(_('Issued At'), default=timezone.now)
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
@@ -310,20 +525,147 @@ class Invoice(models.Model):
         return f"{self.number} - {self.provider} ({self.start_date} - {self.end_date})"
 
     def save(self, *args, **kwargs):
+        synchronize_payment_history = kwargs.pop('synchronize_payment_history', True)
+        refresh_amount = kwargs.pop('refresh_amount', False)
+
         if not self.number:
             # Генерация номера: IN-ГОД-МЕСЯЦ-ID
             from django.conf import settings
             if settings.configured:
+                # Более надежный способ генерации номера
+                import time
+                timestamp = int(time.time() % 100000)
                 last_id = Invoice.objects.all().order_by('-id').first()
                 next_id = (last_id.id + 1) if last_id else 1
+                self.number = f"IN-{timezone.now().year}-{timezone.now().month:02d}-{next_id}-{timestamp}"
             else:
-                next_id = 1  # Дефолтное значение при инициализации
-            self.number = f"IN-{timezone.now().year}-{timezone.now().month:02d}-{next_id}"
+                next_id = 1
+                self.number = f"IN-{timezone.now().year}-{timezone.now().month:02d}-{next_id}"
+
+        if refresh_amount and self.pk:
+            self.amount = self.calculate_amount()
+
         super().save(*args, **kwargs)
 
+        if synchronize_payment_history and self.status in ['sent', 'partially_paid', 'paid', 'overdue']:
+            self.sync_payment_history()
+
     def calculate_amount(self):
-        # Сумма по всем строкам инвойса
-        return sum(line.amount for line in self.lines.all())
+        """Возвращает сумму счета по строкам с детерминированным округлением."""
+        return quantize_money(
+            sum(
+                (line.total_with_vat for line in self.lines.all()),
+                Decimal('0.00'),
+            )
+        )
+
+    @property
+    def payment_record(self):
+        """Возвращает связанную запись истории платежа, если она существует."""
+        return self.payment_history.order_by('-created_at').first()
+
+    @property
+    def outstanding_amount(self):
+        """Возвращает текущий остаток к оплате по счету."""
+        payment_record = self.payment_record
+        if not payment_record:
+            return self.amount
+        return payment_record.outstanding_amount
+
+    def _get_default_due_date(self):
+        """Рассчитывает дедлайн оплаты на основе правил провайдера."""
+        if self.end_date and self.provider:
+            return self.end_date + timezone.timedelta(days=self.provider._get_payment_deferral_days())
+        return self.issued_at.date() + timezone.timedelta(days=7)
+
+    def sync_payment_history(self):
+        """Синхронизирует счет со связанной записью истории платежей."""
+        from billing.models import PaymentHistory
+
+        payment_history, _ = PaymentHistory.objects.get_or_create(
+            invoice=self,
+            defaults={
+                'provider': self.provider,
+                'amount': self.amount,
+                'currency': self.currency,
+                'due_date': self._get_default_due_date(),
+                'description': f"Invoice {self.number}",
+            },
+        )
+
+        payment_history.provider = self.provider
+        payment_history.amount = self.amount
+        payment_history.currency = self.currency
+        payment_history.due_date = payment_history.due_date or self._get_default_due_date()
+        payment_history.description = payment_history.description or f"Invoice {self.number}"
+
+        if self.status == 'paid' and payment_history.paid_amount < self.amount:
+            payment_history.paid_amount = self.amount
+        elif self.status == 'sent' and payment_history.paid_amount == Decimal('0.00'):
+            payment_history.payment_date = None
+
+        payment_history.save(synchronize_invoice=False)
+
+    def refresh_status_from_payment_history(self):
+        """Пересчитывает статус счета из фактического состояния платежа."""
+        payment_history = self.payment_record
+        if payment_history is None:
+            return
+
+        if payment_history.outstanding_amount <= Decimal('0.00') and payment_history.paid_amount > Decimal('0.00'):
+            next_status = 'paid'
+        elif payment_history.paid_amount > Decimal('0.00'):
+            next_status = 'partially_paid'
+        elif payment_history.due_date < timezone.now().date():
+            next_status = 'overdue'
+        else:
+            next_status = 'sent'
+
+        if self.status != next_status:
+            self.status = next_status
+            self.save(
+                update_fields=['status', 'updated_at'],
+                synchronize_payment_history=False,
+            )
+
+    def apply_payment(self, amount, payment_date=None):
+        """
+        Применяет платеж к конкретному счету и возвращает фактически учтенную сумму.
+        """
+        amount = quantize_money(amount)
+        if amount <= Decimal('0.00'):
+            raise ValidationError(_('Payment amount must be greater than zero'))
+        if self.status in ['draft', 'cancelled']:
+            raise ValidationError(_('Payments cannot be applied to draft or cancelled invoices'))
+
+        payment_history = self.payment_record
+        if payment_history is None:
+            self.sync_payment_history()
+            payment_history = self.payment_record
+
+        if payment_history is None:
+            raise ValidationError(_('Invoice payment record is not available'))
+
+        collectable_amount = min(payment_history.outstanding_amount, amount)
+        if collectable_amount <= Decimal('0.00'):
+            return Decimal('0.00')
+
+        payment_history.apply_payment(collectable_amount, payment_date=payment_date)
+        self.refresh_from_db(fields=['status', 'updated_at'])
+        return collectable_amount
+
+    def ensure_pdf_file(self, force=False):
+        """
+        Генерирует PDF счета при отсутствии файла или по запросу force.
+        """
+        if self.pdf_file and not force:
+            return self.pdf_file
+
+        from billing.invoice_services import InvoicePdfService
+
+        InvoicePdfService().generate_pdf(self, force=force)
+        self.refresh_from_db(fields=['pdf_file', 'updated_at'])
+        return self.pdf_file
 
 
 class InvoiceLine(models.Model):
@@ -388,9 +730,56 @@ class InvoiceLine(models.Model):
         verbose_name = _('Invoice Line')
         verbose_name_plural = _('Invoice Lines')
         ordering = ['invoice', 'booking']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['booking'],
+                name='billing_invoice_line_unique_booking'
+            )
+        ]
 
     def __str__(self):
         return f"{self.invoice.number} - {self.booking}"
+
+    def save(self, *args, **kwargs):
+        # Рассчитываем или нормализуем комиссию и НДС с учетом округления.
+        if self.amount is not None:
+            if self.commission in [None, Decimal('0.00')] and self.rate:
+                self.commission = quantize_money(self.amount * (self.rate / Decimal('100')))
+            else:
+                self.commission = quantize_money(self.commission or Decimal('0.00'))
+
+            provider = self.invoice.provider if self.invoice_id else None
+            if provider and provider.is_vat_payer:
+                self.vat_rate = None
+                self.vat_amount = Decimal('0.00')
+            elif self.vat_rate and Decimal(self.vat_rate) > Decimal('0.00'):
+                if self.vat_amount in [None, Decimal('0.00')]:
+                    self.vat_amount = quantize_money(self.commission * (self.vat_rate / Decimal('100')))
+                else:
+                    self.vat_amount = quantize_money(self.vat_amount)
+            else:
+                self.vat_rate = None
+                self.vat_amount = Decimal('0.00')
+            self.total_with_vat = quantize_money(self.commission + self.vat_amount)
+        super().save(*args, **kwargs)
+
+        if self.invoice_id:
+            self.invoice.save(
+                update_fields=['amount', 'updated_at'],
+                refresh_amount=True,
+                synchronize_payment_history=True,
+            )
+
+    def delete(self, *args, **kwargs):
+        invoice = self.invoice if self.invoice_id else None
+        super().delete(*args, **kwargs)
+
+        if invoice is not None:
+            invoice.save(
+                update_fields=['amount', 'updated_at'],
+                refresh_amount=True,
+                synchronize_payment_history=True,
+            )
 
 
 class Refund(models.Model):
@@ -462,6 +851,7 @@ class PaymentHistory(models.Model):
     """
     STATUS_CHOICES = [
         ('pending', _('Pending')),
+        ('partially_paid', _('Partially Paid')),
         ('paid', _('Paid')),
         ('overdue', _('Overdue')),
     ]
@@ -498,6 +888,18 @@ class PaymentHistory(models.Model):
         _('Amount'),
         max_digits=10,
         decimal_places=2
+    )
+    paid_amount = models.DecimalField(
+        _('Paid Amount'),
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00')
+    )
+    refunded_amount = models.DecimalField(
+        _('Refunded Amount'),
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00')
     )
     due_date = models.DateField(_('Due Date'))
     payment_date = models.DateField(
@@ -542,12 +944,16 @@ class PaymentHistory(models.Model):
             return f"{self.provider.name} - {self.amount} {self.currency.code}"
 
     def save(self, *args, **kwargs):
-        """Обновляет статус при сохранении"""
-        if self.payment_date:
-            self.status = 'paid'
-        elif self.due_date < timezone.now().date():
-            self.status = 'overdue'
+        """Обновляет статус при сохранении и синхронизирует связанный счет."""
+        synchronize_invoice = kwargs.pop('synchronize_invoice', True)
+
+        self.paid_amount = quantize_money(self.paid_amount)
+        self.refunded_amount = quantize_money(self.refunded_amount)
+        self.sync_status_from_amounts()
         super().save(*args, **kwargs)
+
+        if synchronize_invoice and self.invoice_id:
+            self.invoice.refresh_status_from_payment_history()
 
     @classmethod
     def update_overdue_status(cls):
@@ -565,7 +971,62 @@ class PaymentHistory(models.Model):
         if not payment_date:
             payment_date = timezone.now().date()
         self.payment_date = payment_date
-        self.status = 'paid'
+        self.paid_amount = self.amount
+        self.save()
+
+    @property
+    def outstanding_amount(self):
+        """Возвращает остаток задолженности с учетом оплат и возвратов."""
+        return max(
+            quantize_money(self.amount - self.paid_amount + self.refunded_amount),
+            Decimal('0.00'),
+        )
+
+    def sync_status_from_amounts(self):
+        """Рассчитывает статус по сумме счета, оплатам и возвратам."""
+        today = timezone.now().date()
+
+        if self.refunded_amount > self.paid_amount:
+            raise ValidationError(_('Refund amount cannot exceed paid amount'))
+
+        if self.outstanding_amount <= Decimal('0.00') and self.paid_amount > Decimal('0.00'):
+            self.status = 'paid'
+            self.payment_date = self.payment_date or today
+            return
+
+        if self.paid_amount > Decimal('0.00'):
+            self.status = 'partially_paid'
+            return
+
+        self.payment_date = None
+        if self.due_date < today:
+            self.status = 'overdue'
+        else:
+            self.status = 'pending'
+
+    def apply_payment(self, amount, payment_date=None):
+        """Применяет частичную или полную оплату по счету."""
+        amount = quantize_money(amount)
+        if amount <= Decimal('0.00'):
+            raise ValidationError(_('Payment amount must be greater than zero'))
+
+        max_collectible_amount = quantize_money(self.amount + self.refunded_amount)
+        self.paid_amount = min(
+            quantize_money(self.paid_amount + amount),
+            max_collectible_amount,
+        )
+        self.payment_date = payment_date or timezone.now().date()
+        self.save()
+
+    def apply_refund(self, amount):
+        """Применяет возврат к уже проведенной оплате."""
+        amount = quantize_money(amount)
+        if amount <= Decimal('0.00'):
+            raise ValidationError(_('Refund amount must be greater than zero'))
+        if amount > self.paid_amount - self.refunded_amount:
+            raise ValidationError(_('Refund amount cannot exceed paid amount'))
+
+        self.refunded_amount = quantize_money(self.refunded_amount + amount)
         self.save()
 
     def convert_to_currency(self, target_currency):
@@ -1004,28 +1465,28 @@ class OverdueThresholdSettings(models.Model):
         _('Warning Amount'),
         max_digits=12,
         decimal_places=2,
-        default=1000.00,
+        default=Decimal('1000.00'),
         help_text=_('Amount threshold for warning notification')
     )
     critical_amount = models.DecimalField(
         _('Critical Amount'),
         max_digits=12,
         decimal_places=2,
-        default=5000.00,
+        default=Decimal('5000.00'),
         help_text=_('Amount threshold for critical notification')
     )
     suspension_amount = models.DecimalField(
         _('Suspension Amount'),
         max_digits=12,
         decimal_places=2,
-        default=10000.00,
+        default=Decimal('10000.00'),
         help_text=_('Amount threshold for service suspension')
     )
     termination_amount = models.DecimalField(
         _('Termination Amount'),
         max_digits=12,
         decimal_places=2,
-        default=20000.00,
+        default=Decimal('20000.00'),
         help_text=_('Amount threshold for contract termination')
     )
     
@@ -1241,6 +1702,12 @@ class ProviderBlocking(models.Model):
         choices=STATUS_CHOICES,
         default='active'
     )
+    blocking_level = models.PositiveSmallIntegerField(
+        _('Blocking Level'),
+        default=1,
+        validators=[MinValueValidator(1), MaxValueValidator(3)],
+        help_text=_('Blocking level from 1 (warning) to 3 (full block)')
+    )
     
     # Данные о задолженности на момент блокировки
     debt_amount = models.DecimalField(
@@ -1294,7 +1761,10 @@ class ProviderBlocking(models.Model):
         ]
 
     def __str__(self):
-        return f"{self.provider.name} - {self.get_status_display()} ({self.blocked_at.strftime('%Y-%m-%d %H:%M')})"
+        return (
+            f"{self.provider.name} - L{self.blocking_level} "
+            f"{self.get_status_display()} ({self.blocked_at.strftime('%Y-%m-%d %H:%M')})"
+        )
 
     def resolve(self, resolved_by=None, notes=''):
         """Разблокирует учреждение"""
@@ -1749,7 +2219,7 @@ class BlockingSystemSettings(models.Model):
     )
     check_time = models.TimeField(
         _('Check Time'),
-        default='02:00',
+        default=time(2, 0),
         help_text=_('Time of day to perform checks (HH:MM format)')
     )
     
@@ -2002,7 +2472,7 @@ class BlockingSchedule(models.Model):
     )
     time = models.TimeField(
         _('Time'),
-        default='02:00',
+        default=time(2, 0),
         help_text=_('Time of day to perform checks (HH:MM format)')
     )
     days_of_week = models.JSONField(
@@ -2106,27 +2576,28 @@ class BlockingSchedule(models.Model):
                     break
             else:
                 # Следующая неделя
-                days_ahead = 7 - current_weekday + min(self.days_of_week)
+                days_ahead = 7 - current_weekday + min(self.days_of_week or [0])
                 next_date = now.date() + timedelta(days=days_ahead)
                 self.next_run = timezone.make_aware(
                     timezone.datetime.combine(next_date, self.time)
                 )
         elif self.frequency == 'monthly':
             # Следующий месяц в указанный день
-            if now.day >= self.day_of_month:
+            dom = self.day_of_month or 1
+            if now.day >= dom:
                 # Следующий месяц
                 if now.month == 12:
-                    next_date = now.replace(year=now.year + 1, month=1, day=self.day_of_month)
+                    next_date = now.replace(year=now.year + 1, month=1, day=dom)
                 else:
-                    next_date = now.replace(month=now.month + 1, day=self.day_of_month)
+                    next_date = now.replace(month=now.month + 1, day=dom)
             else:
                 # Текущий месяц
-                next_date = now.replace(day=self.day_of_month)
+                next_date = now.replace(day=dom)
             self.next_run = timezone.make_aware(
                 timezone.datetime.combine(next_date.date(), self.time)
             )
         elif self.frequency == 'custom':
-            self.next_run = now + timedelta(hours=self.custom_interval_hours)
+            self.next_run = now + timedelta(hours=self.custom_interval_hours or 24)
         
         if self.pk:  # Только для существующих записей
             self.save(update_fields=['next_run'])
@@ -2154,7 +2625,7 @@ class BlockingSchedule(models.Model):
         elif self.frequency == 'monthly':
             return {'schedule': 2592000.0}  # 30 дней
         elif self.frequency == 'custom':
-            return {'schedule': self.custom_interval_hours * 3600.0}
+            return {'schedule': (self.custom_interval_hours or 24) * 3600.0}
         return {'schedule': 86400.0}  # По умолчанию ежедневно
 
 
@@ -2227,3 +2698,12 @@ class BillingConfig(models.Model):
 # УДАЛЕНО: ProviderSpecialTerms и SideLetter
 # Модели удалены - используйте LegalDocument с типом side_letter в приложении legal
 # Все функциональность (финансовые условия, modified_clauses, document_file) перенесена в LegalDocument
+
+class BillingReport(models.Model):
+    """
+    Dummy model for registering Billing Reports dashboard in the Django Admin.
+    """
+    class Meta:
+        managed = False
+        verbose_name = _('Billing Reports')
+        verbose_name_plural = _('Billing Reports')

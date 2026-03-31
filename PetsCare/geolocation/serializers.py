@@ -220,7 +220,8 @@ class AddressReverseGeocodeSerializer(serializers.Serializer):
         """
         lat = attrs.get('latitude')
         lon = attrs.get('longitude')
-        
+        if lat is None or lon is None:
+            raise serializers.ValidationError(_("Latitude and longitude are required"))
         if lat < -90 or lat > 90:
             raise serializers.ValidationError(_("Latitude must be between -90 and 90"))
         

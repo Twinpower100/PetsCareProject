@@ -1,357 +1,257 @@
-from django.http import JsonResponse
-from django.utils.deprecation import MiddlewareMixin
-from django.utils.translation import gettext as _
-from .models import ProviderBlocking, BlockingSystemSettings
-from providers.models import Provider
+"""Middleware для реакции API на уровни billing-блокировки провайдера."""
+
 import json
 import logging
-from django.conf import settings
+
+from django.http import JsonResponse
+from django.shortcuts import render
 from django.utils import timezone
+from django.utils.deprecation import MiddlewareMixin
+from django.utils.translation import gettext as _
+
+from providers.models import EmployeeProvider, Provider
+
+from .models import BlockingSystemSettings
+from .services import MultiLevelBlockingService
 
 logger = logging.getLogger(__name__)
 
 
 class ProviderBlockingMiddleware(MiddlewareMixin):
     """
-    Middleware для автоматической блокировки учреждений.
-    
-    Особенности:
-    - Проверка блокировок при каждом запросе
-    - Учет настроек системы блокировки
-    - Поддержка исключений из автоматических проверок
-    - Кэширование результатов проверок
-    - Логирование действий
+    Проверяет провайдера на текущую billing-блокировку и корректирует ответ.
+
+    Поведение:
+    - уровень 1: запрос проходит, но добавляется warning-header,
+    - уровень 2: для поисковых GET-запросов возвращается 451, для остальных 403,
+    - уровень 3: всегда 403.
     """
-    
+
     def __init__(self, get_response=None):
         super().__init__(get_response)
         self.settings = None
+        self.blocking_service = MultiLevelBlockingService()
         self._load_settings()
-    
+
     def _load_settings(self):
         """Загружает настройки системы блокировки."""
         try:
             self.settings = BlockingSystemSettings.get_settings()
-        except Exception as e:
-            logger.warning(f"Could not load blocking settings: {e}")
+        except Exception as exc:
+            logger.warning("Could not load blocking settings: %s", exc)
             self.settings = None
-    
+
     def process_request(self, request):
-        """
-        Обрабатывает входящий запрос.
-        
-        Args:
-            request: HTTP запрос
-            
-        Returns:
-            HttpResponse или None
-        """
-        # Проверяем, включена ли система блокировки
+        """Проверяет запрос до передачи в view."""
         if not self.settings or not self.settings.is_system_enabled:
             return None
-        
-        # Получаем учреждение из запроса
+
         provider = self._get_provider_from_request(request)
-        if not provider:
+        if provider is None or provider.exclude_from_blocking_checks:
             return None
-        
-        # Проверяем, исключено ли учреждение из автоматических проверок
-        if provider.exclude_from_blocking_checks:
-            return None
-        
-        # Проверяем активные блокировки
+
         blocking_result = self._check_provider_blocking(provider)
-        
-        if blocking_result['is_blocked']:
-            return self._handle_blocked_provider(request, provider, blocking_result)
-        
-        return None
-    
+        if not blocking_result['is_blocked']:
+            return None
+
+        return self._handle_blocked_provider(request, provider, blocking_result)
+
     def _get_provider_from_request(self, request):
         """
-        Извлекает учреждение из запроса.
-        
-        Args:
-            request: HTTP запрос
-            
-        Returns:
-            Provider или None
+        Пытается извлечь провайдера из параметров запроса, URL или роли пользователя.
         """
-        try:
-            # Проверяем различные способы получения учреждения
-            provider_id = None
-            
-            # Из URL параметров
-            if 'provider_id' in request.GET:
-                provider_id = request.GET.get('provider_id')
-            elif 'provider' in request.GET:
-                provider_id = request.GET.get('provider')
-            
-            # Из POST данных
-            if not provider_id and request.method == 'POST':
-                if 'provider_id' in request.POST:
-                    provider_id = request.POST.get('provider_id')
-                elif 'provider' in request.POST:
-                    provider_id = request.POST.get('provider')
-            
-            # Из JSON данных
-            if not provider_id and request.content_type == 'application/json':
-                try:
-                    import json
-                    data = json.loads(request.body)
-                    provider_id = data.get('provider_id') or data.get('provider')
-                except (json.JSONDecodeError, AttributeError):
-                    pass
-            
-            # Из пути URL
-            if not provider_id:
-                path_parts = request.path.split('/')
-                for i, part in enumerate(path_parts):
-                    if part == 'providers' and i + 1 < len(path_parts):
-                        provider_id = path_parts[i + 1]
-                        break
-            
-            if provider_id:
-                from providers.models import Provider
+        provider_id = (
+            request.GET.get('provider_id')
+            or request.GET.get('provider')
+            or getattr(request, 'resolver_match', None) and request.resolver_match.kwargs.get('provider_id')
+            or getattr(request, 'resolver_match', None) and request.resolver_match.kwargs.get('pk')
+        )
+
+        if provider_id is None and request.method in {'POST', 'PUT', 'PATCH'}:
+            provider_id = request.POST.get('provider_id') or request.POST.get('provider')
+
+        if provider_id is None and request.content_type == 'application/json' and request.body:
+            try:
+                payload = json.loads(request.body)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                payload = {}
+            provider_id = payload.get('provider_id') or payload.get('provider')
+
+        if provider_id:
+            try:
                 return Provider.objects.get(id=provider_id, is_active=True)
-                
-        except (ValueError, Provider.DoesNotExist):
-            pass
-        except Exception as e:
-            logger.error(f"Error extracting provider from request: {e}")
-        
+            except (Provider.DoesNotExist, ValueError, TypeError):
+                return None
+
+        if request.user.is_authenticated:
+            managed_provider = request.user.get_managed_providers().order_by('id').first()
+            if managed_provider is not None:
+                return managed_provider
+
+            employee_provider = EmployeeProvider.get_active_ep_for_user_provider(
+                request.user,
+                Provider.objects.filter(is_active=True).order_by('id').first(),
+            )
+            if employee_provider is not None:
+                return employee_provider.provider
+
         return None
-    
+
     def _check_provider_blocking(self, provider):
         """
-        Проверяет блокировку учреждения.
-        
-        Args:
-            provider: Объект Provider
-            
-        Returns:
-            dict: Результат проверки
+        Возвращает нормализованный результат текущей blocking-оценки.
         """
-        try:
-            # Получаем активные блокировки
-            active_blockings = ProviderBlocking.objects.filter(
-                provider=provider,
-                status='active'
-            ).select_related('currency')
-            
-            if not active_blockings.exists():
-                return {
-                    'is_blocked': False,
-                    'blocking_level': 0,
-                    'reasons': []
-                }
-            
-            # Определяем максимальный уровень блокировки
-            max_level = 0
-            reasons = []
-            
-            for blocking in active_blockings:
-                # Определяем уровень блокировки на основе задолженности
-                if blocking.debt_amount > 0:
-                    if blocking.overdue_days >= 90:  # Критическая просрочка
-                        level = 3
-                    elif blocking.overdue_days >= 60:  # Высокая просрочка
-                        level = 2
-                    elif blocking.overdue_days >= 30:  # Предупреждение
-                        level = 1
-                    else:
-                        level = 0
-                    
-                    max_level = max(max_level, level)
-                    
-                    if level > 0:
-                        reasons.append(
-                            f"Debt: {blocking.debt_amount} {blocking.currency.code}, "
-                            f"Overdue: {blocking.overdue_days} days"
-                        )
-            
+        result = self.blocking_service.check_provider_blocking(provider)
+        if result['should_block']:
             return {
-                'is_blocked': max_level > 0,
-                'blocking_level': max_level,
-                'reasons': reasons,
-                'blockings': list(active_blockings)
+                'is_blocked': True,
+                'blocking_level': result['blocking_level'],
+                'reasons': result['reasons'],
+                'active_blocking': result.get('active_blocking'),
             }
-            
-        except Exception as e:
-            logger.error(f"Error checking provider blocking: {e}")
-            return {
-                'is_blocked': False,
-                'blocking_level': 0,
-                'reasons': [f"Error: {str(e)}"]
-            }
-    
+
+        return {
+            'is_blocked': False,
+            'blocking_level': 0,
+            'reasons': [],
+            'active_blocking': result.get('active_blocking'),
+        }
+
     def _handle_blocked_provider(self, request, provider, blocking_result):
         """
-        Обрабатывает запрос к заблокированному учреждению.
-        
-        Args:
-            request: HTTP запрос
-            provider: Объект Provider
-            blocking_result: Результат проверки блокировки
-            
-        Returns:
-            HttpResponse: Ответ с информацией о блокировке
+        Применяет HTTP-реакцию в зависимости от уровня блокировки.
         """
         blocking_level = blocking_result['blocking_level']
-        
-        # Логируем попытку доступа к заблокированному учреждению
+
         if self.settings and self.settings.log_all_checks:
             logger.warning(
-                f"Access attempt to blocked provider {provider.name} "
-                f"(level {blocking_level}) from {request.META.get('REMOTE_ADDR', 'unknown')}"
+                "Billing blocking rejected request for provider=%s level=%s path=%s",
+                provider.id,
+                blocking_level,
+                request.path,
             )
-        
-        # Определяем тип ответа в зависимости от уровня блокировки
-        if blocking_level >= 3:  # Полная блокировка
+
+        if blocking_level >= 3:
             return self._create_blocking_response(
-                request, provider, blocking_result, 
+                request,
+                provider,
+                blocking_result,
                 status_code=403,
-                message=_("Provider is completely blocked due to critical debt")
+                message=_("Provider is blocked due to critical billing debt"),
             )
-        elif blocking_level >= 2:  # Исключение из поиска
+
+        if blocking_level == 2:
+            status_code = 451 if self._is_search_request(request) else 403
+            message = (
+                _("Provider is hidden from search due to billing debt")
+                if status_code == 451
+                else _("Provider access is restricted due to billing debt")
+            )
             return self._create_blocking_response(
-                request, provider, blocking_result,
-                status_code=403,
-                message=_("Provider is excluded from search due to high debt")
+                request,
+                provider,
+                blocking_result,
+                status_code=status_code,
+                message=message,
             )
-        else:  # Уровень 1 - только предупреждение
-            # Для уровня 1 разрешаем доступ, но добавляем предупреждение
-            request.provider_blocking_warning = {
-                'provider': provider,
-                'level': blocking_level,
-                'reasons': blocking_result['reasons']
-            }
-            return None
-    
-    def _create_blocking_response(self, request, provider, blocking_result, status_code, message):
+
+        request.provider_blocking_warning = {
+            'provider': provider,
+            'level': blocking_level,
+            'reasons': blocking_result['reasons'],
+        }
+        return None
+
+    def _is_search_request(self, request) -> bool:
+        """Определяет публичный поисковый запрос, где нужен 451."""
+        return request.method == 'GET' and (
+            '/search/' in request.path
+            or request.path.endswith('/providers/search/')
+            or request.path.endswith('/providers/search/map/')
+        )
+
+    def _create_blocking_response(self, request, provider, blocking_result, *, status_code, message):
         """
-        Создает ответ о блокировке.
-        
-        Args:
-            request: HTTP запрос
-            provider: Объект Provider
-            blocking_result: Результат проверки блокировки
-            status_code: HTTP код ответа
-            message: Сообщение о блокировке
-            
-        Returns:
-            HttpResponse: Ответ с информацией о блокировке
+        Создает JSON или HTML ответ о блокировке.
         """
-        # Определяем формат ответа
+        payload = {
+            'error': 'provider_blocked',
+            'message': message,
+            'provider_id': provider.id,
+            'provider_name': provider.name,
+            'blocking_level': blocking_result['blocking_level'],
+            'reasons': blocking_result['reasons'],
+            'blocked_at': timezone.now().isoformat(),
+        }
+
         if request.headers.get('accept') == 'application/json' or request.path.startswith('/api/'):
-            # JSON ответ для API
-            response_data = {
-                'error': 'provider_blocked',
-                'message': message,
-                'provider_id': provider.id,
-                'provider_name': provider.name,
-                'blocking_level': blocking_result['blocking_level'],
-                'reasons': blocking_result['reasons'],
-                'blocked_at': timezone.now().isoformat()
-            }
-            
-            return JsonResponse(response_data, status=status_code)
-        else:
-            # HTML ответ для веб-интерфейса
-            from django.shortcuts import render
-            context = {
+            return JsonResponse(payload, status=status_code)
+
+        return render(
+            request,
+            'billing/provider_blocked.html',
+            {
                 'provider': provider,
                 'blocking_level': blocking_result['blocking_level'],
                 'reasons': blocking_result['reasons'],
-                'message': message
-            }
-            
-            return render(request, 'billing/provider_blocked.html', context, status=status_code)
-    
+                'message': message,
+            },
+            status=status_code,
+        )
+
     def process_response(self, request, response):
         """
-        Обрабатывает исходящий ответ.
-        
-        Args:
-            request: HTTP запрос
-            response: HTTP ответ
-            
-        Returns:
-            HttpResponse: Обработанный ответ
+        Добавляет warning-header и JSON warning для уровня 1.
         """
-        # Добавляем предупреждение о блокировке, если есть
-        if hasattr(request, 'provider_blocking_warning'):
-            warning = request.provider_blocking_warning
-            
-            # Добавляем заголовок с предупреждением
-            response['X-Provider-Blocking-Warning'] = f"Level {warning['level']}: {'; '.join(warning['reasons'])}"
-            
-            # Для JSON ответов добавляем предупреждение в тело
-            if response.headers.get('content-type', '').startswith('application/json'):
-                try:
-                    import json
-                    data = json.loads(response.content)
-                    data['blocking_warning'] = {
-                        'level': warning['level'],
-                        'reasons': warning['reasons'],
-                        'provider_name': warning['provider'].name
-                    }
-                    response.content = json.dumps(data, ensure_ascii=False)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    pass
-        
+        if not hasattr(request, 'provider_blocking_warning'):
+            return response
+
+        warning = request.provider_blocking_warning
+        response['X-Provider-Blocking-Warning'] = (
+            f"Level {warning['level']}: {'; '.join(warning['reasons'])}"
+        )
+
+        if response.headers.get('content-type', '').startswith('application/json'):
+            try:
+                data = json.loads(response.content.decode('utf-8'))
+            except (ValueError, UnicodeDecodeError, AttributeError):
+                return response
+
+            data['blocking_warning'] = {
+                'level': warning['level'],
+                'reasons': warning['reasons'],
+                'provider_name': warning['provider'].name,
+            }
+            response.content = json.dumps(data, ensure_ascii=False).encode('utf-8')
+
         return response
-    
+
     def process_exception(self, request, exception):
-        """
-        Обрабатывает исключения.
-        
-        Args:
-            request: HTTP запрос
-            exception: Исключение
-            
-        Returns:
-            HttpResponse или None
-        """
-        # Логируем исключения, связанные с блокировками
+        """Логирует исключения, связанные с blocking-логикой."""
         if 'provider' in str(exception).lower() or 'blocking' in str(exception).lower():
-            logger.error(f"Blocking-related exception: {exception}")
-        
+            logger.error("Blocking-related exception: %s", exception)
         return None
 
 
 class BlockingLoggingMiddleware(MiddlewareMixin):
-    """
-    Middleware для логирования действий блокировки.
-    
-    Особенности:
-    - Логирование всех попыток доступа к заблокированным учреждениям
-    - Сбор статистики блокировок
-    - Мониторинг производительности
-    """
-    
+    """Логирует длительность и факты отказа по billing-блокировкам."""
+
     def process_request(self, request):
-        """Обрабатывает входящий запрос для логирования."""
-        # Добавляем метку времени начала обработки
         request.blocking_start_time = timezone.now()
         return None
-    
+
     def process_response(self, request, response):
-        """Обрабатывает исходящий ответ для логирования."""
-        # Логируем информацию о блокировках
         if hasattr(request, 'blocking_start_time'):
             processing_time = (timezone.now() - request.blocking_start_time).total_seconds()
-            
-            # Логируем медленные запросы
-            if processing_time > 1.0:  # Более 1 секунды
-                logger.warning(f"Slow blocking check: {processing_time:.2f}s for {request.path}")
-            
-            # Логируем блокировки
-            if response.status_code in [403, 451]:  # Заблокированные запросы
+            if processing_time > 1.0:
+                logger.warning("Slow blocking check: %.2fs for %s", processing_time, request.path)
+
+            if response.status_code in [403, 451]:
                 logger.info(
-                    f"Blocked request: {request.method} {request.path} "
-                    f"from {request.META.get('REMOTE_ADDR', 'unknown')} "
-                    f"in {processing_time:.2f}s"
+                    "Blocked request: %s %s in %.2fs",
+                    request.method,
+                    request.path,
+                    processing_time,
                 )
-        
+
         return response

@@ -546,11 +546,11 @@ class PaymentReportService(ReportService):
         # Получаем ожидаемые платежи по Invoice (новая система оферт)
         from billing.models import Invoice
         
-        providers = self.get_provider_queryset(providers)
+        provider_qs = self.get_provider_queryset(providers)  # type: ignore[assignment]
         
         # Получаем все неоплаченные Invoice за период
         invoices = Invoice.objects.filter(
-            provider__in=providers,
+            provider__in=provider_qs,
             status__in=['sent', 'overdue'],
             issued_at__range=(start_date, end_date)
         ).select_related('provider')

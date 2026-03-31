@@ -11,7 +11,6 @@ from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import datetime, timedelta, date
 from decimal import Decimal
-
 from booking.services import EmployeeAutoBookingService, BookingAvailabilityService
 from booking.models import Booking, BookingStatus
 from pets.models import Pet, PetType
@@ -219,7 +218,7 @@ class EmployeeAutoBookingServiceTestCase(TestCase):
         
         # Автоматически бронируем работника
         booking = EmployeeAutoBookingService.auto_book_employee(
-            user=self.user,
+            user=self.user,  # type: ignore[arg-type]
             pet=self.pet,
             provider=self.provider,
             service=self.service,
@@ -256,7 +255,7 @@ class EmployeeAutoBookingServiceTestCase(TestCase):
         
         # Пытаемся автоматически забронировать работника
         booking = EmployeeAutoBookingService.auto_book_employee(
-            user=self.user,
+            user=self.user,  # type: ignore[arg-type]
             pet=self.pet,
             provider=self.provider,
             service=self.service,

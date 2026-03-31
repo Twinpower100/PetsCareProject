@@ -1,0 +1,121 @@
+{% load i18n %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>{% blocktranslate with number=invoice.number %}Invoice {{ number }}{% endblocktranslate %}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            color: #1f2937;
+            font-size: 12px;
+            margin: 32px;
+        }
+        h1, h2, h3 {
+            margin: 0 0 12px;
+        }
+        .grid {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        .card {
+            flex: 1;
+            border: 1px solid #d1d5db;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 16px;
+        }
+        th, td {
+            border: 1px solid #d1d5db;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background: #f3f4f6;
+        }
+        .summary {
+            margin-top: 20px;
+            width: 320px;
+            margin-left: auto;
+        }
+        .summary td:first-child {
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <h1>{% translate "Invoice" %} {{ invoice.number }}</h1>
+    <p>{% translate "Issued at" %}: {{ invoice.issued_at|date:"Y-m-d" }}</p>
+    <p>{% translate "Period" %}: {{ invoice.start_date }} - {{ invoice.end_date }}</p>
+
+    <div class="grid">
+        <div class="card">
+            <h3>{% translate "Platform company" %}</h3>
+            <p><strong>{{ platform_company.name }}</strong></p>
+            <p>{{ platform_company.address }}</p>
+            <p>{% translate "Tax ID" %}: {{ platform_company.tax_id }}</p>
+            <p>{% translate "Bank" %}: {{ platform_company.bank_name }}</p>
+            <p>IBAN: {{ platform_company.iban }}</p>
+            <p>BIC: {{ platform_company.bic }}</p>
+            <p>SWIFT: {{ platform_company.swift }}</p>
+        </div>
+        <div class="card">
+            <h3>{% translate "Provider" %}</h3>
+            <p><strong>{{ provider.name }}</strong></p>
+            <p>{{ provider.email }}</p>
+            <p>{{ provider.phone_number }}</p>
+            {% if due_date %}
+            <p>{% translate "Due date" %}: {{ due_date|date:"Y-m-d" }}</p>
+            {% endif %}
+            <p>{% translate "Currency" %}: {{ currency_code }}</p>
+        </div>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>{% translate "Description" %}</th>
+                <th>{% translate "Service period" %}</th>
+                <th>{% translate "Bookings" %}</th>
+                <th>{% translate "Booking amount" %}</th>
+                <th>{% translate "Commission" %}</th>
+                <th>{% translate "VAT" %}</th>
+                <th>{% translate "Total" %}</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td>{% translate "Completed online bookings" %}</td>
+                <td>{{ service_period_label }}</td>
+                <td>{{ booking_count }}</td>
+                <td>{{ booking_amount_total }} {{ currency_code }}</td>
+                <td>{{ commission_total }} {{ currency_code }}</td>
+                <td>{{ vat_total }} {{ currency_code }}</td>
+                <td>{{ invoice.amount }} {{ currency_code }}</td>
+            </tr>
+        </tbody>
+    </table>
+
+    <table class="summary">
+        <tbody>
+            <tr>
+                <td>{% translate "Invoice amount" %}</td>
+                <td>{{ invoice.amount }} {{ currency_code }}</td>
+            </tr>
+            <tr>
+                <td>{% translate "Paid amount" %}</td>
+                <td>{{ paid_amount }} {{ currency_code }}</td>
+            </tr>
+            <tr>
+                <td>{% translate "Outstanding amount" %}</td>
+                <td>{{ outstanding_amount }} {{ currency_code }}</td>
+            </tr>
+        </tbody>
+    </table>
+</body>
+</html>

@@ -22,7 +22,7 @@ class AvailabilityChecker:
     
     @staticmethod
     def is_employee_available(employee: Employee, target_date: date, 
-                            start_time: time = None, end_time: time = None,
+                            start_time: time | None = None, end_time: time | None = None,
                             location=None) -> Tuple[bool, List[str]]:
         """
         Проверяет доступность сотрудника в указанную дату.

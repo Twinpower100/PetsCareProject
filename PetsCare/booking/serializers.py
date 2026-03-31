@@ -46,6 +46,7 @@ from catalog.models import Service
 from users.models import User
 from pets.models import ChronicCondition, Pet, PetHealthNote, VisitRecord
 from pets.serializers import PetDocumentSummarySerializer, VisitRecordAddendumSerializer
+from .manual_notes import replace_manual_booking_notes
 
 
 def get_context_language_code(context):
@@ -69,6 +70,24 @@ def get_context_language_code(context):
 
     language_code = language_code.split('-')[0].lower()
     return 'me' if language_code == 'cnr' else language_code
+
+
+def build_manual_entry_payload(booking):
+    """Собирает payload guest/manual metadata для API."""
+    metadata = booking.get_manual_entry_metadata() or {}
+    if booking.source != Booking.BookingSource.MANUAL_ENTRY and not metadata:
+        return None
+
+    return {
+        'is_guest': bool(metadata.get('is_guest')),
+        'is_emergency': bool(metadata.get('is_emergency')),
+        'guest_client_name': metadata.get('guest_client_name'),
+        'guest_client_phone': metadata.get('guest_client_phone'),
+        'guest_pet_name': metadata.get('guest_pet_name'),
+        'guest_pet_species': metadata.get('guest_pet_species'),
+        'guest_pet_type_id': metadata.get('guest_pet_type_id'),
+        'guest_pet_weight': metadata.get('guest_pet_weight'),
+    }
 
 
 class BookingStatusSerializer(serializers.ModelSerializer):
@@ -135,7 +154,7 @@ class BookingReviewSerializer(serializers.ModelSerializer):
 class BookingUserCompactSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'email', 'first_name', 'last_name']
+        fields = ['id', 'email', 'first_name', 'last_name', 'phone_number']
 
 
 class BookingLifecycleFieldsMixin(serializers.ModelSerializer):
@@ -143,6 +162,9 @@ class BookingLifecycleFieldsMixin(serializers.ModelSerializer):
     status_code = serializers.CharField(source='status.name', read_only=True)
     status_display = serializers.CharField(source='status.get_localized_name', read_only=True)
     ui_status = serializers.SerializerMethodField()
+    source = serializers.CharField(read_only=True)
+    notes = serializers.SerializerMethodField()
+    manual_entry = serializers.SerializerMethodField()
     is_overdue = serializers.BooleanField(read_only=True)
     has_open_service_issue = serializers.SerializerMethodField()
     latest_service_issue = serializers.SerializerMethodField()
@@ -166,6 +188,12 @@ class BookingLifecycleFieldsMixin(serializers.ModelSerializer):
             if obj.cancelled_by == CANCELLED_BY_PROVIDER:
                 return {'code': 'cancelled_by_provider', 'label': str(_('Cancelled by provider'))}
         return {'code': obj.status.name, 'label': obj.status.get_localized_name()}
+
+    def get_notes(self, obj):
+        return obj.display_notes
+
+    def get_manual_entry(self, obj):
+        return build_manual_entry_payload(obj)
 
     def get_has_open_service_issue(self, obj):
         issues = self._get_cached_service_issues(obj)
@@ -476,6 +504,8 @@ class BookingListSerializer(BookingLifecycleFieldsMixin, serializers.ModelSerial
             'status_code',
             'status_display',
             'ui_status',
+            'source',
+            'manual_entry',
             'is_overdue',
             'has_open_service_issue',
             'latest_service_issue',
@@ -533,6 +563,8 @@ class BookingSerializer(BookingLifecycleFieldsMixin, serializers.ModelSerializer
             'status_code',
             'status_display',
             'ui_status',
+            'source',
+            'manual_entry',
             'is_overdue',
             'has_open_service_issue',
             'latest_service_issue',
@@ -565,6 +597,13 @@ class BookingUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Booking
         fields = ['notes']
+
+    def update(self, instance, validated_data):
+        """Обновляет заметки, сохраняя служебную metadata ручного бронирования."""
+        if 'notes' in validated_data:
+            instance.notes = replace_manual_booking_notes(instance.notes, validated_data['notes'])
+        instance.save(update_fields=['notes', 'updated_at'])
+        return instance
 
 
 class BookingStatusUpdateSerializer(serializers.ModelSerializer):
@@ -748,6 +787,58 @@ class BookingCreateSerializer(serializers.ModelSerializer):
                 {'escort_owner': _('Escort owner must be one of the pet owners')}
             )
         return data
+
+
+class ManualBookingSearchSerializer(serializers.Serializer):
+    """Параметры поиска клиента для ручного бронирования."""
+
+    query = serializers.CharField(required=False, allow_blank=True)
+    provider_location_id = serializers.IntegerField(required=False)
+
+
+class ManualBookingCreateSerializer(serializers.Serializer):
+    """Payload для ручного создания бронирования персоналом."""
+
+    is_guest = serializers.BooleanField()
+    guest_client_phone = serializers.CharField(required=False, allow_blank=True)
+    guest_client_name = serializers.CharField(required=False, allow_blank=True)
+    guest_pet_name = serializers.CharField(required=False, allow_blank=True)
+    guest_pet_species = serializers.CharField(required=False, allow_blank=True)
+    guest_pet_type_id = serializers.IntegerField(required=False)
+    guest_pet_weight = serializers.DecimalField(max_digits=6, decimal_places=2, required=False)
+    user_id = serializers.IntegerField(required=False)
+    pet_id = serializers.IntegerField(required=False)
+    escort_owner_id = serializers.IntegerField(required=False)
+    provider_location_id = serializers.IntegerField()
+    employee_id = serializers.IntegerField()
+    service_id = serializers.IntegerField()
+    start_time = serializers.DateTimeField()
+    notes = serializers.CharField(required=False, allow_blank=True)
+    is_emergency = serializers.BooleanField(required=False, default=False)
+
+    def validate(self, attrs):
+        """Проверяет обязательные поля для guest и registered сценариев."""
+        is_guest = attrs['is_guest']
+        errors = {}
+
+        if is_guest:
+            required_guest_fields = (
+                'guest_client_phone',
+                'guest_client_name',
+                'guest_pet_name',
+            )
+            for field_name in required_guest_fields:
+                if not str(attrs.get(field_name, '')).strip():
+                    errors[field_name] = _('This field is required for guest bookings.')
+        else:
+            required_registered_fields = ('user_id', 'pet_id')
+            for field_name in required_registered_fields:
+                if attrs.get(field_name) is None:
+                    errors[field_name] = _('This field is required for registered bookings.')
+
+        if errors:
+            raise serializers.ValidationError(errors)
+        return attrs
 
 class BookingServiceIssueSummarySerializer(serializers.ModelSerializer):
     class Meta:

@@ -9,12 +9,21 @@ from decimal import Decimal
 
 from .models import (
     ProviderBlocking, BlockingNotification,
-    BlockingSystemSettings, BlockingSchedule, Currency
+    BlockingSystemSettings, BlockingSchedule, Currency, Invoice, PaymentHistory
 )
 from legal.models import LegalDocument, DocumentAcceptance, LegalDocumentType
 from .services import MultiLevelBlockingService
 
 logger = logging.getLogger(__name__)
+
+
+def synchronize_open_invoice_statuses():
+    """
+    Синхронизирует статусы открытых счетов перед расчетом блокировок.
+    """
+    PaymentHistory.update_overdue_status()
+    for invoice in Invoice.objects.filter(status__in=['sent', 'partially_paid', 'overdue']).iterator():
+        invoice.refresh_status_from_payment_history()
 
 
 @shared_task
@@ -134,7 +143,8 @@ def check_all_providers_blocking():
         if not settings.is_system_enabled:
             logger.info("Blocking system is disabled")
             return {'status': 'disabled', 'message': 'Blocking system is disabled'}
-        
+
+        synchronize_open_invoice_statuses()
         service = MultiLevelBlockingService()
         stats = service.check_all_providers()
         

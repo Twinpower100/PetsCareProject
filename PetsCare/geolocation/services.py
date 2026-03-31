@@ -57,7 +57,7 @@ class GoogleMapsService:
     def geocode_address(
         self,
         address: str,
-        country: str = None,
+        country: str | None = None,
         language: str | None = None,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -123,7 +123,7 @@ class GoogleMapsService:
     def autocomplete_address(
         self,
         input_text: str,
-        country: str = None,
+        country: str | None = None,
         types: str = 'address',
         language: str | None = None,
         session_token: str | None = None,
@@ -456,16 +456,17 @@ class AddressValidationService:
         components = result['address_components']
         
         # Update coordinates and PostGIS point (lon, lat for SRID 4326)
-        address.latitude = coordinates['latitude']
-        address.longitude = coordinates['longitude']
-        address.point = Point(
-            float(address.longitude),
-            float(address.latitude),
-            srid=4326
-        )
+        lat_val = coordinates.get('latitude')
+        lon_val = coordinates.get('longitude')
+        address.latitude = lat_val
+        address.longitude = lon_val
+        if lat_val is not None and lon_val is not None:
+            address.point = Point(float(lon_val), float(lat_val), srid=4326)
+        else:
+            address.point = None
         
         # Update formatted address
-        address.formatted_address = result['formatted_address']
+        address.formatted_address = result.get('formatted_address') or ''
         
         # Update geocoding accuracy
         address.geocoding_accuracy = result['location_type']
@@ -497,14 +498,15 @@ class AddressValidationService:
         """
         coordinates = cached_result['coordinates']
         
-        address.latitude = coordinates['latitude']
-        address.longitude = coordinates['longitude']
-        address.point = Point(
-            float(address.longitude),
-            float(address.latitude),
-            srid=4326
-        )
-        address.formatted_address = cached_result['formatted_address']
+        lat_val = coordinates.get('latitude')
+        lon_val = coordinates.get('longitude')
+        address.latitude = lat_val
+        address.longitude = lon_val
+        if lat_val is not None and lon_val is not None:
+            address.point = Point(float(lon_val), float(lat_val), srid=4326)
+        else:
+            address.point = None
+        address.formatted_address = cached_result.get('formatted_address') or ''
         address.geocoding_accuracy = cached_result['location_type']
         address.validation_status = 'valid'
         address.validated_at = timezone.now()
@@ -528,9 +530,14 @@ class AddressValidationService:
         valid_types = ['ROOFTOP', 'RANGE_INTERPOLATED', 'GEOMETRIC_CENTER']
         return location_type in valid_types
     
-    def _save_validation_result(self, address: Address, is_valid: bool, 
-                              start_time: float, result: Dict[str, Any] = None,
-                              error: str = None) -> None:
+    def _save_validation_result(
+        self,
+        address: Address,
+        is_valid: bool,
+        start_time: float,
+        result: Dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> None:
         """
         Saving validation result.
         
@@ -599,7 +606,7 @@ class AddressValidationService:
         # Generate MD5 hash
         return hashlib.md5(address_string.encode()).hexdigest()
     
-    def autocomplete_address(self, input_text: str, country: str = None) -> List[Dict[str, Any]]:
+    def autocomplete_address(self, input_text: str, country: str | None = None) -> List[Dict[str, Any]]:
         """
         Autocomplete address.
         
@@ -700,7 +707,9 @@ class DeviceLocationService:
                 'missing_address': False
             }
     
-    def validate_location_for_role(self, user: User, latitude: float = None, longitude: float = None) -> Dict[str, Any]:
+    def validate_location_for_role(
+        self, user: User, latitude: float | None = None, longitude: float | None = None
+    ) -> Dict[str, Any]:
         """
         Валидирует местоположение для конкретной роли пользователя.
         
@@ -760,8 +769,14 @@ class DeviceLocationService:
             'message': _('Location validation passed')
         }
     
-    def save_device_location(self, user: User, latitude: float, longitude: float, 
-                           accuracy: float = None, source: str = 'device') -> Dict[str, Any]:
+    def save_device_location(
+        self,
+        user: User,
+        latitude: float,
+        longitude: float,
+        accuracy: float | None = None,
+        source: str = 'device',
+    ) -> Dict[str, Any]:
         """
         Сохраняет местоположение устройства пользователя.
         
@@ -791,8 +806,13 @@ class DeviceLocationService:
         
         return location_data
     
-    def save_map_location(self, user: User, latitude: float, longitude: float, 
-                         address: str = None) -> Dict[str, Any]:
+    def save_map_location(
+        self,
+        user: User,
+        latitude: float,
+        longitude: float,
+        address: str | None = None,
+    ) -> Dict[str, Any]:
         """
         Сохраняет выбранное на карте местоположение.
         

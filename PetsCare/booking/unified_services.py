@@ -6,7 +6,7 @@ from decimal import Decimal
 import math
 import random
 import string
-from typing import Any
+from typing import Any, cast
 
 from django.conf import settings
 from django.db import transaction
@@ -14,7 +14,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 from catalog.models import Service
-from pets.models import Pet
+from pets.models import Pet, PetType, SizeRule
 from providers.models import (
     Employee,
     EmployeeLocationRole,
@@ -128,6 +128,10 @@ class BookingAvailabilityService:
         employee: Employee | None = None,
         escort_owner: User | None = None,
         exclude_booking_id: int | None = None,
+        service_pet_type: PetType | None = None,
+        service_pet_weight: Decimal | None = None,
+        ignore_pet_constraints: bool = False,
+        skip_escort_constraints: bool = False,
     ) -> BookingDraftValidationResult:
         """Проверяет возможность создания бронирования по всем доменным правилам."""
         cls._ensure_requester_can_book_pet(requester, pet)
@@ -143,7 +147,13 @@ class BookingAvailabilityService:
                 failure_message=_('Booking time must be in the future.'),
             )
 
-        location_service = cls.get_location_service(provider_location, service, pet)
+        location_service = cls.get_location_service_for_context(
+            provider_location,
+            service,
+            pet=pet,
+            pet_type=service_pet_type,
+            weight=service_pet_weight,
+        )
         if location_service is None:
             return BookingDraftValidationResult(
                 is_bookable=False,
@@ -159,47 +169,56 @@ class BookingAvailabilityService:
         end_time = start_time + timedelta(minutes=occupied_duration_minutes)
         price = Decimal(location_service.price)
 
-        owner_overlap_bookings = cls._get_owner_overlap_bookings(
-            pet=pet,
-            start_time=start_time,
-            end_time=end_time,
-            exclude_booking_id=exclude_booking_id,
-        )
-        possible_escort_owner_ids = cls.get_possible_escort_owner_ids(
-            pet=pet,
-            provider_location=provider_location,
-            start_time=start_time,
-            end_time=end_time,
-            exclude_booking_id=exclude_booking_id,
-        )
-        if not possible_escort_owner_ids:
-            return BookingDraftValidationResult(
-                is_bookable=False,
+        owner_overlap_bookings = []
+        possible_escort_owner_ids: list[int] = []
+        requires_escort_assignment = False
+        if skip_escort_constraints:
+            if escort_owner is not None:
+                possible_escort_owner_ids = [escort_owner.id]
+            elif requester.id:
+                possible_escort_owner_ids = [requester.id]
+        else:
+            owner_overlap_bookings = cls._get_owner_overlap_bookings(
+                pet=pet,
                 start_time=start_time,
                 end_time=end_time,
-                occupied_duration_minutes=occupied_duration_minutes,
-                price=price,
-                location_service=location_service,
-                conflicting_bookings=cls.serialize_bookings(owner_overlap_bookings),
-                failure_code='escort_unavailable',
-                failure_message=_('No pet owner is available to escort this booking.'),
+                exclude_booking_id=exclude_booking_id,
             )
-
-        if escort_owner is not None and escort_owner.id not in possible_escort_owner_ids:
-            return BookingDraftValidationResult(
-                is_bookable=False,
+            possible_escort_owner_ids = cls.get_possible_escort_owner_ids(
+                pet=pet,
+                provider_location=provider_location,
                 start_time=start_time,
                 end_time=end_time,
-                occupied_duration_minutes=occupied_duration_minutes,
-                price=price,
-                location_service=location_service,
-                conflicting_bookings=cls.serialize_bookings(owner_overlap_bookings),
-                possible_escort_owner_ids=possible_escort_owner_ids,
-                failure_code='escort_conflict',
-                failure_message=_('Selected escort owner is not available for this booking.'),
+                exclude_booking_id=exclude_booking_id,
             )
+            if not possible_escort_owner_ids:
+                return BookingDraftValidationResult(
+                    is_bookable=False,
+                    start_time=start_time,
+                    end_time=end_time,
+                    occupied_duration_minutes=occupied_duration_minutes,
+                    price=price,
+                    location_service=location_service,
+                    conflicting_bookings=cls.serialize_bookings(owner_overlap_bookings),
+                    failure_code='escort_unavailable',
+                    failure_message=_('No pet owner is available to escort this booking.'),
+                )
 
-        requires_escort_assignment = escort_owner is None and requester.id not in possible_escort_owner_ids
+            if escort_owner is not None and escort_owner.id not in possible_escort_owner_ids:
+                return BookingDraftValidationResult(
+                    is_bookable=False,
+                    start_time=start_time,
+                    end_time=end_time,
+                    occupied_duration_minutes=occupied_duration_minutes,
+                    price=price,
+                    location_service=location_service,
+                    conflicting_bookings=cls.serialize_bookings(owner_overlap_bookings),
+                    possible_escort_owner_ids=possible_escort_owner_ids,
+                    failure_code='escort_conflict',
+                    failure_message=_('Selected escort owner is not available for this booking.'),
+                )
+
+            requires_escort_assignment = escort_owner is None and requester.id not in possible_escort_owner_ids
 
         eligible_employees = cls.get_eligible_employees(provider_location, service)
         if employee is not None:
@@ -237,7 +256,7 @@ class BookingAvailabilityService:
 
         for candidate_employee in eligible_employees:
             if cls._is_candidate_bookable(
-                pet=pet,
+                pet=None if ignore_pet_constraints else pet,
                 employee=candidate_employee,
                 provider_location=provider_location,
                 start_time=start_time,
@@ -382,6 +401,13 @@ class BookingAvailabilityService:
             employee_schedule = cls.get_employee_schedule(employee, provider_location, target_date)
             if employee_schedule is None:
                 continue
+            if (
+                location_schedule.open_time is None
+                or location_schedule.close_time is None
+                or employee_schedule.start_time is None
+                or employee_schedule.end_time is None
+            ):
+                continue
 
             work_start = timezone.make_aware(
                 datetime.combine(target_date, max(location_schedule.open_time, employee_schedule.start_time)),
@@ -483,16 +509,66 @@ class BookingAvailabilityService:
         pet: Pet,
     ) -> ProviderLocationService | None:
         """Находит услугу локации для типа и размера питомца."""
-        size_code = pet.get_current_size_category()
+        return cls.get_location_service_for_context(
+            provider_location,
+            service,
+            pet=pet,
+        )
+
+    @classmethod
+    def get_location_service_for_context(
+        cls,
+        provider_location: ProviderLocation,
+        service: Service,
+        *,
+        pet: Pet | None = None,
+        pet_type: PetType | None = None,
+        weight: Decimal | None = None,
+    ) -> ProviderLocationService | None:
+        """Находит услугу локации для pet context или явных pet_type/weight."""
+        resolved_pet_type = pet_type or getattr(pet, 'pet_type', None)
+        if resolved_pet_type is None:
+            return None
+
+        resolved_weight = weight if weight is not None else getattr(pet, 'weight', None)
+        size_code = cls._resolve_size_code(resolved_pet_type, resolved_weight)
         queryset = ProviderLocationService.objects.filter(
             location=provider_location,
             service=service,
-            pet_type=pet.pet_type,
+            pet_type=resolved_pet_type,
             is_active=True,
         )
         if size_code:
             queryset = queryset.filter(size_code=size_code)
         return queryset.select_related('service').first()
+
+    @staticmethod
+    def _resolve_size_code(pet_type: PetType, weight: Decimal | None) -> str | None:
+        """Определяет size code по типу питомца и весу."""
+        if weight is None:
+            return None
+
+        weight_value = float(weight)
+        rules = list(SizeRule.objects.filter(pet_type=pet_type).order_by('min_weight_kg'))
+        if not rules:
+            return None
+
+        matching_rules = [
+            rule
+            for rule in rules
+            if float(rule.min_weight_kg) <= weight_value <= float(rule.max_weight_kg)
+        ]
+        if matching_rules:
+            ordered_rules = sorted(
+                matching_rules,
+                key=lambda item: {'S': 0, 'M': 1, 'L': 2, 'XL': 3}.get(item.size_code, -1),
+            )
+            return ordered_rules[-1].size_code
+        ordered_rules = sorted(
+            rules,
+            key=lambda item: {'S': 0, 'M': 1, 'L': 2, 'XL': 3}.get(item.size_code, -1),
+        )
+        return ordered_rules[-1].size_code
 
     @classmethod
     def get_eligible_employees(
@@ -641,6 +717,8 @@ class BookingAvailabilityService:
 
         schedule = cls.get_employee_schedule(employee, provider_location, start_time.date())
         if schedule is None:
+            return False
+        if schedule.start_time is None or schedule.end_time is None:
             return False
 
         start_time_only = start_time.timetz().replace(tzinfo=None)
@@ -914,6 +992,11 @@ class BookingTransactionService:
         notes: str = '',
         provider_location: ProviderLocation | None = None,
         escort_owner: User | None = None,
+        source: str = Booking.BookingSource.BOOKING_SERVICE,
+        service_pet_type: PetType | None = None,
+        service_pet_weight: Decimal | None = None,
+        ignore_pet_constraints: bool = False,
+        skip_escort_constraints: bool = False,
     ) -> Booking:
         """Создаёт бронирование с повторной проверкой под блокировками."""
         provider_location = BookingTransactionService._resolve_provider_location(
@@ -930,14 +1013,17 @@ class BookingTransactionService:
 
         provider = provider or provider_location.provider
 
-        pet = Pet.objects.select_for_update().get(pk=pet.pk)
+        pet_queryset = Pet.objects.select_for_update() if not ignore_pet_constraints else Pet.objects.all()
+        pet = pet_queryset.get(pk=pet.pk)
         employee = Employee.objects.select_for_update().get(pk=employee.pk)
         provider_location = ProviderLocation.objects.select_for_update().get(pk=provider_location.pk)
 
         BookingTransactionService._lock_relevant_bookings(
-            pet=pet,
+            pet=pet if not ignore_pet_constraints else None,
             employee=employee,
-            escort_owner=escort_owner or user,
+            escort_owner=(escort_owner or user) if not skip_escort_constraints else None,
+            include_pet=not ignore_pet_constraints,
+            include_escort=not skip_escort_constraints,
         )
 
         validation_result = BookingAvailabilityService.validate_booking_request(
@@ -948,6 +1034,10 @@ class BookingTransactionService:
             start_time=start_time,
             employee=employee,
             escort_owner=escort_owner,
+            service_pet_type=service_pet_type,
+            service_pet_weight=service_pet_weight,
+            ignore_pet_constraints=ignore_pet_constraints,
+            skip_escort_constraints=skip_escort_constraints,
         )
 
         if validation_result.requires_escort_assignment:
@@ -989,6 +1079,7 @@ class BookingTransactionService:
             end_time=validation_result.end_time if end_time is None else validation_result.end_time,
             occupied_duration_minutes=validation_result.occupied_duration_minutes,
             price=booking_price,
+            source=source,
             notes=notes,
             code=BookingTransactionService._generate_booking_code(),
         )
@@ -1012,20 +1103,29 @@ class BookingTransactionService:
         )
 
     @staticmethod
-    def _lock_relevant_bookings(*, pet: Pet, employee: Employee, escort_owner: User) -> None:
+    def _lock_relevant_bookings(
+        *,
+        pet: Pet | None,
+        employee: Employee,
+        escort_owner: User | None,
+        include_pet: bool = True,
+        include_escort: bool = True,
+    ) -> None:
         """Берёт row locks на потенциально конфликтующие бронирования."""
-        list(Booking.objects.select_for_update().filter(
-            pet=pet,
-            status__name__in=ACTIVE_BOOKING_STATUS_NAMES,
-        ))
+        if include_pet and pet is not None:
+            list(Booking.objects.select_for_update().filter(
+                pet=pet,
+                status__name__in=ACTIVE_BOOKING_STATUS_NAMES,
+            ))
         list(Booking.objects.select_for_update().filter(
             employee=employee,
             status__name__in=ACTIVE_BOOKING_STATUS_NAMES,
         ))
-        list(Booking.objects.select_for_update().filter(
-            escort_owner=escort_owner,
-            status__name__in=ACTIVE_BOOKING_STATUS_NAMES,
-        ))
+        if include_escort and escort_owner is not None:
+            list(Booking.objects.select_for_update().filter(
+                escort_owner=escort_owner,
+                status__name__in=ACTIVE_BOOKING_STATUS_NAMES,
+            ))
 
     @staticmethod
     def _get_active_status() -> BookingStatus:
@@ -1069,20 +1169,27 @@ class BookingTransactionService:
         service = new_service or booking.service
         escort_owner = new_escort_owner or booking.escort_owner or booking.user
 
+        if booking.provider_location is None:
+            raise BookingDomainError(
+                'provider_location_required',
+                _('Booking must have a provider location.'),
+                status_code=400,
+            )
+
         BookingTransactionService._lock_relevant_bookings(
             pet=booking.pet,
             employee=employee,
-            escort_owner=escort_owner,
+            escort_owner=cast(User | None, escort_owner),
         )
 
         validation_result = BookingAvailabilityService.validate_booking_request(
-            requester=booking.user,
+            requester=cast(User, booking.user),
             pet=booking.pet,
             provider_location=booking.provider_location,
             service=service,
             start_time=start_time,
             employee=employee,
-            escort_owner=escort_owner,
+            escort_owner=cast(User | None, escort_owner),
             exclude_booking_id=booking.id,
         )
 

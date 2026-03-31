@@ -31,11 +31,11 @@ app.autodiscover_tasks(lambda: settings.INSTALLED_APPS)
 app.conf.beat_schedule = {
     'update-currency-rates': {
         'task': 'billing.tasks.update_currency_rates',
-        'schedule': crontab(hour=0, minute=0),  # Ежедневно в полночь
+        'schedule': crontab(hour='0', minute='0'),  # Ежедневно в полночь
     },
     'activate-pending-offers': {
         'task': 'billing.tasks.activate_pending_offers',
-        'schedule': crontab(hour=0, minute=0),  # Ежедневно в полночь (проверка оферт с effective_date = сегодня)
+        'schedule': crontab(hour='0', minute='0'),  # Ежедневно в полночь (проверка оферт с effective_date = сегодня)
     },
 }
 

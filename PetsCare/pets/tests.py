@@ -39,6 +39,12 @@ def _add_coowner(pet, user):
     PetOwner.objects.create(pet=pet, user=user, role='coowner')
 
 
+def _data_dict(response):
+    """Возвращает response.data как dict для assertIn и доступа по ключу."""
+    assert isinstance(response.data, dict)
+    return response.data
+
+
 class CoOwnerRemovalTestCase(APITestCase):
     """
     Тесты для самостоятельного снятия обязанностей совладельца.
@@ -108,9 +114,10 @@ class CoOwnerRemovalTestCase(APITestCase):
         
         # Проверяем ответ
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('message', response.data)
-        self.assertEqual(response.data['pet_id'], self.pet.id)
-        self.assertEqual(response.data['removed_user_id'], self.co_owner.id)
+        data = _data_dict(response)
+        self.assertIn('message', data)
+        self.assertEqual(data['pet_id'], self.pet.id)
+        self.assertEqual(data['removed_user_id'], self.co_owner.id)
         
         # Проверяем, что совладелец удален из списка владельцев
         self.pet.refresh_from_db()
@@ -130,8 +137,9 @@ class CoOwnerRemovalTestCase(APITestCase):
         
         # Проверяем ответ
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('error', response.data)
-        self.assertIn('main owner', response.data['error'].lower())
+        data = _data_dict(response)
+        self.assertIn('error', data)
+        self.assertIn('main owner', data['error'].lower())
     
     def test_non_owner_cannot_remove_themselves(self):
         """Тест что пользователь, не являющийся владельцем, не может снять себя."""
@@ -160,8 +168,9 @@ class CoOwnerRemovalTestCase(APITestCase):
         
         # Проверяем ответ
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('error', response.data)
-        self.assertIn('active pet sitting', response.data['error'].lower())
+        data = _data_dict(response)
+        self.assertIn('error', data)
+        self.assertIn('active pet sitting', data['error'].lower())
     
     @patch('pets.api_views.PetViewSet._notify_main_owner')
     def test_main_owner_notification(self, mock_notify):

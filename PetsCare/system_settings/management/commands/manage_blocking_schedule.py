@@ -13,7 +13,7 @@ from django.utils.translation import gettext_lazy as _
 from django.utils import timezone
 import logging
 
-from settings.services import BlockingScheduleService
+from system_settings.services import BlockingScheduleService
 
 logger = logging.getLogger(__name__)
 

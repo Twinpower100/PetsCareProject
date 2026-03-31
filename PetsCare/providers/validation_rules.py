@@ -867,7 +867,8 @@ def validate_requisite_field(
         validator = field_rules['validator']
         try:
             if callable(validator):
-                return validator(value, country_code) if validator.__code__.co_argcount > 1 else validator(value)
+                result = validator(value, country_code) if validator.__code__.co_argcount > 1 else validator(value)
+                return (result, None) if not isinstance(result, tuple) else result  # type: ignore[return-value]
         except Exception as e:
             return False, f"Ошибка валидации: {str(e)}"
     

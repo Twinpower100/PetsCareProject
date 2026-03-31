@@ -8,6 +8,7 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from django.db import transaction
+from django.db.models import Count
 from datetime import timedelta
 from notifications.models import Notification
 from django.utils.translation import gettext as _
@@ -179,7 +180,7 @@ class Command(BaseCommand):
         
         # Статистика по типам
         type_stats = notifications.values('notification_type').annotate(
-            count=models.Count('id')
+            count=Count('id')
         )
         if type_stats:
             self.stdout.write('\nBy notification type:')
@@ -188,7 +189,7 @@ class Command(BaseCommand):
         
         # Статистика по приоритетам
         priority_stats = notifications.values('priority').annotate(
-            count=models.Count('id')
+            count=Count('id')
         )
         if priority_stats:
             self.stdout.write('\nBy priority:')
@@ -197,7 +198,7 @@ class Command(BaseCommand):
         
         # Статистика по статусу прочтения
         read_stats = notifications.values('is_read').annotate(
-            count=models.Count('id')
+            count=Count('id')
         )
         if read_stats:
             self.stdout.write('\nBy read status:')

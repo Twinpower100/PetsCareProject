@@ -18,19 +18,26 @@ API представления для модуля providers.
 - Валидация данных
 """
 
+from collections import defaultdict
+from threading import Thread
+
 from rest_framework import generics, status, permissions, filters, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import PermissionDenied
 from django.utils.translation import gettext_lazy as _
-from django.utils import translation
+from django.utils import translation, timezone
+from django.db import close_old_connections
 from django_filters.rest_framework import DjangoFilterBackend
+from django.db import transaction
+from django.http import FileResponse
+from django.urls import reverse
 
 from users.serializers import UserSerializer
-from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, EmployeeWorkSlot, SchedulePattern, ProviderLocation, ProviderLocationService, EmployeeLocationService, EmployeeLocationRole
+from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, EmployeeWorkSlot, SchedulePattern, ProviderLocation, ProviderLocationService, EmployeeLocationService, EmployeeLocationRole, ProviderReportExportJob, ProviderRolePermission
 from catalog.models import Service
-from django.db.models import Q, Count, Case, When, Value
+from django.db.models import Q, Count, Case, When, Value, Min, Max, F
 from django.core.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from booking.models import Booking
@@ -46,10 +53,14 @@ from .serializers import (
     LocationServicePricesUpdateSerializer,
     ProviderAdminListSerializer,
 )
+from .dashboard_serializers import ProviderDashboardQuerySerializer, ProviderDashboardSerializer
+from .dashboard_services import ProviderDashboardService
+from .permission_service import ProviderPermissionService, build_provider_permissions_payload
+from .reporting_services import ProviderLocationReportError, ProviderLocationReportingService
+from .tasks import generate_provider_report_export_task
 # from users.permissions import IsProviderAdmin  # Класс определен ниже в этом файле
 from users.models import User
 
-from django.utils import translation
 
 
 def _user_has_role(user, role_name):
@@ -91,6 +102,374 @@ def _get_managed_providers(user):
         return get_managed()
     except (AttributeError, TypeError):
         return Provider.objects.none()
+
+
+def _permission_action_key(action: str) -> str:
+    return f'can_{action}'
+
+
+def _user_has_provider_permission(user, provider: Provider, resource_code: str, action: str) -> bool:
+    permission = ProviderPermissionService.get_user_permissions(user, provider).get(resource_code)
+    return bool(permission and permission.get(_permission_action_key(action)))
+
+
+def _require_provider_permission(user, provider: Provider, resource_code: str, action: str, *, target_location=None, target_employee=None):
+    if not ProviderPermissionService.check_permission(
+        user,
+        provider,
+        resource_code,
+        action,
+        target_location=target_location,
+        target_employee=target_employee,
+    ):
+        raise PermissionDenied(_('You do not have permission to access this resource.'))
+
+
+def _filter_providers_by_permission(queryset, user, resource_code: str, action: str = 'read'):
+    if ProviderPermissionService._is_system_like(user):
+        return queryset
+
+    permitted_provider_ids = []
+    provider_ids = list(queryset.values_list('id', flat=True).distinct())
+    for provider in Provider.objects.filter(id__in=provider_ids).only('id'):
+        if _user_has_provider_permission(user, provider, resource_code, action):
+            permitted_provider_ids.append(provider.id)
+    if not permitted_provider_ids:
+        return queryset.none()
+    return queryset.filter(id__in=permitted_provider_ids)
+
+
+def _filter_locations_by_permission(queryset, user, resource_code: str, action: str = 'read'):
+    if ProviderPermissionService._is_system_like(user):
+        return queryset
+
+    all_provider_ids: set[int] = set()
+    scoped_location_ids: set[int] = set()
+    provider_ids = list(queryset.values_list('provider_id', flat=True).distinct())
+    for provider in Provider.objects.filter(id__in=provider_ids).only('id'):
+        permission = ProviderPermissionService.get_user_permissions(user, provider).get(resource_code)
+        if not permission or not permission.get(_permission_action_key(action)):
+            continue
+        scope = permission.get('scope')
+        if scope == 'all':
+            all_provider_ids.add(provider.id)
+        elif scope == 'own_branch':
+            scoped_location_ids.update(
+                ProviderPermissionService.get_location_ids_for_scope(
+                    user,
+                    provider,
+                    resource_code,
+                    ProviderRolePermission.SCOPE_OWN_BRANCH,
+                    action=action,
+                )
+            )
+        else:
+            scoped_location_ids.update(
+                ProviderPermissionService.get_location_ids_for_scope(
+                    user,
+                    provider,
+                    resource_code,
+                    ProviderRolePermission.SCOPE_OWN_ONLY,
+                    action=action,
+                )
+            )
+
+    if not all_provider_ids and not scoped_location_ids:
+        return queryset.none()
+
+    filters = Q()
+    if all_provider_ids:
+        filters |= Q(provider_id__in=all_provider_ids)
+    if scoped_location_ids:
+        filters |= Q(id__in=scoped_location_ids)
+    return queryset.filter(filters)
+
+
+def _get_provider_or_403(user, provider_id: int, resource_code: str, action: str):
+    provider = get_object_or_404(Provider, pk=provider_id)
+    _require_provider_permission(user, provider, resource_code, action)
+    return provider
+
+
+def _get_location_or_403(request, location_id: int, resource_code: str, action: str, *, target_employee=None):
+    location = get_object_or_404(
+        ProviderLocation.objects.select_related('provider', 'manager'),
+        pk=location_id,
+    )
+    _require_provider_permission(
+        request.user,
+        location.provider,
+        resource_code,
+        action,
+        target_location=location,
+        target_employee=target_employee,
+    )
+    return location
+
+
+def _get_report_resource_code(report_code: str) -> str:
+    return 'reports.financial' if report_code in {'financial_revenue', 'platform_settlement'} else 'reports.operational'
+
+
+def _has_provider_reports_organization_scope(user, provider: Provider) -> bool:
+    """Орг-уровень отчетов: scope=all хотя бы у одного report resource."""
+    if ProviderPermissionService._is_system_like(user):
+        return True
+    permissions = ProviderPermissionService.get_user_permissions(user, provider)
+    for resource_code in ('reports.operational', 'reports.financial'):
+        permission = permissions.get(resource_code)
+        if permission and permission.get('can_read') and permission.get('scope') == 'all':
+            return True
+    return False
+
+
+def _get_report_accessible_locations(user, provider: Provider):
+    """Филиалы, отчеты по которым разрешены текущему пользователю."""
+    queryset = ProviderLocation.objects.filter(provider=provider, is_active=True).select_related('provider')
+    if _has_provider_reports_organization_scope(user, provider):
+        return queryset
+
+    operational_permission = ProviderPermissionService.get_user_permissions(user, provider).get('reports.operational')
+    financial_permission = ProviderPermissionService.get_user_permissions(user, provider).get('reports.financial')
+    location_ids: set[int] = set()
+    if operational_permission and operational_permission.get('can_read'):
+        if operational_permission.get('scope') == 'own_branch':
+            location_ids.update(ProviderPermissionService.get_user_branch_locations(user, provider).values_list('id', flat=True))
+        else:
+            location_ids.update(ProviderPermissionService.get_user_member_locations(user, provider).values_list('id', flat=True))
+    if financial_permission and financial_permission.get('can_read'):
+        location_ids.update(ProviderPermissionService.get_user_branch_locations(user, provider).values_list('id', flat=True))
+    return queryset.filter(id__in=location_ids)
+
+
+def _get_provider_report_access_context(user, provider_id: int) -> dict:
+    """
+    Возвращает базовый контекст доступа к централизованной отчетности провайдера.
+
+    Args:
+        user: Текущий пользователь.
+        provider_id: Идентификатор организации.
+
+    Returns:
+        dict: Провайдер, доступные филиалы и признак доступа к org-level отчетам.
+
+    Raises:
+        PermissionDenied: Если отчетность организации пользователю недоступна.
+    """
+    provider = get_object_or_404(Provider.objects.only('id', 'name'), pk=provider_id)
+    accessible_locations = _get_report_accessible_locations(user, provider)
+    if not accessible_locations.exists():
+        raise PermissionDenied(_('You do not have access to reports for this organization.'))
+
+    return {
+        'provider': provider,
+        'accessible_locations': accessible_locations,
+        'organization_scope_allowed': _has_provider_reports_organization_scope(user, provider),
+    }
+
+
+def _resolve_provider_report_request(request, provider_id: int, *, require_report_code: bool = True) -> dict:
+    """
+    Разбирает и валидирует параметры централизованной отчетности провайдера.
+
+    Args:
+        request: DRF request.
+        provider_id: Идентификатор организации.
+
+    Returns:
+        dict: Нормализованный контекст отчета.
+
+    Raises:
+        PermissionDenied: Если пользователь не имеет доступа.
+        ProviderLocationReportError: Если параметры запроса некорректны.
+    """
+    access_context = _get_provider_report_access_context(request.user, provider_id)
+    provider = access_context['provider']
+    request_payload = request.data if request.method != 'GET' else request.query_params
+
+    def get_param(name: str, default: str = '') -> str:
+        """Возвращает строковое значение параметра из body/query."""
+        value = request_payload.get(name)
+        if value is None:
+            value = request.query_params.get(name, default)
+        if value is None:
+            return default
+        return str(value)
+    accessible_locations = access_context['accessible_locations']
+    org_scope_allowed = access_context['organization_scope_allowed']
+    scope = (get_param('scope', 'provider') or 'provider').strip()
+    if scope not in {'location', 'provider'}:
+        raise ProviderLocationReportError(_('Unsupported scope. Use location or provider.'))
+    if scope == 'provider' and not org_scope_allowed:
+        raise PermissionDenied(_('Organization-wide reports are not available for this account.'))
+
+    language_code = (
+        get_param('language')
+        or getattr(request, 'LANGUAGE_CODE', None)
+        or translation.get_language()
+        or 'en'
+    )
+
+    start_date = None
+    end_date = None
+    start_date_raw = get_param('start_date').strip()
+    end_date_raw = get_param('end_date').strip()
+    try:
+        if start_date_raw:
+            start_date = datetime.strptime(start_date_raw, '%Y-%m-%d').date()
+        if end_date_raw:
+            end_date = datetime.strptime(end_date_raw, '%Y-%m-%d').date()
+    except ValueError as exc:
+        raise ProviderLocationReportError(_('Dates must use YYYY-MM-DD format.')) from exc
+
+    location_id_raw = get_param('location_id').strip()
+    if location_id_raw:
+        try:
+            selected_location = accessible_locations.get(pk=int(location_id_raw))
+        except (TypeError, ValueError, ProviderLocation.DoesNotExist) as exc:
+            raise ProviderLocationReportError(_('Unknown or inaccessible location_id.')) from exc
+    else:
+        selected_location = accessible_locations.order_by('name', 'id').first()
+
+    if selected_location is None:
+        raise PermissionDenied(_('No accessible branch found for reports.'))
+
+    report_code = get_param('report').strip()
+    if require_report_code and not report_code:
+        raise ProviderLocationReportError(_('Report code is required.'))
+    if report_code:
+        report_resource = _get_report_resource_code(report_code)
+        _require_provider_permission(
+            request.user,
+            provider,
+            report_resource,
+            'read',
+            target_location=selected_location if scope == 'location' else None,
+        )
+        report_permission = ProviderPermissionService.get_user_permissions(request.user, provider).get(report_resource)
+        if scope == 'provider' and report_permission and report_permission.get('scope') != 'all':
+            raise PermissionDenied(_('Organization-wide reports are not available for this account.'))
+
+    return {
+        'provider': provider,
+        'accessible_locations': accessible_locations,
+        'organization_scope_allowed': org_scope_allowed,
+        'scope': scope,
+        'report_code': report_code,
+        'language_code': language_code,
+        'start_date': start_date,
+        'end_date': end_date,
+        'selected_location': selected_location,
+    }
+
+
+def _get_provider_report_export_queryset(*, access_context: dict, user):
+    """
+    Возвращает queryset async jobs с учетом текущего уровня доступа к отчетам.
+
+    Branch-only пользователи не должны видеть org-level выгрузки, даже если они
+    были созданы до изменения роли.
+    """
+    queryset = ProviderReportExportJob.objects.filter(
+        provider=access_context['provider'],
+        requested_by=user,
+    )
+    if access_context['organization_scope_allowed']:
+        return queryset
+    return queryset.filter(
+        scope='location',
+        location_id__in=access_context['accessible_locations'].values('pk'),
+    )
+
+
+def _expire_stale_provider_report_export_jobs(queryset) -> None:
+    """
+    Помечает протухшие async jobs как failed.
+
+    Это не дает очереди выгрузок зависать в pending/running навсегда после
+    падения broker, worker или dev-процесса.
+    """
+    now = timezone.now()
+    pending_cutoff = now - timedelta(minutes=5)
+    running_cutoff = now - timedelta(minutes=30)
+
+    with transaction.atomic():
+        queryset.filter(
+            status=ProviderReportExportJob.STATUS_PENDING,
+            started_at__isnull=True,
+            created_at__lt=pending_cutoff,
+        ).update(
+            status=ProviderReportExportJob.STATUS_FAILED,
+            completed_at=now,
+            error_message=_('Export job timed out before processing started.'),
+            version=F('version') + 1,
+            updated_at=now,
+        )
+        queryset.filter(
+            status=ProviderReportExportJob.STATUS_RUNNING,
+            started_at__lt=running_cutoff,
+        ).update(
+            status=ProviderReportExportJob.STATUS_FAILED,
+            completed_at=now,
+            error_message=_('Export job timed out during processing.'),
+            version=F('version') + 1,
+            updated_at=now,
+        )
+
+
+def _serialize_provider_report_export_job(request, job: ProviderReportExportJob) -> dict:
+    """
+    Преобразует async job выгрузки в API payload.
+
+    Args:
+        request: Текущий request.
+        job: Экземпляр ProviderReportExportJob.
+
+    Returns:
+        dict: Сериализованные данные job.
+    """
+    download_url = None
+    if job.status == ProviderReportExportJob.STATUS_COMPLETED and job.file:
+        download_url = request.build_absolute_uri(
+            reverse('providers:provider-report-export-download', kwargs={
+                'provider_id': job.provider_id,
+                'job_id': job.id,
+            })
+        )
+    return {
+        'id': job.id,
+        'provider_id': job.provider_id,
+        'location_id': job.location_id,
+        'report_code': job.report_code,
+        'scope': job.scope,
+        'export_format': job.export_format,
+        'language_code': job.language_code,
+        'start_date': job.start_date.isoformat() if job.start_date else None,
+        'end_date': job.end_date.isoformat() if job.end_date else None,
+        'status': job.status,
+        'filename': job.filename,
+        'error_message': job.error_message,
+        'version': job.version,
+        'created_at': job.created_at.isoformat() if job.created_at else None,
+        'started_at': job.started_at.isoformat() if job.started_at else None,
+        'completed_at': job.completed_at.isoformat() if job.completed_at else None,
+        'downloaded_at': job.downloaded_at.isoformat() if job.downloaded_at else None,
+        'download_url': download_url,
+    }
+
+
+def _run_provider_report_export_job_locally(job_id: int) -> None:
+    """
+    Выполняет генерацию выгрузки в локальном daemon-thread, если broker недоступен.
+
+    Такой fallback нужен для dev/staging окружений, где UI должен продолжать
+    работать без отдельно поднятого Celery worker.
+    """
+    close_old_connections()
+    try:
+        generate_provider_report_export_task.run(job_id)
+    finally:
+        close_old_connections()
 
 
 def _get_provider_full_address(provider):
@@ -153,7 +532,39 @@ class IsProviderAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-        return request.user.get_managed_providers().exists()
+        return bool(ProviderPermissionService.ensure_provider_access_roles(request.user))
+
+
+class ProviderDashboardAPIView(APIView):
+    """
+    Возвращает realtime operational dashboard для provider admin приложения.
+
+    Query params:
+    - provider_id: выбранный provider из селектора админки
+    - alerts_minutes: размер окна для system alerts
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        """Собирает и сериализует dashboard payload."""
+        query_serializer = ProviderDashboardQuerySerializer(data=request.query_params)
+        query_serializer.is_valid(raise_exception=True)
+
+        try:
+            payload = ProviderDashboardService.build_dashboard(
+                user=request.user,
+                provider_id=query_serializer.validated_data.get('provider_id'),
+                alerts_minutes=query_serializer.validated_data.get('alerts_minutes', 30),
+            )
+        except PermissionError as exc:
+            raise PermissionDenied(str(exc)) from exc
+
+        serializer = ProviderDashboardSerializer(payload)
+        response_payload = dict(serializer.data)
+        if not payload['scope']['can_view_financials']:
+            response_payload.pop('financials', None)
+        return Response(response_payload)
 
 
 class RequisitesValidationRulesAPIView(APIView):
@@ -257,10 +668,8 @@ class ProviderListCreateAPIView(generics.ListCreateAPIView):
         queryset = self.queryset
         if self.request.method == 'GET' and _is_brief_mode(self.request):
             queryset = queryset.select_related('structured_address')
-        managed_providers = _get_managed_providers(self.request.user)
-        if managed_providers.exists():
-            queryset = queryset.filter(id__in=managed_providers)
-        return queryset
+        resource_code = 'dashboard' if self.request.method == 'GET' else 'org.profile'
+        return _filter_providers_by_permission(queryset, self.request.user, resource_code, 'read')
 
 
 class ProviderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -292,10 +701,14 @@ class ProviderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
         queryset = self.queryset
         if self.request.method == 'GET' and _is_brief_mode(self.request):
             queryset = queryset.select_related('structured_address')
-        managed_providers = _get_managed_providers(self.request.user)
-        if managed_providers.exists():
-            queryset = queryset.filter(id__in=managed_providers)
-        return queryset
+        action = 'read'
+        resource_code = 'org.profile'
+        if self.request.method in {'PUT', 'PATCH'}:
+            action = 'update'
+        elif self.request.method == 'DELETE':
+            action = 'delete'
+            resource_code = 'org.deactivation'
+        return _filter_providers_by_permission(queryset, self.request.user, resource_code, action)
 
 
 class ProviderAdminListAPIView(generics.ListAPIView):
@@ -304,22 +717,32 @@ class ProviderAdminListAPIView(generics.ListAPIView):
     Для страницы персонала: отображение владельца учреждения и админов. Источник — EmployeeProvider.
     Доступ: только админ или владелец данного провайдера.
     """
-    permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
+    permission_classes = [permissions.IsAuthenticated]
     serializer_class = ProviderAdminListSerializer
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
             return EmployeeProvider.objects.none()
         provider_id = self.kwargs.get('provider_id')
-        managed = _get_managed_providers(self.request.user)
-        if not managed.filter(pk=provider_id).exists():
-            return EmployeeProvider.objects.none()
+        provider = _get_provider_or_403(self.request.user, provider_id, 'staff.roles', 'read')
         role_q = Q(is_owner=True) | Q(is_provider_manager=True) | Q(is_provider_admin=True)
         return EmployeeProvider.objects.filter(
-            provider_id=provider_id,
+            provider=provider,
         ).filter(role_q).filter(_active_employee_provider_q()).select_related(
             'employee', 'employee__user', 'provider'
         ).order_by('-is_owner', '-is_provider_manager', '-is_provider_admin', 'created_at')
+
+
+class ProviderMyPermissionsAPIView(APIView):
+    """Возвращает effective provider RBAC для текущего пользователя."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, provider_id):
+        provider = get_object_or_404(Provider, pk=provider_id)
+        if not ProviderPermissionService.get_user_roles_for_provider(request.user, provider):
+            raise PermissionDenied(_('You do not have access to this provider.'))
+        return Response(build_provider_permissions_payload(request.user, provider))
 
 
 class ProviderAdminAssignSelfAPIView(APIView):
@@ -328,14 +751,11 @@ class ProviderAdminAssignSelfAPIView(APIView):
     POST providers/<provider_id>/admins/assign-self/
     Body: { "role": "provider_manager" }. role=owner возвращает 400.
     """
-    permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, provider_id):
         from django.utils import timezone
-        provider = get_object_or_404(Provider, pk=provider_id)
-        managed = request.user.get_managed_providers()
-        if not managed.filter(pk=provider_id).exists():
-            raise PermissionDenied(_('You do not manage this provider.'))
+        provider = _get_provider_or_403(request.user, provider_id, 'staff.roles', 'update')
         if not _user_is_owner_for_provider(request.user, provider):
             raise PermissionDenied(_('Only the owner can assign themselves as manager.'))
         role = request.data.get('role')
@@ -388,7 +808,7 @@ class ProviderAdminAssignSelfAPIView(APIView):
                 if is_provider_manager:
                     existing.is_provider_manager = True
                     existing.is_manager = True
-                existing.save(update_fields=['is_owner', 'is_provider_manager', 'is_manager'])
+                existing.save(update_fields=['is_owner', 'is_provider_manager', 'is_manager', 'role', 'updated_at'])
                 ep = existing
             else:
                 ep = EmployeeProvider.objects.create(
@@ -419,13 +839,13 @@ class ProviderAdminRevokeAPIView(APIView):
     POST providers/<provider_id>/admins/revoke/
     Body: { "user_id": <id> }
     """
-    permission_classes = [permissions.IsAuthenticated, IsProviderAdmin]
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, provider_id):
         from django.db import transaction
         from invites.services import maybe_remove_role
 
-        provider = get_object_or_404(Provider, pk=provider_id)
+        provider = _get_provider_or_403(request.user, provider_id, 'staff.roles', 'delete')
         if not _user_is_owner_for_provider(request.user, provider):
             raise PermissionDenied(_('Only the owner can revoke an organization admin.'))
         user_id = request.data.get('user_id')
@@ -462,8 +882,8 @@ class ProviderAdminRevokeAPIView(APIView):
             )
         with transaction.atomic():
             ep.is_provider_admin = False
-            if ep.role == EmployeeProvider.ROLE_PROVIDER_ADMIN:
-                ep.role = EmployeeProvider.ROLE_SERVICE_WORKER
+            if not ep.is_owner and not ep.is_provider_manager:
+                ep.role = EmployeeProvider.ROLE_WORKER
             ep.save(update_fields=['is_provider_admin', 'role', 'updated_at'])
             maybe_remove_role(target_user, 'provider_admin')
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -673,8 +1093,31 @@ class LocationStaffDeactivateAPIView(APIView):
         from rest_framework.response import Response
         from booking.reassignment_service import BookingReassignmentService
 
-        location = get_object_or_404(_location_manager_queryset(request), pk=location_pk)
-        employee = get_object_or_404(Employee, pk=employee_id)
+        location, employee = _get_location_and_staff_employee(
+            request,
+            location_pk,
+            employee_id,
+            resource_code='staff.fire',
+            action='delete',
+        )
+        provider_link = (
+            EmployeeProvider.objects.filter(provider=location.provider, employee=employee)
+            .filter(_active_employee_provider_q())
+            .order_by('-is_owner', '-is_provider_manager', '-is_provider_admin', '-start_date', '-id')
+            .first()
+        )
+        location_role = EmployeeLocationRole.objects.filter(
+            employee=employee,
+            provider_location=location,
+            is_active=True,
+        ).first()
+        fire_permission = ProviderPermissionService.get_user_permissions(request.user, location.provider).get('staff.fire', {})
+        if fire_permission.get('scope') == 'own_branch':
+            if (
+                (provider_link and (provider_link.is_owner or provider_link.is_provider_manager or provider_link.is_provider_admin))
+                or (location_role and location_role.role == EmployeeLocationRole.ROLE_BRANCH_MANAGER)
+            ):
+                raise PermissionDenied(_('Branch managers can only offboard workers in their own branch.'))
 
         # Get future bookings
         future_bookings = BookingReassignmentService.get_future_bookings(
@@ -733,9 +1176,31 @@ class LocationStaffReactivateAPIView(APIView):
     def patch(self, request, location_pk, employee_id):
         from rest_framework import status
         from rest_framework.response import Response
-        
-        location = get_object_or_404(_location_manager_queryset(request), pk=location_pk)
-        employee = get_object_or_404(Employee, pk=employee_id)
+
+        location, employee = _get_location_and_staff_employee(
+            request,
+            location_pk,
+            employee_id,
+            resource_code='staff.fire',
+            action='delete',
+        )
+        fire_permission = ProviderPermissionService.get_user_permissions(request.user, location.provider).get('staff.fire', {})
+        provider_link = (
+            EmployeeProvider.objects.filter(provider=location.provider, employee=employee)
+            .filter(_active_employee_provider_q())
+            .order_by('-is_owner', '-is_provider_manager', '-is_provider_admin', '-start_date', '-id')
+            .first()
+        )
+        role_obj = EmployeeLocationRole.objects.filter(
+            employee=employee,
+            provider_location=location,
+        ).first()
+        if fire_permission.get('scope') == 'own_branch':
+            if (
+                (provider_link and (provider_link.is_owner or provider_link.is_provider_manager or provider_link.is_provider_admin))
+                or (role_obj and role_obj.role == EmployeeLocationRole.ROLE_BRANCH_MANAGER)
+            ):
+                raise PermissionDenied(_('Branch managers can only restore workers in their own branch.'))
 
         try:
             role_obj = EmployeeLocationRole.objects.get(
@@ -2186,6 +2651,8 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
         """
         if getattr(self, 'swagger_fake_view', False):
             return ProviderLocation.objects.none()
+        report_access_mode = str(self.request.query_params.get('report_access', '')).strip().lower() in {'1', 'true', 'yes'}
+        provider_filter = self.request.query_params.get('provider')
         queryset = ProviderLocation.objects.select_related(
             'provider', 'provider__invoice_currency', 'structured_address', 'manager'
         )
@@ -2197,34 +2664,27 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
         else:
             queryset = queryset.prefetch_related('served_pet_types')
         
-        # Provider admin видит только локации своей организации
-        managed_providers = _get_managed_providers(self.request.user)
-        if managed_providers.exists():
-            queryset = queryset.filter(provider__in=managed_providers)
-        
-        return queryset
+        if report_access_mode and provider_filter:
+            try:
+                provider_id = int(provider_filter)
+            except (TypeError, ValueError):
+                return ProviderLocation.objects.none()
+            provider = Provider.objects.filter(pk=provider_id).first()
+            if provider is None:
+                return ProviderLocation.objects.none()
+            queryset = queryset.filter(pk__in=_get_report_accessible_locations(self.request.user, provider).values('pk'))
+
+        return _filter_locations_by_permission(queryset, self.request.user, 'locations.list', 'read')
     
     def perform_create(self, serializer):
         """
         Создает локацию с проверкой прав доступа.
         """
-        # Проверяем права доступа - только provider_admin и system_admin могут создавать локации
-        if not (self.request.user.get_managed_providers().exists() or _user_has_role(self.request.user, 'system_admin')):
-            raise PermissionDenied(
-                _('You do not have permission to create locations.')
-            )
-        
         provider = serializer.validated_data.get('provider')
-        
-        # Проверяем права доступа для provider_admin
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
-            if provider not in managed_providers:
-                raise PermissionDenied(
-                    _('You can only create locations for your own organization.')
-                )
+        _require_provider_permission(self.request.user, provider, 'locations.list', 'create')
         # Автоматически назначаем владельца организации менеджером филиала
         from providers.models import EmployeeProvider
+        from providers.permission_service import ProviderPermissionService
         owner_ep = EmployeeProvider.objects.filter(
             provider=provider,
             is_owner=True
@@ -2233,10 +2693,20 @@ class ProviderLocationListCreateAPIView(generics.ListCreateAPIView):
         manager = None
         if owner_ep and owner_ep.employee and hasattr(owner_ep.employee, 'user'):
             manager = owner_ep.employee.user
-            if not manager.has_role('branch_manager'):
-                manager.add_role('branch_manager')
-                
-        serializer.save(manager=manager)
+        location = serializer.save(manager=manager)
+        if manager is not None:
+            EmployeeLocationRole.objects.update_or_create(
+                employee=owner_ep.employee,
+                provider_location=location,
+                defaults={
+                    'role': EmployeeLocationRole.ROLE_BRANCH_MANAGER,
+                    'is_active': True,
+                    'end_date': None,
+                },
+            )
+            if not owner_ep.employee.locations.filter(pk=location.pk).exists():
+                owner_ep.employee.locations.add(location)
+            ProviderPermissionService.sync_user_access_roles(manager)
 
 
 class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
@@ -2259,58 +2729,53 @@ class ProviderLocationRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
         queryset = ProviderLocation.objects.select_related(
             'provider', 'provider__invoice_currency', 'structured_address', 'manager'
         ).prefetch_related(
-            'available_services', 'served_pet_types',
-            'employees', 'schedules', 'location_schedules', 'location_services',
-            'location_services__service', 'location_services__pet_type'
+            'served_pet_types',
+            'employees', 'schedules', 'location_schedules', 'location_services'
         )
-        
-        # Provider admin видит только локации своей организации
-        managed_providers = _get_managed_providers(self.request.user)
-        if managed_providers.exists():
-            queryset = queryset.filter(provider__in=managed_providers)
-        
-        return queryset
+
+        resource_code = 'locations.list' if self.request.method == 'GET' else 'locations.settings'
+        action = 'read' if self.request.method == 'GET' else 'update'
+        if self.request.method == 'DELETE':
+            action = 'delete'
+        return _filter_locations_by_permission(queryset, self.request.user, resource_code, action)
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['include_available_services'] = str(self.request.query_params.get('include_available_services', '')).strip().lower() in {'1', 'true', 'yes'}
+        return context
     
     def perform_update(self, serializer):
         """
         Обновляет локацию с проверкой прав доступа.
         """
         provider = serializer.validated_data.get('provider', serializer.instance.provider)
-        
-        # Проверяем права доступа
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
-            if provider not in managed_providers:
-                raise PermissionDenied(
-                    _('You can only update locations of your own organization.')
-                )
-        
+        _require_provider_permission(
+            self.request.user,
+            provider,
+            'locations.settings',
+            'update',
+            target_location=serializer.instance,
+        )
         serializer.save()
     
     def perform_destroy(self, instance):
         """
         Удаляет локацию с проверкой прав доступа.
         """
-        # Проверяем права доступа
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
-            if instance.provider not in managed_providers:
-                raise PermissionDenied(
-                    _('You can only delete locations of your own organization.')
-                )
-        
+        _require_provider_permission(
+            self.request.user,
+            instance.provider,
+            'locations.settings',
+            'delete',
+            target_location=instance,
+        )
         instance.delete()
 
 
-def _location_manager_queryset(request):
-    """Queryset локаций, которыми может управлять текущий пользователь (для установки/снятия руководителя)."""
+def _location_manager_queryset(request, resource_code: str = 'staff.roles', action: str = 'update'):
+    """Queryset локаций, которыми пользователь может управлять по указанному ресурсу."""
     qs = ProviderLocation.objects.select_related('provider', 'manager')
-    if request.user.get_managed_providers().exists():
-        managed = request.user.get_managed_providers()
-        qs = qs.filter(provider__in=managed)
-    else:
-        qs = qs.none()
-    return qs
+    return _filter_locations_by_permission(qs, request.user, resource_code, action)
 
 
 class SetLocationManagerAPIView(APIView):
@@ -2323,7 +2788,7 @@ class SetLocationManagerAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, pk):
-        location = get_object_or_404(_location_manager_queryset(request), pk=pk)
+        location = get_object_or_404(_location_manager_queryset(request, 'staff.roles', 'update'), pk=pk)
         email = (request.data.get('email') or '').strip().lower()
         if not email:
             return Response(
@@ -2339,9 +2804,22 @@ class SetLocationManagerAPIView(APIView):
             )
         old_manager = location.manager
         if user.id == request.user.id:
-            location.manager = user
-            location.save(update_fields=['manager'])
-            user.add_role('branch_manager')
+            from providers.models import EmployeeLocationRole
+            from providers.permission_service import ProviderPermissionService
+
+            employee = _get_employee(user)
+            EmployeeLocationRole.objects.update_or_create(
+                employee=employee,
+                provider_location=location,
+                defaults={
+                    'role': EmployeeLocationRole.ROLE_BRANCH_MANAGER,
+                    'is_active': True,
+                    'end_date': None,
+                },
+            )
+            if not employee.locations.filter(pk=location.pk).exists():
+                employee.locations.add(location)
+            ProviderPermissionService.sync_user_access_roles(user)
             if old_manager and old_manager.pk != user.pk:
                 from invites.services import maybe_remove_role
                 maybe_remove_role(old_manager, 'branch_manager')
@@ -2398,7 +2876,7 @@ class CancelLocationManagerInviteAPIView(APIView):
 
     def delete(self, request, pk):
         from invites.models import Invite
-        location = get_object_or_404(_location_manager_queryset(request), pk=pk)
+        location = get_object_or_404(_location_manager_queryset(request, 'staff.invite', 'delete'), pk=pk)
         Invite.objects.filter(
             provider_location=location,
             invite_type=Invite.TYPE_BRANCH_MANAGER,
@@ -2419,9 +2897,34 @@ class LocationStaffListAPIView(APIView):
 
     def get(self, request, pk):
         from invites.models import Invite
-        location = get_object_or_404(_location_manager_queryset(request), pk=pk)
+        location = get_object_or_404(_location_manager_queryset(request, 'staff.list', 'read'), pk=pk)
         provider = location.provider
-        
+
+        # Собираем историю employment на уровне организации, чтобы показывать дату приема/увольнения.
+        employee_ids = list(
+            Employee.objects.filter(
+                locations=location,
+                employeeprovider_set__provider=provider,
+            )
+            .distinct()
+            .values_list('id', flat=True)
+        )
+        employment_stats = {
+            row['employee_id']: row
+            for row in (
+                EmployeeProvider.objects.filter(
+                    provider=provider,
+                    employee_id__in=employee_ids,
+                )
+                .values('employee_id')
+                .annotate(
+                    hire_date=Min('start_date'),
+                    last_end_date=Max('end_date'),
+                    active_links=Count('id', filter=Q(end_date__isnull=True) | Q(end_date__gte=timezone.localdate())),
+                )
+            )
+        }
+
         # Determine location-specific active status via EmployeeLocationRole
         from providers.models import EmployeeLocationRole
         location_roles = {
@@ -2429,28 +2932,76 @@ class LocationStaffListAPIView(APIView):
             for r in EmployeeLocationRole.objects.filter(provider_location=location)
         }
 
+        location_service_count = len(
+            set(
+                ProviderLocationService.objects.filter(
+                    location=location,
+                    is_active=True,
+                ).values_list('service_id', flat=True)
+            )
+        )
+        employee_services_map = defaultdict(list)
+        for employee_service in (
+            EmployeeLocationService.objects.filter(provider_location=location, employee_id__in=employee_ids)
+            .select_related('service')
+            .order_by('service__name')
+        ):
+            service_name = employee_service.service.name_en or employee_service.service.name or str(employee_service.service_id)
+            employee_services_map[employee_service.employee_id].append(service_name)
+
         employees = []
-        for ep in EmployeeProvider.objects.filter(
-            provider=provider,
-            employee__locations=location,
-            end_date__isnull=True,
-        ).select_related('employee', 'employee__user').distinct():
-            
-            # Default to active if role record doesn't exist
-            role_obj = location_roles.get(ep.employee_id)
-            is_active_loc = role_obj.is_active if role_obj else True
-            
+        for employee in (
+            Employee.objects.filter(id__in=employee_ids)
+            .select_related('user')
+            .order_by('user__first_name', 'user__last_name', 'id')
+        ):
+            employment = employment_stats.get(employee.id, {})
+            role_obj = location_roles.get(employee.id)
+            has_active_provider_link = bool(employment.get('active_links'))
+            is_active_loc = role_obj.is_active if role_obj else has_active_provider_link
+            dismissal_dt = role_obj.end_date if role_obj and role_obj.end_date else None
+            if dismissal_dt is None and employment.get('last_end_date') and not has_active_provider_link:
+                dismissal_dt = datetime.combine(
+                    employment['last_end_date'],
+                    datetime.min.time(),
+                    tzinfo=timezone.get_current_timezone(),
+                )
+
+            service_names = employee_services_map.get(employee.id, [])
+            if not service_names:
+                service_summary = ''
+            elif location_service_count and len(service_names) >= location_service_count:
+                service_summary = _('All branch services')
+            elif len(service_names) <= 3:
+                service_summary = ', '.join(service_names)
+            else:
+                service_summary = _('%(visible)s (+%(hidden)s more)') % {
+                    'visible': ', '.join(service_names[:3]),
+                    'hidden': len(service_names) - 3,
+                }
+
+            provider_link = (
+                EmployeeProvider.objects.filter(provider=provider, employee=employee)
+                .order_by('-is_owner', '-is_provider_manager', '-is_provider_admin', '-start_date', '-id')
+                .first()
+            )
+
             employees.append({
                 'type': 'employee',
-                'id': ep.employee_id,
-                'email': ep.employee.user.email,
-                'first_name': ep.employee.user.first_name,
-                'last_name': ep.employee.user.last_name,
-                'is_owner': ep.is_owner,
-                'is_provider_manager': ep.is_provider_manager,
-                'is_provider_admin': ep.is_provider_admin,
-                'is_manager': ep.is_manager,
+                'id': employee.id,
+                'email': employee.user.email,
+                'first_name': employee.user.first_name,
+                'last_name': employee.user.last_name,
+                'is_owner': provider_link.is_owner if provider_link else False,
+                'is_provider_manager': provider_link.is_provider_manager if provider_link else False,
+                'is_provider_admin': provider_link.is_provider_admin if provider_link else False,
+                'is_manager': provider_link.is_manager if provider_link else False,
                 'is_active': is_active_loc,
+                'hire_date': employment.get('hire_date'),
+                'dismissed_at': dismissal_dt,
+                'service_names': service_names,
+                'service_count': len(service_names),
+                'service_summary': str(service_summary) if service_summary else '',
             })
         invites = []
         for inv in Invite.objects.filter(
@@ -2472,16 +3023,279 @@ class LocationStaffListAPIView(APIView):
         })
 
 
-def _get_location_and_staff_employee(request, location_pk, employee_id):
+def _get_location_and_staff_employee(request, location_pk, employee_id, resource_code='staff.list', action='read'):
     """
     Возвращает (location, employee) если пользователь может управлять локацией
     и сотрудник привязан к этой локации. Иначе raises 404 или PermissionDenied.
     """
-    location = get_object_or_404(_location_manager_queryset(request), pk=location_pk)
+    location = get_object_or_404(_location_manager_queryset(request, resource_code, action), pk=location_pk)
     employee = get_object_or_404(Employee, pk=employee_id)
     if not employee.locations.filter(pk=location.pk).exists():
         raise PermissionDenied(_('This employee is not assigned to this location.'))
     return location, employee
+
+
+class ProviderLocationReportsAPIView(APIView):
+    """
+    Операционная отчетность филиала/организации для provider admin.
+
+    Query params:
+    - report: staff_roster | staff_schedule | services_price_list | service_coverage | staff_load | staff_performance | bookings_summary
+    - scope: location | provider
+    - start_date / end_date: YYYY-MM-DD для периодных отчетов
+    - output: json | xlsx
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, location_pk):
+        report_code = (request.query_params.get('report') or '').strip()
+        report_resource = _get_report_resource_code(report_code)
+        location = _get_location_or_403(request, location_pk, report_resource, 'read')
+        scope = (request.query_params.get('scope') or 'location').strip()
+        report_permission = ProviderPermissionService.get_user_permissions(request.user, location.provider).get(report_resource, {})
+        if scope == 'provider' and report_permission.get('scope') != 'all':
+            raise PermissionDenied(_('Organization-wide reports are not available for this account.'))
+        output_format = (
+            request.query_params.get('output')
+            or request.query_params.get('download')
+            or request.query_params.get('export')
+            or request.query_params.get('format')
+            or 'json'
+        ).strip().lower()
+        language_code = (
+            request.query_params.get('language')
+            or getattr(request, 'LANGUAGE_CODE', None)
+            or translation.get_language()
+            or 'en'
+        )
+
+        start_date = None
+        end_date = None
+        start_date_raw = (request.query_params.get('start_date') or '').strip()
+        end_date_raw = (request.query_params.get('end_date') or '').strip()
+        try:
+            if start_date_raw:
+                start_date = datetime.strptime(start_date_raw, '%Y-%m-%d').date()
+            if end_date_raw:
+                end_date = datetime.strptime(end_date_raw, '%Y-%m-%d').date()
+        except ValueError:
+            return Response(
+                {'detail': _('Dates must use YYYY-MM-DD format.')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        service = ProviderLocationReportingService(
+            location=location,
+            scope=scope,
+            language_code=language_code,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        try:
+            if output_format == 'xlsx':
+                return service.build_xlsx_response(report_code)
+            if output_format != 'json':
+                return Response(
+                    {'detail': _('Unsupported format. Use json or xlsx.')},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            return Response(service.build_report(report_code))
+        except ProviderLocationReportError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ProviderReportsAPIView(APIView):
+    """
+    Централизованная отчетность по провайдеру.
+
+    Query params:
+    - report: code
+    - scope: location | provider
+    - location_id: обязателен для location scope, опционален для provider scope
+    - start_date / end_date: YYYY-MM-DD
+    - output: json | xlsx
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, provider_id):
+        try:
+            report_context = _resolve_provider_report_request(request, provider_id)
+        except ProviderLocationReportError as exc:
+            return Response(
+                {'detail': str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        output_format = (
+            request.query_params.get('output')
+            or request.query_params.get('download')
+            or request.query_params.get('export')
+            or request.query_params.get('format')
+            or 'json'
+        ).strip().lower()
+
+        service = ProviderLocationReportingService(
+            location=report_context['selected_location'],
+            scope=report_context['scope'],
+            language_code=report_context['language_code'],
+            start_date=report_context['start_date'],
+            end_date=report_context['end_date'],
+        )
+        try:
+            if output_format == 'xlsx':
+                return service.build_xlsx_response(report_context['report_code'])
+            if output_format != 'json':
+                return Response(
+                    {'detail': _('Unsupported format. Use json or xlsx.')},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            payload = service.build_report(report_context['report_code'])
+            payload['context'] = {
+                'provider_id': report_context['provider'].id,
+                'provider_name': report_context['provider'].name,
+                'location_id': report_context['selected_location'].id,
+                'location_name': report_context['selected_location'].name,
+                'organization_scope_allowed': report_context['organization_scope_allowed'],
+            }
+            return Response(payload)
+        except ProviderLocationReportError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ProviderReportExportListCreateAPIView(APIView):
+    """
+    Создает и перечисляет async jobs выгрузок отчетов провайдера.
+
+    GET:
+    - Возвращает последние выгрузки текущего пользователя по организации.
+
+    POST:
+    - Создает async job на XLSX выгрузку.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, provider_id):
+        try:
+            access_context = _get_provider_report_access_context(request.user, provider_id)
+        except ProviderLocationReportError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        jobs_queryset = _get_provider_report_export_queryset(access_context=access_context, user=request.user)
+        _expire_stale_provider_report_export_jobs(jobs_queryset)
+        jobs = (
+            jobs_queryset
+            .select_related('location')
+            .order_by('-created_at')[:20]
+        )
+        return Response({
+            'results': [_serialize_provider_report_export_job(request, item) for item in jobs]
+        })
+
+    def post(self, request, provider_id):
+        export_format = (request.data.get('export_format') or request.query_params.get('export_format') or 'xlsx').strip().lower()
+        if export_format != ProviderReportExportJob.FORMAT_XLSX:
+            return Response(
+                {'detail': _('Unsupported export format. Use xlsx.')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            report_context = _resolve_provider_report_request(request, provider_id)
+        except ProviderLocationReportError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            provider = Provider.objects.select_for_update().get(pk=report_context['provider'].id)
+            location = None
+            if report_context['selected_location'].id:
+                location = ProviderLocation.objects.select_for_update().get(pk=report_context['selected_location'].id)
+            job = ProviderReportExportJob.objects.create(
+                provider=provider,
+                location=location,
+                requested_by=request.user,
+                report_code=report_context['report_code'],
+                scope=report_context['scope'],
+                export_format=export_format,
+                language_code=report_context['language_code'],
+                start_date=report_context['start_date'],
+                end_date=report_context['end_date'],
+                filename='',
+            )
+
+        try:
+            generate_provider_report_export_task.delay(job.id)
+        except Exception:
+            Thread(
+                target=_run_provider_report_export_job_locally,
+                args=(job.id,),
+                daemon=True,
+                name=f'provider-report-export-{job.id}',
+            ).start()
+        job.refresh_from_db()
+        return Response(
+            _serialize_provider_report_export_job(request, job),
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class ProviderReportExportRetrieveAPIView(APIView):
+    """
+    Возвращает статус async job выгрузки отчета.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, provider_id, job_id):
+        try:
+            access_context = _get_provider_report_access_context(request.user, provider_id)
+        except ProviderLocationReportError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        jobs_queryset = _get_provider_report_export_queryset(access_context=access_context, user=request.user)
+        _expire_stale_provider_report_export_jobs(jobs_queryset)
+        job = get_object_or_404(
+            jobs_queryset.select_related('location'),
+            pk=job_id,
+        )
+        return Response(_serialize_provider_report_export_job(request, job))
+
+
+class ProviderReportExportDownloadAPIView(APIView):
+    """
+    Скачивает готовый файл async выгрузки отчета.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, provider_id, job_id):
+        try:
+            access_context = _get_provider_report_access_context(request.user, provider_id)
+        except ProviderLocationReportError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        jobs_queryset = _get_provider_report_export_queryset(access_context=access_context, user=request.user)
+        _expire_stale_provider_report_export_jobs(jobs_queryset)
+        with transaction.atomic():
+            job = get_object_or_404(
+                jobs_queryset.select_for_update(),
+                pk=job_id,
+            )
+            if job.status != ProviderReportExportJob.STATUS_COMPLETED or not job.file:
+                return Response(
+                    {'detail': _('Export file is not ready yet.')},
+                    status=status.HTTP_409_CONFLICT,
+                )
+            if job.downloaded_at is None:
+                job.downloaded_at = timezone.now()
+                job.version += 1
+                job.save(update_fields=['downloaded_at', 'version', 'updated_at'])
+
+        response = FileResponse(job.file.open('rb'), as_attachment=True, filename=job.filename or job.file.name.rsplit('/', 1)[-1])
+        response['Content-Type'] = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        return response
 
 
 class LocationStaffServicesAPIView(APIView):
@@ -2494,7 +3308,13 @@ class LocationStaffServicesAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, location_pk, employee_id):
-        location, employee = _get_location_and_staff_employee(request, location_pk, employee_id)
+        location, employee = _get_location_and_staff_employee(
+            request,
+            location_pk,
+            employee_id,
+            resource_code='locations.services',
+            action='read',
+        )
         employee_service_ids = list(
             EmployeeLocationService.objects.filter(
                 employee=employee, provider_location=location
@@ -2504,7 +3324,13 @@ class LocationStaffServicesAPIView(APIView):
 
     def patch(self, request, location_pk, employee_id):
         from django.db import transaction
-        location, employee = _get_location_and_staff_employee(request, location_pk, employee_id)
+        location, employee = _get_location_and_staff_employee(
+            request,
+            location_pk,
+            employee_id,
+            resource_code='locations.services',
+            action='update',
+        )
         # Услуги филиала (из прайса)
         allowed_ids = set(
             ProviderLocationService.objects.filter(
@@ -2569,7 +3395,13 @@ class LocationStaffServicesAddByCategoryAPIView(APIView):
 
     def post(self, request, location_pk, employee_id):
         from django.db import transaction
-        location, employee = _get_location_and_staff_employee(request, location_pk, employee_id)
+        location, employee = _get_location_and_staff_employee(
+            request,
+            location_pk,
+            employee_id,
+            resource_code='locations.services',
+            action='update',
+        )
         category_id = request.data.get('category_id')
         if category_id is None:
             return Response(
@@ -2640,7 +3472,13 @@ class LocationStaffSchedulePatternAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, location_pk, employee_id):
-        location, employee = _get_location_and_staff_employee(request, location_pk, employee_id)
+        location, employee = _get_location_and_staff_employee(
+            request,
+            location_pk,
+            employee_id,
+            resource_code='locations.schedule',
+            action='read',
+        )
         schedules = Schedule.objects.filter(
             employee=employee,
             provider_location=location,
@@ -2682,7 +3520,13 @@ class LocationStaffSchedulePatternAPIView(APIView):
     def put(self, request, location_pk, employee_id):
         from django.db import transaction
         from datetime import time as dt_time
-        location, employee = _get_location_and_staff_employee(request, location_pk, employee_id)
+        location, employee = _get_location_and_staff_employee(
+            request,
+            location_pk,
+            employee_id,
+            resource_code='locations.schedule',
+            action='update',
+        )
         days = request.data.get('days')
         if not isinstance(days, list) or len(days) != 7:
             return Response(
@@ -2801,10 +3645,8 @@ class LocationScheduleListCreateAPIView(generics.ListCreateAPIView):
             return LocationSchedule.objects.none()
         location_pk = self.kwargs.get('location_pk')
         queryset = LocationSchedule.objects.filter(provider_location_id=location_pk).order_by('weekday')
-        managed = _get_managed_providers(self.request.user)
-        if managed.exists():
-            queryset = queryset.filter(provider_location__provider__in=managed)
-        return queryset
+        location = _get_location_or_403(self.request, location_pk, 'locations.schedule', 'read')
+        return queryset.filter(provider_location=location)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -2813,11 +3655,7 @@ class LocationScheduleListCreateAPIView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         location_pk = self.kwargs.get('location_pk')
-        location = get_object_or_404(ProviderLocation.objects.filter(pk=location_pk))
-        if self.request.user.get_managed_providers().exists():
-            managed = self.request.user.get_managed_providers()
-            if location.provider not in managed:
-                raise PermissionDenied(_('You can only manage schedules of your organization locations.'))
+        location = _get_location_or_403(self.request, location_pk, 'locations.schedule', 'create')
         serializer.save(provider_location=location)
 
 
@@ -2834,10 +3672,13 @@ class LocationScheduleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestro
             return LocationSchedule.objects.none()
         location_pk = self.kwargs.get('location_pk')
         queryset = LocationSchedule.objects.filter(provider_location_id=location_pk)
-        managed = _get_managed_providers(self.request.user)
-        if managed.exists():
-            queryset = queryset.filter(provider_location__provider__in=managed)
-        return queryset
+        location = _get_location_or_403(
+            self.request,
+            location_pk,
+            'locations.schedule',
+            'read' if self.request.method == 'GET' else ('delete' if self.request.method == 'DELETE' else 'update'),
+        )
+        return queryset.filter(provider_location=location)
 
 
 class HolidayShiftListCreateAPIView(generics.ListCreateAPIView):
@@ -2856,10 +3697,8 @@ class HolidayShiftListCreateAPIView(generics.ListCreateAPIView):
         from .models import HolidayShift
         location_pk = self.kwargs.get('location_pk')
         queryset = HolidayShift.objects.filter(provider_location_id=location_pk).order_by('date')
-        managed = _get_managed_providers(self.request.user)
-        if managed.exists():
-            queryset = queryset.filter(provider_location__provider__in=managed)
-        return queryset
+        location = _get_location_or_403(self.request, location_pk, 'locations.schedule', 'read')
+        return queryset.filter(provider_location=location)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -2868,11 +3707,7 @@ class HolidayShiftListCreateAPIView(generics.ListCreateAPIView):
 
     def perform_create(self, serializer):
         location_pk = self.kwargs.get('location_pk')
-        location = get_object_or_404(ProviderLocation.objects.filter(pk=location_pk))
-        if self.request.user.get_managed_providers().exists():
-            managed = self.request.user.get_managed_providers()
-            if location.provider not in managed:
-                raise PermissionDenied(_('You can only manage holiday shifts of your organization locations.'))
+        location = _get_location_or_403(self.request, location_pk, 'locations.schedule', 'create')
         serializer.save(provider_location=location)
 
 
@@ -2891,10 +3726,13 @@ class HolidayShiftRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPI
         from .models import HolidayShift
         location_pk = self.kwargs.get('location_pk')
         queryset = HolidayShift.objects.filter(provider_location_id=location_pk)
-        managed = _get_managed_providers(self.request.user)
-        if managed.exists():
-            queryset = queryset.filter(provider_location__provider__in=managed)
-        return queryset
+        location = _get_location_or_403(
+            self.request,
+            location_pk,
+            'locations.schedule',
+            'read' if self.request.method == 'GET' else ('delete' if self.request.method == 'DELETE' else 'update'),
+        )
+        return queryset.filter(provider_location=location)
 
 
 class ProviderLocationServiceListCreateAPIView(generics.ListCreateAPIView):
@@ -2929,25 +3767,57 @@ class ProviderLocationServiceListCreateAPIView(generics.ListCreateAPIView):
         queryset = ProviderLocationService.objects.select_related(
             'location', 'location__provider', 'service', 'pet_type'
         )
-        
-        # Provider admin видит только услуги локаций своей организации
-        managed_providers = _get_managed_providers(self.request.user)
-        if managed_providers.exists():
-            queryset = queryset.filter(location__provider__in=managed_providers)
-        
-        return queryset
+
+        action = 'read' if self.request.method == 'GET' else 'create'
+        allowed_provider_ids: set[int] = set()
+        allowed_location_ids: set[int] = set()
+        for provider in Provider.objects.filter(id__in=queryset.values_list('location__provider_id', flat=True).distinct()).only('id'):
+            permission = ProviderPermissionService.get_user_permissions(self.request.user, provider).get('locations.services')
+            if not permission or not permission.get(_permission_action_key(action)):
+                continue
+            if permission.get('scope') == 'all':
+                allowed_provider_ids.add(provider.id)
+            elif permission.get('scope') == 'own_branch':
+                allowed_location_ids.update(
+                    ProviderPermissionService.get_location_ids_for_scope(
+                        self.request.user,
+                        provider,
+                        'locations.services',
+                        ProviderRolePermission.SCOPE_OWN_BRANCH,
+                        action=action,
+                    )
+                )
+            else:
+                allowed_location_ids.update(
+                    ProviderPermissionService.get_location_ids_for_scope(
+                        self.request.user,
+                        provider,
+                        'locations.services',
+                        ProviderRolePermission.SCOPE_OWN_ONLY,
+                        action=action,
+                    )
+                )
+        if not allowed_provider_ids and not allowed_location_ids:
+            return queryset.none()
+        location_filter = Q()
+        if allowed_provider_ids:
+            location_filter |= Q(location__provider_id__in=allowed_provider_ids)
+        if allowed_location_ids:
+            location_filter |= Q(location_id__in=allowed_location_ids)
+        return queryset.filter(location_filter)
     
     def perform_create(self, serializer):
         """
         Создаёт одну запись услуги локации (location + service + pet_type + size_code) с проверкой прав.
         """
         location = serializer.validated_data.get('location')
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
-            if location.provider not in managed_providers:
-                raise PermissionDenied(
-                    _('You can only create services for locations of your own organization.')
-                )
+        _require_provider_permission(
+            self.request.user,
+            location.provider,
+            'locations.services',
+            'create',
+            target_location=location,
+        )
         service = serializer.validated_data.get('service')
         if service and not service.is_client_facing:
             from rest_framework.exceptions import ValidationError
@@ -2975,40 +3845,70 @@ class ProviderLocationServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdat
         queryset = ProviderLocationService.objects.select_related(
             'location', 'location__provider', 'service', 'pet_type'
         )
-        
-        # Provider admin видит только услуги локаций своей организации
-        managed_providers = _get_managed_providers(self.request.user)
-        if managed_providers.exists():
-            queryset = queryset.filter(location__provider__in=managed_providers)
-        
-        return queryset
+
+        action = 'read' if self.request.method == 'GET' else ('delete' if self.request.method == 'DELETE' else 'update')
+        allowed_provider_ids: set[int] = set()
+        allowed_location_ids: set[int] = set()
+        for provider in Provider.objects.filter(id__in=queryset.values_list('location__provider_id', flat=True).distinct()).only('id'):
+            permission = ProviderPermissionService.get_user_permissions(self.request.user, provider).get('locations.services')
+            if not permission or not permission.get(_permission_action_key(action)):
+                continue
+            if permission.get('scope') == 'all':
+                allowed_provider_ids.add(provider.id)
+            elif permission.get('scope') == 'own_branch':
+                allowed_location_ids.update(
+                    ProviderPermissionService.get_location_ids_for_scope(
+                        self.request.user,
+                        provider,
+                        'locations.services',
+                        ProviderRolePermission.SCOPE_OWN_BRANCH,
+                        action=action,
+                    )
+                )
+            else:
+                allowed_location_ids.update(
+                    ProviderPermissionService.get_location_ids_for_scope(
+                        self.request.user,
+                        provider,
+                        'locations.services',
+                        ProviderRolePermission.SCOPE_OWN_ONLY,
+                        action=action,
+                    )
+                )
+        if not allowed_provider_ids and not allowed_location_ids:
+            return queryset.none()
+        filters = Q()
+        if allowed_provider_ids:
+            filters |= Q(location__provider_id__in=allowed_provider_ids)
+        if allowed_location_ids:
+            filters |= Q(location_id__in=allowed_location_ids)
+        return queryset.filter(filters)
     
     def perform_update(self, serializer):
         """
         Обновляет услугу локации с проверкой прав доступа.
         """
         location = serializer.validated_data.get('location', serializer.instance.location)
-        
-        # Проверяем права доступа
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
-            if location.provider not in managed_providers:
-                raise PermissionDenied(
-                    _('You can only update services of locations of your own organization.')
-                )
-        
+        _require_provider_permission(
+            self.request.user,
+            location.provider,
+            'locations.services',
+            'update',
+            target_location=location,
+        )
         serializer.save()
     
     def perform_destroy(self, instance):
         """
         Удаляет одну запись услуги локации (одна комбинация тип+размер) с проверкой прав.
         """
-        if self.request.user.get_managed_providers().exists():
-            managed_providers = self.request.user.get_managed_providers()
-            if instance.location.provider not in managed_providers:
-                raise PermissionDenied(
-                    _('You can only delete services of locations of your own organization.')
-                )
+        _require_provider_permission(
+            self.request.user,
+            instance.location.provider,
+            'locations.services',
+            'delete',
+            target_location=instance.location,
+        )
         instance.delete()
 
 
@@ -3021,10 +3921,7 @@ class LocationPriceMatrixAPIView(APIView):
 
     def get(self, request, pk):
         location = get_object_or_404(ProviderLocation.objects.prefetch_related('served_pet_types'), pk=pk)
-        if request.user.get_managed_providers().exists():
-            managed = request.user.get_managed_providers()
-            if location.provider not in managed:
-                raise PermissionDenied(_('You can only view locations of your own organization.'))
+        _require_provider_permission(request.user, location.provider, 'locations.services', 'read', target_location=location)
         # Определяем язык из Accept-Language (как в каталоге)
         lang = translation.get_language() or 'en'
         accept_lang = request.headers.get('Accept-Language', '')
@@ -3087,10 +3984,7 @@ class LocationServicePricesUpdateAPIView(APIView):
             ProviderLocation.objects.prefetch_related('served_pet_types'),
             pk=location_pk
         )
-        if request.user.get_managed_providers().exists():
-            managed = request.user.get_managed_providers()
-            if location.provider not in managed:
-                raise PermissionDenied(_('You can only edit locations of your own organization.'))
+        _require_provider_permission(request.user, location.provider, 'locations.services', 'update', target_location=location)
         location_service = get_object_or_404(
             ProviderLocationService.objects.select_related('service'),
             pk=location_service_id,
@@ -3152,10 +4046,7 @@ class LocationCatalogServicePricesUpdateAPIView(APIView):
             ProviderLocation.objects.prefetch_related('served_pet_types'),
             pk=location_pk
         )
-        if request.user.get_managed_providers().exists():
-            managed = request.user.get_managed_providers()
-            if location.provider not in managed:
-                raise PermissionDenied(_('You can only edit locations of your own organization.'))
+        _require_provider_permission(request.user, location.provider, 'locations.services', 'update', target_location=location)
         service = get_object_or_404(Service, pk=service_id)
         if not service.is_client_facing:
             return Response(
@@ -3214,11 +4105,7 @@ class ProviderAvailableCatalogServicesAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, provider_id):
-        provider = get_object_or_404(Provider, pk=provider_id)
-        if request.user.get_managed_providers().exists():
-            managed = request.user.get_managed_providers()
-            if provider not in managed:
-                raise PermissionDenied(_('You can only view services for your own organization.'))
+        provider = _get_provider_or_403(request.user, provider_id, 'locations.services', 'read')
         root_ids = list(
             provider.available_category_levels.filter(level=0, parent__isnull=True)
             .values_list('id', flat=True)
@@ -3304,5 +4191,6 @@ class ProviderAvailableCatalogServicesAPIView(APIView):
                 'level': s.level,
                 'has_children': s.id in parent_ids,
                 'is_client_facing': s.is_client_facing,
+                'search_keywords': s.search_keywords,
             })
         return Response(out) 

@@ -238,6 +238,8 @@ class GoogleMapsServiceTestCase(TestCase):
 
         result = GoogleMapsService().geocode_address('Test Address')
 
+        self.assertIsNotNone(result)
+        assert result is not None  # for type checker
         self.assertEqual(result['formatted_address'], '123 Test Street, Test City, Test Country')
         self.assertEqual(result['coordinates']['latitude'], Decimal('55.7558'))
 
@@ -305,7 +307,7 @@ class DeviceLocationServiceTestCase(TestCase):
         )
 
         service = DeviceLocationService()
-        service.save_device_location(user, 55.7558, 37.6173, accuracy=15, source='device')
+        service.save_device_location(user, 55.7558, 37.6173, accuracy=15, source='device')  # type: ignore[arg-type]
 
         location = UserLocation.objects.get(user=user)
         self.assertEqual(location.point.coords, (37.6173, 55.7558))

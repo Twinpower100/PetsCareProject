@@ -418,10 +418,11 @@ class ComplaintViewSet(viewsets.ModelViewSet):
         
         avg_resolution_time = None
         if resolved_complaints_with_time.exists():
-            total_time = sum([
-                (complaint.resolved_at - complaint.created_at).total_seconds()
-                for complaint in resolved_complaints_with_time
-            ])
+            total_time = sum(
+                (c.resolved_at - c.created_at).total_seconds()  # type: ignore[reportOptionalOperand]
+                for c in resolved_complaints_with_time
+                if c.resolved_at is not None and c.created_at is not None
+            )
             avg_resolution_time = total_time / resolved_complaints_with_time.count()
         
         stats = {
@@ -436,7 +437,7 @@ class ComplaintViewSet(viewsets.ModelViewSet):
                 'week': recent_complaints,
                 'month': monthly_complaints
             },
-            'avg_resolution_time_hours': avg_resolution_time / 3600 if avg_resolution_time else None
+            'avg_resolution_time_hours': (avg_resolution_time / 3600) if avg_resolution_time is not None else None
         }
         
         return Response(stats)

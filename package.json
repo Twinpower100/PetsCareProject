@@ -1,0 +1,8 @@
+{
+  "name": "petscare-backend",
+  "private": true,
+  "description": "Скрипты проверки типов. Использует npx + системный Node (pip-пакет pyright на Windows без node.exe в venv часто падает).",
+  "scripts": {
+    "typecheck": "npx --yes pyright@1.1.408"
+  }
+}

@@ -10,7 +10,16 @@ URL-маршруты для API модуля передержки питомце
 
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .api_views import SitterProfileViewSet, PetSittingAdViewSet, PetSittingResponseViewSet, SitterReviewViewSet, PetSittingViewSet, ConversationViewSet, PetFilterForSittingAPIView
+from .api_views import (
+    ConversationViewSet,
+    PetFilterForSittingAPIView,
+    PetSittingAdViewSet,
+    PetSittingResponseViewSet,
+    PetSittingViewSet,
+    SitterProfileViewSet,
+    SitterReviewViewSet,
+    search_sitters,
+)
 
 router = DefaultRouter()
 router.register(r'profiles', SitterProfileViewSet, basename='sitter-profile')
@@ -22,5 +31,9 @@ router.register(r'conversations', ConversationViewSet, basename='conversation')
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('sitters/', include(router.urls)),
+    path('search/', search_sitters, name='search-sitters'),
+    path('sitters/search/', search_sitters, name='search-sitters-explicit'),
     path('pets/filter/', PetFilterForSittingAPIView.as_view(), name='pet-filter-for-sitting'),
+    path('sitters/pets/filter/', PetFilterForSittingAPIView.as_view(), name='pet-filter-for-sitting-explicit'),
 ] 

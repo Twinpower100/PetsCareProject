@@ -1,48 +1,125 @@
 """
 Сериализаторы для API модуля передержки питомцев.
 
-Этот модуль содержит сериализаторы для:
-1. Профиля передержки
-2. Поиска передержек
-3. Отзывов и рейтингов
+Этот модуль формирует стабильный frontend-friendly контракт для:
+1. Профилей ситтеров
+2. Объявлений о передержке
+3. Откликов ситтеров
+4. Жизненного цикла передержки
+5. Отзывов и чатов
 """
 
-from rest_framework import serializers
-from .models import SitterProfile, PetSittingAd, PetSittingResponse, SitterReview, PetSitting
-from users.models import User
+from django.db.models import Avg, Count
 from django.utils.translation import gettext_lazy as _
-from .models import Message, Conversation
+from rest_framework import serializers
+
+from geolocation.models import Address
+from users.models import User
+
+from .models import (
+    Conversation,
+    Message,
+    PetSitting,
+    PetSittingAd,
+    PetSittingResponse,
+    SitterProfile,
+    SitterReview,
+)
+
+
+def _serialize_user_brief(user: User | None) -> dict | None:
+    """
+    Возвращает компактное представление пользователя для API.
+    """
+    if user is None:
+        return None
+
+    profile_picture = getattr(user, 'profile_picture', None)
+    return {
+        'id': user.id,
+        'full_name': user.get_full_name() or user.email,
+        'email': user.email,
+        'first_name': user.first_name,
+        'last_name': user.last_name,
+        'profile_picture': profile_picture.url if profile_picture else None,
+    }
+
+
+def _serialize_pet_brief(pet) -> dict | None:
+    """
+    Возвращает компактное представление питомца для API.
+    """
+    if pet is None:
+        return None
+
+    pet_type = getattr(pet, 'pet_type', None)
+    breed = getattr(pet, 'breed', None)
+    return {
+        'id': pet.id,
+        'name': pet.name,
+        'pet_type': pet_type.id if pet_type else None,
+        'pet_type_name': pet_type.get_localized_name() if pet_type else None,
+        'breed': breed.id if breed else None,
+        'breed_name': breed.get_localized_name() if breed else None,
+        'photo': pet.photo.url if getattr(pet, 'photo', None) else None,
+        'weight': float(pet.weight) if getattr(pet, 'weight', None) is not None else None,
+        'description': getattr(pet, 'description', '') or '',
+        'behavioral_traits': list(getattr(pet, 'behavioral_traits', []) or []),
+        'special_needs': getattr(pet, 'special_needs', None),
+        'medical_conditions': getattr(pet, 'medical_conditions', None),
+        'chronic_conditions': [
+            condition.get_localized_name() if hasattr(condition, 'get_localized_name') else condition.name
+            for condition in pet.chronic_conditions.all()
+        ] if hasattr(pet, 'chronic_conditions') else [],
+        'has_medical_conditions': bool(getattr(pet, 'medical_conditions', None)),
+        'has_special_needs': bool(getattr(pet, 'special_needs', None)),
+    }
+
+
+def _serialize_location_detail(address: Address | None, fallback_label: str | None = None) -> dict | None:
+    """
+    Возвращает компактное представление локации объявления.
+    """
+    if address is None and not fallback_label:
+        return None
+
+    if address is None:
+        return {
+            'formatted_address': fallback_label,
+            'latitude': None,
+            'longitude': None,
+            'city': None,
+            'district': None,
+            'country': None,
+        }
+
+    return {
+        'formatted_address': address.formatted_address or fallback_label or address.get_full_address(),
+        'latitude': float(address.latitude) if address.latitude is not None else None,
+        'longitude': float(address.longitude) if address.longitude is not None else None,
+        'city': address.city or None,
+        'district': address.district or None,
+        'country': address.country or None,
+    }
 
 
 class SitterProfileSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для профиля передержки.
-    
-    Особенности:
-    - Валидация полей
-    - Обработка JSON-полей
-    - Проверка доступности
+    Сериализатор профиля ситтера с данными для поиска и кабинета.
     """
-    user = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(),
-        default=serializers.CurrentUserDefault()
-    )
-    rating = serializers.DecimalField(
-        source='user.sitter_rating',
-        max_digits=3,
-        decimal_places=2,
-        read_only=True
-    )
-    reviews_count = serializers.IntegerField(
-        source='user.sitter_reviews_count',
-        read_only=True
-    )
+
+    user = serializers.HiddenField(default=serializers.CurrentUserDefault())
+    full_name = serializers.SerializerMethodField()
+    rating = serializers.SerializerMethodField()
+    reviews_count = serializers.SerializerMethodField()
+    location = serializers.SerializerMethodField()
 
     class Meta:
         model = SitterProfile
         fields = [
             'id',
             'user',
+            'full_name',
             'description',
             'experience_years',
             'pet_types',
@@ -52,216 +129,528 @@ class SitterProfileSerializer(serializers.ModelSerializer):
             'max_distance_km',
             'compensation_type',
             'hourly_rate',
+            'is_active',
             'is_verified',
             'rating',
             'reviews_count',
+            'location',
             'created_at',
-            'updated_at'
+            'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id',
+            'full_name',
+            'is_verified',
+            'rating',
+            'reviews_count',
+            'location',
+            'created_at',
+            'updated_at',
+        ]
 
-    def validate(self, data):
-        """Проверяет корректность данных"""
-        if data.get('available_from') and data.get('available_to'):
-            if data['available_from'] > data['available_to']:
-                raise serializers.ValidationError(
-                    {'available_to': _('End date must be after start date')}
-                )
-        
-        if data.get('compensation_type') == 'paid' and not data.get('hourly_rate'):
-            raise serializers.ValidationError(
-                {'hourly_rate': _('Hourly rate is required for paid services')}
-            )
-        
-        return data
+    def get_full_name(self, obj: SitterProfile) -> str:
+        """
+        Возвращает отображаемое имя ситтера.
+        """
+        return obj.user.get_full_name() or obj.user.email
 
+    def get_rating(self, obj: SitterProfile) -> float | None:
+        """
+        Возвращает средний рейтинг ситтера.
+        """
+        annotated_rating = getattr(obj, 'rating_value', None)
+        if annotated_rating is not None:
+            return round(float(annotated_rating), 2)
 
-class SitterSearchSerializer(serializers.Serializer):
-    """
-    Сериализатор для поиска передержек.
-    
-    Особенности:
-    - Фильтрация по параметрам
-    - Поиск по местоположению
-    - Сортировка результатов
-    """
-    pet_type = serializers.CharField(required=False)
-    start_date = serializers.DateField(required=True)
-    end_date = serializers.DateField(required=True)
-    max_distance = serializers.IntegerField(required=False, default=5)
-    compensation_type = serializers.ChoiceField(
-        choices=['', 'paid', 'unpaid'],
-        required=False
-    )
-    min_rating = serializers.DecimalField(
-        max_digits=3,
-        decimal_places=2,
-        required=False,
-        min_value=0,
-        max_value=5
-    )
-    sort_by = serializers.ChoiceField(
-        choices=['rating', 'distance', 'price'],
-        required=False
-    )
+        rating_value = obj.sittings.aggregate(avg=Avg('reviews__rating'))['avg']
+        return round(float(rating_value), 2) if rating_value is not None else None
 
-    def validate(self, data):
-        """Проверяет корректность дат"""
-        if data.get('start_date') and data.get('end_date'):
-            if data['start_date'] > data['end_date']:
-                raise serializers.ValidationError(
-                    {'end_date': _('End date must be after start date')}
-                )
-        return data 
+    def get_reviews_count(self, obj: SitterProfile) -> int:
+        """
+        Возвращает количество отзывов ситтера.
+        """
+        annotated_count = getattr(obj, 'reviews_count_value', None)
+        if annotated_count is not None:
+            return int(annotated_count)
+
+        return obj.sittings.aggregate(count=Count('reviews'))['count'] or 0
+
+    def get_location(self, obj: SitterProfile) -> dict | None:
+        """
+        Возвращает компактную геолокацию ситтера.
+        """
+        user_location = getattr(obj.user, 'user_location', None)
+        if not user_location or not user_location.point:
+            return None
+
+        return {
+            'latitude': float(user_location.point.y),
+            'longitude': float(user_location.point.x),
+            'source': user_location.source,
+        }
+
+    def validate(self, attrs: dict) -> dict:
+        """
+        Проверяет согласованность профиля ситтера.
+        """
+        available_from = attrs.get('available_from', getattr(self.instance, 'available_from', None))
+        available_to = attrs.get('available_to', getattr(self.instance, 'available_to', None))
+        compensation_type = attrs.get('compensation_type', getattr(self.instance, 'compensation_type', None))
+        hourly_rate = attrs.get('hourly_rate', getattr(self.instance, 'hourly_rate', None))
+
+        if available_from and available_to and available_from > available_to:
+            raise serializers.ValidationError({'available_to': _('End date must be after start date')})
+
+        if compensation_type == 'paid' and not hourly_rate:
+            raise serializers.ValidationError({'hourly_rate': _('Hourly rate is required for paid services')})
+
+        if compensation_type == 'unpaid':
+            attrs['hourly_rate'] = None
+
+        return attrs
 
 
 class PetSittingAdSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для модели объявления о передержке питомца.
-    Позволяет создавать, просматривать и фильтровать объявления.
+    Сериализатор объявления владельца о поиске передержки.
     """
+
+    owner = serializers.HiddenField(default=serializers.CurrentUserDefault())
+    owner_detail = serializers.SerializerMethodField()
+    pet_detail = serializers.SerializerMethodField()
+    location_detail = serializers.SerializerMethodField()
+    responses_count = serializers.IntegerField(read_only=True)
+    address_label = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    address_latitude = serializers.FloatField(write_only=True, required=False)
+    address_longitude = serializers.FloatField(write_only=True, required=False)
+    address_city = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    address_country = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
     class Meta:
         model = PetSittingAd
         fields = [
-            'id', 'pet', 'owner', 'start_date', 'end_date', 'description',
-            'status', 'location', 'max_distance_km', 'compensation_type',
-            'created_at', 'updated_at'
+            'id',
+            'pet',
+            'pet_detail',
+            'owner',
+            'owner_detail',
+            'start_date',
+            'end_date',
+            'description',
+            'status',
+            'location',
+            'structured_address',
+            'location_detail',
+            'max_distance_km',
+            'compensation_type',
+            'responses_count',
+            'address_label',
+            'address_latitude',
+            'address_longitude',
+            'address_city',
+            'address_country',
+            'created_at',
+            'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'owner']
+        read_only_fields = [
+            'id',
+            'owner_detail',
+            'pet_detail',
+            'status',
+            'responses_count',
+            'location_detail',
+            'created_at',
+            'updated_at',
+        ]
 
-    def validate(self, data):
+    def get_owner_detail(self, obj: PetSittingAd) -> dict | None:
         """
-        Проверяет корректность дат и обязательных полей.
+        Возвращает данные владельца объявления.
         """
-        if data.get('start_date') and data.get('end_date'):
-            if data['start_date'] > data['end_date']:
-                raise serializers.ValidationError({'end_date': _('End date must be after start date')})
-        return data
+        return _serialize_user_brief(obj.owner)
+
+    def get_pet_detail(self, obj: PetSittingAd) -> dict | None:
+        """
+        Возвращает данные питомца из объявления.
+        """
+        return _serialize_pet_brief(obj.pet)
+
+    def get_location_detail(self, obj: PetSittingAd) -> dict | None:
+        """
+        Возвращает структурированную локацию объявления.
+        """
+        return _serialize_location_detail(obj.structured_address, obj.location)
+
+    def _extract_address_payload(self, validated_data: dict) -> dict:
+        return {
+            'label': validated_data.pop('address_label', '').strip(),
+            'latitude': validated_data.pop('address_latitude', None),
+            'longitude': validated_data.pop('address_longitude', None),
+            'city': validated_data.pop('address_city', '').strip(),
+            'country': validated_data.pop('address_country', '').strip(),
+        }
+
+    def _upsert_structured_address(self, instance: PetSittingAd | None, address_payload: dict) -> Address | None:
+        label = address_payload['label']
+        latitude = address_payload['latitude']
+        longitude = address_payload['longitude']
+        city = address_payload['city']
+        country = address_payload['country']
+
+        has_payload = bool(label or city or country or latitude is not None or longitude is not None)
+        if not has_payload:
+            return instance.structured_address if instance is not None else None
+
+        address = instance.structured_address if instance and instance.structured_address_id else Address()
+        address.formatted_address = label or address.formatted_address
+        address.city = city or address.city
+        address.country = country or address.country
+        if latitude is not None and longitude is not None:
+            address.latitude = latitude
+            address.longitude = longitude
+            address.validation_status = 'valid'
+        address.save()
+        return address
+
+    def validate(self, attrs: dict) -> dict:
+        """
+        Проверяет корректность объявления и принадлежность питомца.
+        """
+        request = self.context.get('request')
+        pet = attrs.get('pet', getattr(self.instance, 'pet', None))
+        start_date = attrs.get('start_date', getattr(self.instance, 'start_date', None))
+        end_date = attrs.get('end_date', getattr(self.instance, 'end_date', None))
+        address_label = attrs.get('address_label')
+        address_latitude = attrs.get('address_latitude')
+        address_longitude = attrs.get('address_longitude')
+
+        if start_date and end_date and start_date > end_date:
+            raise serializers.ValidationError({'end_date': _('End date must be after start date')})
+
+        if request and pet and not pet.owners.filter(id=request.user.id).exists():
+            raise serializers.ValidationError({'pet': _('You can create pet sitting ads only for your own pets')})
+
+        if (address_latitude is None) != (address_longitude is None):
+            raise serializers.ValidationError({'address_latitude': _('Latitude and longitude must be provided together.')})
+
+        if address_label and not attrs.get('location'):
+            attrs['location'] = address_label.strip()
+
+        return attrs
+
+    def create(self, validated_data: dict) -> PetSittingAd:
+        address_payload = self._extract_address_payload(validated_data)
+        structured_address = self._upsert_structured_address(None, address_payload)
+        if structured_address is not None:
+            validated_data['structured_address'] = structured_address
+            validated_data['location'] = address_payload['label'] or validated_data.get('location', '')
+        return super().create(validated_data)
+
+    def update(self, instance: PetSittingAd, validated_data: dict) -> PetSittingAd:
+        address_payload = self._extract_address_payload(validated_data)
+        structured_address = self._upsert_structured_address(instance, address_payload)
+        if structured_address is not None:
+            validated_data['structured_address'] = structured_address
+            if address_payload['label']:
+                validated_data['location'] = address_payload['label']
+        return super().update(instance, validated_data)
 
 
 class PetSittingResponseSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для модели отклика на объявление о передержке.
-    Позволяет ситтеру откликнуться на объявление владельца.
+    Сериализатор отклика ситтера на объявление владельца.
     """
+
+    ad_detail = serializers.SerializerMethodField()
+    sitter_detail = serializers.SerializerMethodField()
+
     class Meta:
         model = PetSittingResponse
         fields = [
-            'id', 'ad', 'sitter', 'message', 'status', 'created_at'
+            'id',
+            'ad',
+            'ad_detail',
+            'sitter',
+            'sitter_detail',
+            'message',
+            'status',
+            'created_at',
         ]
-        read_only_fields = ['id', 'created_at', 'status', 'sitter']
+        read_only_fields = ['id', 'ad_detail', 'status', 'sitter', 'sitter_detail', 'created_at']
+
+    def get_ad_detail(self, obj: PetSittingResponse) -> dict:
+        """
+        Возвращает сокращённую информацию по объявлению.
+        """
+        return {
+            'id': obj.ad.id,
+            'status': obj.ad.status,
+            'start_date': obj.ad.start_date,
+            'end_date': obj.ad.end_date,
+            'compensation_type': obj.ad.compensation_type,
+            'location': obj.ad.location,
+            'location_detail': _serialize_location_detail(obj.ad.structured_address, obj.ad.location),
+            'pet': _serialize_pet_brief(obj.ad.pet),
+            'owner': _serialize_user_brief(obj.ad.owner),
+        }
+
+    def get_sitter_detail(self, obj: PetSittingResponse) -> dict | None:
+        """
+        Возвращает сокращённую информацию о ситтере.
+        """
+        return {
+            'id': obj.sitter.id,
+            'user': _serialize_user_brief(obj.sitter.user),
+            'description': obj.sitter.description,
+            'experience_years': obj.sitter.experience_years,
+            'max_pets': obj.sitter.max_pets,
+            'compensation_type': obj.sitter.compensation_type,
+            'hourly_rate': obj.sitter.hourly_rate,
+            'is_active': obj.sitter.is_active,
+        }
 
 
 class PetSittingSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для модели PetSitting (передержка).
-    Позволяет управлять процессом передержки, подтверждениями, статусами и отзывами.
+    Сериализатор жизненного цикла передержки.
     """
+
+    pet_detail = serializers.SerializerMethodField()
+    sitter_detail = serializers.SerializerMethodField()
+    owner_detail = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    can_confirm_start = serializers.SerializerMethodField()
+    can_confirm_end = serializers.SerializerMethodField()
+    can_leave_review = serializers.SerializerMethodField()
+
     class Meta:
         model = PetSitting
         fields = [
-            'id', 'ad', 'response', 'sitter', 'pet', 'start_date', 'end_date',
-            'status', 'owner_confirmed_start', 'sitter_confirmed_start',
-            'owner_confirmed_end', 'sitter_confirmed_end', 'review_left',
-            'created_at', 'updated_at'
+            'id',
+            'ad',
+            'response',
+            'sitter',
+            'pet',
+            'pet_detail',
+            'sitter_detail',
+            'owner_detail',
+            'start_date',
+            'end_date',
+            'status',
+            'status_display',
+            'owner_confirmed_start',
+            'sitter_confirmed_start',
+            'owner_confirmed_end',
+            'sitter_confirmed_end',
+            'review_left',
+            'can_confirm_start',
+            'can_confirm_end',
+            'can_leave_review',
+            'created_at',
+            'updated_at',
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'review_left']
+        read_only_fields = fields
+
+    def get_pet_detail(self, obj: PetSitting) -> dict | None:
+        """
+        Возвращает компактные данные питомца.
+        """
+        return _serialize_pet_brief(obj.pet)
+
+    def get_sitter_detail(self, obj: PetSitting) -> dict | None:
+        """
+        Возвращает компактные данные ситтера.
+        """
+        return {
+            'id': obj.sitter.id,
+            'user': _serialize_user_brief(obj.sitter.user),
+            'description': obj.sitter.description,
+            'experience_years': obj.sitter.experience_years,
+            'max_pets': obj.sitter.max_pets,
+            'hourly_rate': obj.sitter.hourly_rate,
+            'is_active': obj.sitter.is_active,
+        }
+
+    def get_owner_detail(self, obj: PetSitting) -> dict | None:
+        """
+        Возвращает компактные данные владельца.
+        """
+        return _serialize_user_brief(obj.ad.owner)
+
+    def get_can_confirm_start(self, obj: PetSitting) -> bool:
+        """
+        Проверяет, может ли текущий пользователь подтвердить старт.
+        """
+        request = self.context.get('request')
+        if request is None or obj.status != 'waiting_start':
+            return False
+
+        if request.user.id == obj.ad.owner_id:
+            return not obj.owner_confirmed_start
+        if request.user.id == obj.sitter.user_id:
+            return not obj.sitter_confirmed_start
+        return False
+
+    def get_can_confirm_end(self, obj: PetSitting) -> bool:
+        """
+        Проверяет, может ли текущий пользователь подтвердить завершение.
+        """
+        request = self.context.get('request')
+        if request is None or obj.status != 'active':
+            return False
+
+        if request.user.id == obj.ad.owner_id:
+            return not obj.owner_confirmed_end
+        if request.user.id == obj.sitter.user_id:
+            return not obj.sitter_confirmed_end
+        return False
+
+    def get_can_leave_review(self, obj: PetSitting) -> bool:
+        """
+        Проверяет, может ли текущий пользователь оставить отзыв.
+        """
+        request = self.context.get('request')
+        return bool(
+            request
+            and request.user.id == obj.ad.owner_id
+            and obj.status == 'waiting_review'
+            and not obj.review_left
+        )
 
 
 class SitterReviewSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для модели отзыва о передержке.
-    Позволяет оставлять и просматривать отзывы, связанные с PetSitting.
+    Сериализатор отзыва о завершённой передержке.
     """
+
+    author_detail = serializers.SerializerMethodField()
+
     class Meta:
         model = SitterReview
-        fields = [
-            'id', 'history', 'author', 'rating', 'text', 'created_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'author'] 
+        fields = ['id', 'history', 'author', 'author_detail', 'rating', 'text', 'created_at']
+        read_only_fields = ['id', 'author', 'author_detail', 'created_at']
+
+    def get_author_detail(self, obj: SitterReview) -> dict | None:
+        """
+        Возвращает краткие данные автора отзыва.
+        """
+        return _serialize_user_brief(obj.author)
 
 
 class MessageSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для сообщений в чате.
+    Сериализатор сообщений чата с расшифрованным текстом.
     """
+
     sender_name = serializers.CharField(source='sender.get_full_name', read_only=True)
-    sender_avatar = serializers.CharField(source='sender.avatar', read_only=True)
+    sender_avatar = serializers.SerializerMethodField()
     recipient_name = serializers.CharField(source='recipient.get_full_name', read_only=True)
+    recipient_avatar = serializers.SerializerMethodField()
     text = serializers.CharField(source='decrypted_text', read_only=True)
-    
+
     class Meta:
         model = Message
-        fields = ['id', 'sender', 'sender_name', 'sender_avatar', 'recipient', 'recipient_name', 'text', 'created_at', 'is_read']
-        read_only_fields = ['sender', 'recipient', 'created_at', 'is_read']
+        fields = [
+            'id',
+            'sender',
+            'sender_name',
+            'sender_avatar',
+            'recipient',
+            'recipient_name',
+            'recipient_avatar',
+            'text',
+            'created_at',
+            'is_read',
+        ]
+        read_only_fields = fields
 
-    def create(self, validated_data):
-        """Автоматически устанавливает отправителя"""
-        validated_data['sender'] = self.context['request'].user
-        return super().create(validated_data)
+    def get_sender_avatar(self, obj: Message) -> str | None:
+        """
+        Возвращает URL аватара отправителя.
+        """
+        picture = getattr(obj.sender, 'profile_picture', None)
+        return picture.url if picture else None
+
+    def get_recipient_avatar(self, obj: Message) -> str | None:
+        """
+        Возвращает URL аватара получателя.
+        """
+        picture = getattr(obj.recipient, 'profile_picture', None)
+        return picture.url if picture else None
 
 
 class ConversationSerializer(serializers.ModelSerializer):
     """
-    Сериализатор для диалогов.
+    Сериализатор списка диалогов.
     """
+
     participants = serializers.SerializerMethodField()
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
     other_participant = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Conversation
-        fields = ['id', 'participants', 'other_participant', 'last_message', 'unread_count', 'created_at', 'updated_at', 'is_active']
-        read_only_fields = ['created_at', 'updated_at']
-
-    def get_participants(self, obj):
-        """Получает список участников"""
-        return [
-            {
-                'id': user.id,
-                'name': user.get_full_name(),
-                'avatar': user.avatar
-            }
-            for user in obj.participants.all()
+        fields = [
+            'id',
+            'participants',
+            'other_participant',
+            'last_message',
+            'unread_count',
+            'created_at',
+            'updated_at',
+            'is_active',
         ]
+        read_only_fields = fields
 
-    def get_last_message(self, obj):
-        """Получает последнее сообщение"""
+    def get_participants(self, obj: Conversation) -> list[dict]:
+        """
+        Возвращает список участников диалога.
+        """
+        return [_serialize_user_brief(user) for user in obj.participants.all()]
+
+    def get_last_message(self, obj: Conversation) -> dict | None:
+        """
+        Возвращает краткое описание последнего сообщения.
+        """
         last_message = obj.messages.last()
-        if last_message:
-            decrypted_text = last_message.decrypted_text
-            return {
-                'id': last_message.id,
-                'text': decrypted_text[:100] + '...' if len(decrypted_text) > 100 else decrypted_text,
-                'sender_name': last_message.sender.get_full_name(),
-                'created_at': last_message.created_at
-            }
-        return None
+        if last_message is None:
+            return None
 
-    def get_unread_count(self, obj):
-        """Получает количество непрочитанных сообщений"""
-        user = self.context['request'].user
-        return obj.messages.filter(is_read=False, recipient=user).count()
+        decrypted_text = last_message.decrypted_text
+        preview = decrypted_text[:100] + '...' if len(decrypted_text) > 100 else decrypted_text
+        return {
+            'id': last_message.id,
+            'text': preview,
+            'sender_name': last_message.sender.get_full_name() or last_message.sender.email,
+            'created_at': last_message.created_at,
+        }
 
-    def get_other_participant(self, obj):
-        """Получает другого участника диалога"""
-        user = self.context['request'].user
-        other = obj.get_other_participant(user)
-        if other:
-            return {
-                'id': other.id,
-                'name': other.get_full_name(),
-                'avatar': other.avatar
-            }
-        return None
+    def get_unread_count(self, obj: Conversation) -> int:
+        """
+        Возвращает количество непрочитанных сообщений.
+        """
+        request = self.context.get('request')
+        if request is None:
+            return 0
+        return obj.messages.filter(is_read=False, recipient=request.user).count()
+
+    def get_other_participant(self, obj: Conversation) -> dict | None:
+        """
+        Возвращает второго участника диалога.
+        """
+        request = self.context.get('request')
+        if request is None:
+            return None
+        return _serialize_user_brief(obj.get_other_participant(request.user))
 
 
 class ConversationDetailSerializer(ConversationSerializer):
     """
-    Детальный сериализатор для диалога с сообщениями.
+    Детальный сериализатор диалога с сообщениями.
     """
+
     messages = MessageSerializer(many=True, read_only=True)
-    
+
     class Meta(ConversationSerializer.Meta):
-        fields = ConversationSerializer.Meta.fields + ['messages'] 
+        fields = ConversationSerializer.Meta.fields + ['messages']

@@ -303,7 +303,7 @@ class GmailAPIService:
                 fp = BytesIO()
                 # BytesGenerator с policy работает корректно и не использует linesep
                 gen = BytesGenerator(fp, mangle_from_=False, policy=smtp_policy)
-                gen.flatten(msg, unixfrom=False)
+                gen.flatten(msg, unixfrom=False)  # type: ignore[arg-type]
                 raw_message = base64.urlsafe_b64encode(fp.getvalue()).decode('utf-8')
             except Exception as e2:
                 logger.error(f"All encoding methods failed: {e}, {e2}")

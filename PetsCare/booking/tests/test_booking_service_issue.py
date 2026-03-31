@@ -189,7 +189,7 @@ class BookingServiceIssueResolutionTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('non_field_errors', response.data)
+        self.assertIn('non_field_errors', response.data)  # type: ignore[arg-type]
 
     def test_client_cannot_report_issue_after_grace_window(self):
         self.api_client.force_authenticate(user=self.client_user)
@@ -204,7 +204,7 @@ class BookingServiceIssueResolutionTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('non_field_errors', response.data)
+        self.assertIn('non_field_errors', response.data)  # type: ignore[arg-type]
 
     def test_reporting_issue_does_not_cancel_booking(self):
         """2. Reporting issue does not create client cancellation."""
@@ -232,7 +232,7 @@ class BookingServiceIssueResolutionTests(TestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('non_field_errors', response.data)
+        self.assertIn('non_field_errors', response.data)  # type: ignore[arg-type]
 
     def test_provider_resolves_in_favor_of_client(self):
         """3. Provider resolves issue in favor of client -> booking cancelled by provider with 'arrived'."""

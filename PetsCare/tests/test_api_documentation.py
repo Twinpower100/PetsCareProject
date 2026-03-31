@@ -11,11 +11,25 @@ Smoke-тесты документации API.
 import json
 import os
 from io import StringIO
+from pathlib import Path
 
 import yaml
+from django.conf import settings
 from django.core.management import call_command, get_commands
 from django.test import TestCase
 from rest_framework.test import APIClient
+
+
+def _resolve_repo_path(relative_path):
+    """Ищет файл в корне backend-репозитория и внутри пакета PetsCare."""
+    candidates = [
+        Path(settings.BASE_DIR) / relative_path,
+        Path(settings.BASE_DIR) / 'PetsCare' / relative_path,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 class APIDocumentationTestCase(TestCase):
@@ -136,13 +150,14 @@ class DocumentationExportTestCase(TestCase):
         ]
 
         for file_path in doc_files:
-            self.assertTrue(os.path.exists(file_path), f'{file_path} отсутствует')
-            with open(file_path, 'r', encoding='utf-8') as handle:
+            resolved_path = _resolve_repo_path(file_path)
+            self.assertTrue(os.path.exists(resolved_path), f'{file_path} отсутствует')
+            with open(resolved_path, 'r', encoding='utf-8') as handle:
                 self.assertGreater(len(handle.read()), 0, f'{file_path} пустой')
 
     def test_html_template_exists(self):
         """HTML-шаблон содержит ключевые элементы swagger UI."""
-        template_path = 'templates/api_documentation.html'
+        template_path = _resolve_repo_path('templates/api_documentation.html')
         with open(template_path, 'r', encoding='utf-8') as handle:
             content = handle.read()
 
@@ -152,7 +167,7 @@ class DocumentationExportTestCase(TestCase):
 
     def test_documentation_content_quality(self):
         """Markdown документация содержит базовые разделы и примеры."""
-        doc_path = 'docs/api_documentation.md'
+        doc_path = _resolve_repo_path('docs/api_documentation.md')
         with open(doc_path, 'r', encoding='utf-8') as handle:
             content = handle.read()
 

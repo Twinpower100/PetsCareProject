@@ -1,0 +1,8 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+  <li>
+    <a href="{{ matrix_url }}">RBAC Matrix</a>
+  </li>
+  {{ block.super }}
+{% endblock %}

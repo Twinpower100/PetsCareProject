@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.db import models
 from django.contrib.auth import get_user_model
 from django.utils import timezone
@@ -23,7 +25,7 @@ class UserGrowth(models.Model):
     # Метрики роста
     new_registrations = models.PositiveIntegerField(default=0, verbose_name=_("New Registrations"))
     total_users = models.PositiveIntegerField(default=0, verbose_name=_("Total Users"))
-    growth_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name=_("Growth Rate (%)"))
+    growth_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'), verbose_name=_("Growth Rate (%)"))
     
     # Детализация по типам пользователей
     new_owners = models.PositiveIntegerField(default=0, verbose_name=_("New Owners"))
@@ -130,13 +132,13 @@ class UserMetrics(models.Model):
     
     # Метрики активности
     avg_session_duration = models.PositiveIntegerField(default=0, verbose_name=_("Average Session Duration (sec)"))
-    avg_page_views = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name=_("Average Page Views"))
-    retention_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name=_("Retention Rate (%)"))
+    avg_page_views = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'), verbose_name=_("Average Page Views"))
+    retention_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'), verbose_name=_("Retention Rate (%)"))
     
     # Метрики конверсии
-    conversion_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name=_("Conversion Rate (%)"))
-    booking_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name=_("Booking Rate (%)"))
-    payment_rate = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name=_("Payment Rate (%)"))
+    conversion_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'), verbose_name=_("Conversion Rate (%)"))
+    booking_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'), verbose_name=_("Booking Rate (%)"))
+    payment_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal('0'), verbose_name=_("Payment Rate (%)"))
     
     # Детализация по типам
     owners_count = models.PositiveIntegerField(default=0, verbose_name=_("Owners Count"))

@@ -27,6 +27,23 @@ from .constants import (
 )
 
 
+class ReassignmentConflictError(ValidationError):
+    """Raised when some bookings could not be reassigned due to conflicts."""
+
+    def __init__(
+        self,
+        conflicts: list,
+        reassigned_count: int,
+        reassigned_booking_ids: list,
+    ):
+        self.conflicts = conflicts
+        self.reassigned_count = reassigned_count
+        self.reassigned_booking_ids = reassigned_booking_ids
+        super().__init__(
+            str(_("Some bookings could not be reassigned due to conflicts."))
+        )
+
+
 class BookingReassignmentService:
     """
     Universal service for mass booking cancellation or reassignment.
@@ -249,14 +266,11 @@ class BookingReassignmentService:
             )
 
         if conflicts:
-            raise ValidationError({
-                'conflicts': conflicts,
-                'message': str(_(
-                    "Some bookings could not be reassigned due to conflicts."
-                )),
-                'reassigned_count': len(reassigned_ids),
-                'reassigned_booking_ids': reassigned_ids,
-            })
+            raise ReassignmentConflictError(
+                conflicts=conflicts,
+                reassigned_count=len(reassigned_ids),
+                reassigned_booking_ids=reassigned_ids,
+            )
 
         return {
             'reassigned_count': len(reassigned_ids),

@@ -44,7 +44,7 @@ class Rating(models.Model):
         _('Current Rating'),
         max_digits=3,
         decimal_places=2,
-        default=0.00,
+        default=Decimal('0.00'),
         validators=[MinValueValidator(0), MaxValueValidator(5)],
         help_text=_('Current average rating (0-5)')
     )
@@ -69,28 +69,28 @@ class Rating(models.Model):
         _('Reviews Weight'),
         max_digits=3,
         decimal_places=2,
-        default=0.60,
+        default=Decimal('0.60'),
         help_text=_('Weight of reviews in rating calculation (0-1)')
     )
     complaints_weight = models.DecimalField(
         _('Complaints Weight'),
         max_digits=3,
         decimal_places=2,
-        default=0.25,
+        default=Decimal('0.25'),
         help_text=_('Weight of complaints in rating calculation (0-1)')
     )
     cancellations_weight = models.DecimalField(
         _('Cancellations Weight'),
         max_digits=3,
         decimal_places=2,
-        default=0.10,
+        default=Decimal('0.10'),
         help_text=_('Weight of cancellations in rating calculation (0-1)')
     )
     no_show_weight = models.DecimalField(
         _('No Show Weight'),
         max_digits=3,
         decimal_places=2,
-        default=0.05,
+        default=Decimal('0.05'),
         help_text=_('Weight of no-show in rating calculation (0-1)')
     )
     

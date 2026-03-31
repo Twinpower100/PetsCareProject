@@ -70,7 +70,8 @@ class Command(BaseCommand):
                     # Проверяем количество записей
                     try:
                         cursor.execute(f'SELECT COUNT(*) FROM {table_name}')
-                        count = cursor.fetchone()[0]
+                        row = cursor.fetchone()
+                        count = row[0] if row else 0
                         
                         if count > 0:
                             tables_with_data.append((table_name, count))

@@ -97,7 +97,7 @@ class RatingCalculationService:
             Decimal: Оценка отзывов
         """
         # Импортируем настройки затухания
-        from settings.models import RatingDecaySettings
+        from system_settings.models import RatingDecaySettings
         
         content_type = ContentType.objects.get_for_model(obj)
         reviews = Review.objects.filter(
@@ -146,7 +146,7 @@ class RatingCalculationService:
             Dict: Детали весов отзывов
         """
         # Импортируем настройки затухания
-        from settings.models import RatingDecaySettings
+        from system_settings.models import RatingDecaySettings
         
         content_type = ContentType.objects.get_for_model(obj)
         reviews = Review.objects.filter(

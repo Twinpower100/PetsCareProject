@@ -12,7 +12,12 @@ from .medical_card_access import (
     get_globally_accessible_visit_records_queryset,
     is_pet_owner,
 )
-from .models import PetDocument, PetHealthNote, VisitRecord
+from .document_type_catalog import (
+    DOCUMENT_TYPE_ALLOWED_EXTENSIONS,
+    DOCUMENT_TYPE_ALLOWED_MIME_TYPES,
+    get_legacy_default_document_type_code,
+)
+from .models import DocumentType, PetDocument, PetHealthNote, VisitRecord
 from .serializers import PetDocumentSerializer
 
 
@@ -20,6 +25,26 @@ DEPRECATION_WARNING = (
     '299 - "Deprecated medical-card endpoint. Use canonical /pets/{pet_id}/medical-card/, '
     '/pets/{pet_id}/health-notes/, /pets/{pet_id}/documents/, /visit-records/ and /pet-documents/ APIs."'
 )
+
+
+def _validate_legacy_attachment_file(file_obj):
+    """Проверяет допустимость файла для deprecated upload-путей."""
+    if file_obj.size > 10 * 1024 * 1024:
+        raise serializers.ValidationError(
+            {'attachments': _('File is too large (max 10MB)')}
+        )
+
+    file_name = file_obj.name.lower()
+    if not any(file_name.endswith(ext) for ext in DOCUMENT_TYPE_ALLOWED_EXTENSIONS):
+        raise serializers.ValidationError(
+            {'attachments': _('Unsupported file type. Allowed: PDF and JPG/PNG images')}
+        )
+
+    content_type = getattr(file_obj, 'content_type', None)
+    if content_type and content_type not in DOCUMENT_TYPE_ALLOWED_MIME_TYPES:
+        raise serializers.ValidationError(
+            {'attachments': _('Unsupported MIME type')}
+        )
 
 
 class DeprecatedEndpointMixin:
@@ -132,17 +157,25 @@ class LegacyMedicalRecordSerializer(serializers.ModelSerializer):
     def _sync_attachment(self, note, attachment_file):
         if not attachment_file:
             return
+        _validate_legacy_attachment_file(attachment_file)
         request = self.context.get('request')
         user = getattr(request, 'user', None)
         if user is None or not user.is_authenticated:
             raise serializers.ValidationError({'attachments': _('Authenticated uploader is required')})
 
+        default_document_type = DocumentType.objects.get(
+            code=get_legacy_default_document_type_code()
+        )
         existing = note.documents.order_by('-uploaded_at', '-created_at').first()
         if existing is not None:
             existing.file = attachment_file
             existing.name = ((note.title or attachment_file.name) or '').strip()[:255]
             existing.description = note.description or ''
             existing.uploaded_by = user
+            if existing.document_type_id is None:
+                existing.document_type = default_document_type
+            if not existing.issue_date:
+                existing.issue_date = note.date
             existing.save()
             return
 
@@ -152,7 +185,9 @@ class LegacyMedicalRecordSerializer(serializers.ModelSerializer):
             name=name,
             description=note.description or '',
             pet=note.pet,
+            document_type=default_document_type,
             health_note=note,
+            issue_date=note.date,
             uploaded_by=user,
         )
 
@@ -298,8 +333,11 @@ class LegacyVisitRecordListCreateAPIView(DeprecatedEndpointMixin, generics.ListC
     permission_classes = [drf_permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return VisitRecord._default_manager.none()
         viewset = LegacyVisitRecordViewSet()
         viewset.request = self.request
+        viewset.swagger_fake_view = getattr(self, 'swagger_fake_view', False)
         return viewset.get_queryset()
 
     def perform_create(self, serializer):
@@ -313,8 +351,11 @@ class LegacyVisitRecordRetrieveUpdateDestroyAPIView(DeprecatedEndpointMixin, gen
     permission_classes = [drf_permissions.IsAuthenticated]
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return VisitRecord._default_manager.none()
         viewset = LegacyVisitRecordViewSet()
         viewset.request = self.request
+        viewset.swagger_fake_view = getattr(self, 'swagger_fake_view', False)
         return viewset.get_queryset()
 
     def perform_update(self, serializer):
@@ -338,7 +379,6 @@ class LegacyVisitRecordFileUploadAPIView(DeprecatedEndpointMixin, APIView):
         can_upload = (
             user.is_superuser
             or user.is_system_admin()
-            or is_pet_owner(user, record.pet)
             or can_manage_visit_record_as_provider(user, record)
         )
         if not can_upload:
@@ -348,6 +388,14 @@ class LegacyVisitRecordFileUploadAPIView(DeprecatedEndpointMixin, APIView):
 
         payload = request.data.copy()
         payload['visit_record'] = record.id
+        if not payload.get('document_type'):
+            payload['document_type'] = str(
+                DocumentType.objects.only('id').get(
+                    code=get_legacy_default_document_type_code()
+                ).id
+            )
+            record_date = record.date.date() if hasattr(record.date, 'date') else record.date
+            payload['issue_date'] = str(record_date or timezone.localdate())
         serializer = PetDocumentSerializer(
             data=payload,
             context={'request': request, 'pet': record.pet},

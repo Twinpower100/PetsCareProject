@@ -146,8 +146,9 @@ class EmployeeOffboardingAPITest(APITestCase):
         
         response = self.client.patch(self.deactivate_url)
         self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
-        self.assertEqual(response.data['conflict_type'], 'future_bookings')
-        self.assertEqual(len(response.data['bookings']), 1)
+        data: dict = response.data  # type: ignore[assignment]
+        self.assertEqual(data['conflict_type'], 'future_bookings')
+        self.assertEqual(len(data['bookings']), 1)
         
         self.emp1_loc_role.refresh_from_db()
         self.assertTrue(self.emp1_loc_role.is_active)  # Still active

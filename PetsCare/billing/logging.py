@@ -9,7 +9,9 @@
 """
 
 import logging
+
 from django.utils import timezone
+from django.utils.translation import gettext as _
 from django.contrib.admin.models import LogEntry, CHANGE, ADDITION, DELETION
 from django.contrib.contenttypes.models import ContentType
 from .models import BlockingRule, ProviderBlocking, BlockingNotification
@@ -38,7 +40,7 @@ def log_blocking_created(blocking, created_by=None):
     # Логируем в админку Django
     content_type = ContentType.objects.get_for_model(ProviderBlocking)
     LogEntry.objects.log_action(
-        user_id=created_by.id if created_by else None,
+        user_id=created_by.id if created_by else None,  # type: ignore[arg-type]
         content_type_id=content_type.id,
         object_id=blocking.id,
         object_repr=f"Blocking {blocking.provider.name}",
@@ -69,7 +71,7 @@ def log_blocking_resolved(blocking, resolved_by, notes=''):
     # Логируем в админку Django
     content_type = ContentType.objects.get_for_model(ProviderBlocking)
     LogEntry.objects.log_action(
-        user_id=resolved_by.id if resolved_by else None,
+        user_id=resolved_by.id if resolved_by else None,  # type: ignore[arg-type]
         content_type_id=content_type.id,
         object_id=blocking.id,
         object_repr=f"Blocking {blocking.provider.name}",

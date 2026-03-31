@@ -299,7 +299,7 @@ class NotificationBulkCreateSerializer(serializers.Serializer):
         default=['all'],
         help_text=_('Channels to send notification through')
     )
-    data = serializers.DictField(
+    data = serializers.DictField(  # type: ignore[assignment]
         required=False,
         help_text=_('Additional data for notification')
     )

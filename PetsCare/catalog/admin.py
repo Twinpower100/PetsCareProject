@@ -28,8 +28,33 @@ class ServiceAdmin(admin.ModelAdmin):
     - Автоматический уровень (level)
     - Исключение самой услуги из parent
     """
-    list_display = ['get_tree_name', 'get_full_path', 'code', 'parent', 'level', 'hierarchy_order', 'is_active', 'is_client_facing', 'is_mandatory', 'is_periodic', 'requires_license', 'get_allowed_pet_types']
-    list_filter = ['level', 'is_active', 'is_client_facing', 'is_mandatory', 'is_periodic', 'requires_license', 'allowed_pet_types']
+    list_display = [
+        'get_tree_name',
+        'get_full_path',
+        'code',
+        'parent',
+        'level',
+        'hierarchy_order',
+        'is_active',
+        'is_client_facing',
+        'get_emergency_capability_mode',
+        'get_protocol_family_mode',
+        'is_mandatory',
+        'is_periodic',
+        'requires_license',
+        'get_allowed_pet_types',
+    ]
+    list_filter = [
+        'level',
+        'is_active',
+        'is_client_facing',
+        'emergency_capability_mode',
+        'protocol_family_mode',
+        'is_mandatory',
+        'is_periodic',
+        'requires_license',
+        'allowed_pet_types',
+    ]
     search_fields = ['code', 'name', 'name_en', 'name_ru', 'name_me', 'name_de', 'description', 'description_en', 'description_ru', 'description_me', 'description_de', 'search_keywords']
     ordering = ['hierarchy_order', 'name']
     readonly_fields = ['level', 'hierarchy_order', 'version']
@@ -55,6 +80,8 @@ class ServiceAdmin(admin.ModelAdmin):
             'fields': (
                 'is_active',
                 'is_client_facing',
+                'emergency_capability_mode',
+                'protocol_family_mode',
                 'is_mandatory',
                 'is_periodic',
                 'requires_license'
@@ -182,6 +209,14 @@ class ServiceAdmin(admin.ModelAdmin):
             return _("All types")
         return ", ".join([pet_type.name for pet_type in obj.allowed_pet_types.all()])
     get_allowed_pet_types.short_description = _('Allowed Pet Types')
+
+    def get_emergency_capability_mode(self, obj):
+        return obj.get_emergency_capability_mode_display()
+    get_emergency_capability_mode.short_description = _('Emergency Capability')
+
+    def get_protocol_family_mode(self, obj):
+        return obj.get_protocol_family_mode_display()
+    get_protocol_family_mode.short_description = _('Protocol Family')
     
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         """

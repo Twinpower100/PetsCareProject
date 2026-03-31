@@ -19,6 +19,8 @@ def send_booking_confirmation(sender, instance, created, **kwargs):
     Отправка подтверждения бронирования по электронной почте.
     """
     if created:
+        if instance.is_manual_guest_booking:
+            return
         subject = _('Booking Confirmation')
         message = _(
             'Your booking has been confirmed.\n\n'

@@ -1,0 +1,6 @@
+# Инструменты разработки (опционально):
+#   pip install -r requirements-dev.txt
+#
+# Pyright из pip на Windows часто ломается без node.exe в venv — для проверки типов см. package.json и `npm run typecheck`.
+
+ruff>=0.15.8,<0.16

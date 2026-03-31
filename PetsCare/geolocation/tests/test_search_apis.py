@@ -74,18 +74,22 @@ class ProviderSearchByDistanceAPITest(APITestCase):
             is_geocoded=True
         )
         
-        # Создаем категорию услуг
-        self.category = ServiceCategory.objects.create(
+        # Создаем категорию услуг (Service с parent=None)
+        self.category = Service.objects.create(
+            code='pet_care',
             name='Pet Care',
-            description='Pet care services'
+            description='Pet care services',
+            parent=None,
+            level=0,
         )
         
         # Создаем услугу
         self.service = Service.objects.create(
+            code='dog_walking',
             name='Dog Walking',
             description='Professional dog walking service',
-            category=self.category,
-            price=Decimal('500.00')
+            parent=self.category,
+            level=1,
         )
         
         # Создаем провайдеров
@@ -141,10 +145,11 @@ class ProviderSearchByDistanceAPITest(APITestCase):
         response = self.client.get(url, params)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
+        data: list = list(response.data) if response.data is not None else []  # type: ignore[arg-type]
+        self.assertEqual(len(data), 1)
         
         # Проверяем, что найден только ближайший провайдер
-        provider_data = response.data[0]
+        provider_data = data[0]
         self.assertEqual(provider_data['name'], 'Nearby Pet Care')
         self.assertIn('distance', provider_data)
         self.assertIsNotNone(provider_data['distance'])
@@ -166,7 +171,8 @@ class ProviderSearchByDistanceAPITest(APITestCase):
         response = self.client.get(url, params)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
+        data: list = list(response.data) if response.data is not None else []  # type: ignore[arg-type]
+        self.assertEqual(len(data), 2)
     
     def test_search_providers_with_rating_filter(self):
         """
@@ -185,8 +191,9 @@ class ProviderSearchByDistanceAPITest(APITestCase):
         response = self.client.get(url, params)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]['rating'], '4.50')
+        data: list = list(response.data) if response.data is not None else []  # type: ignore[arg-type]
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]['rating'], '4.50')
     
     def test_search_providers_invalid_coordinates(self):
         """
@@ -204,7 +211,8 @@ class ProviderSearchByDistanceAPITest(APITestCase):
         response = self.client.get(url, params)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 0)
+        data: list = list(response.data) if response.data is not None else []  # type: ignore[arg-type]
+        self.assertEqual(len(data), 0)
 
 
 @skip("Deprecated sitter distance search endpoint removed")
@@ -295,10 +303,11 @@ class SitterAdvancedSearchByDistanceAPITest(APITestCase):
         response = self.client.get(url, params)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
+        data: list = list(response.data) if response.data is not None else []  # type: ignore[arg-type]
+        self.assertEqual(len(data), 2)
         
         # Проверяем, что результаты отсортированы по расстоянию
-        distances = [item['distance'] for item in response.data if item['distance']]
+        distances = [item['distance'] for item in data if item.get('distance')]
         self.assertEqual(distances, sorted(distances))
     
     def test_advanced_search_sitters_with_rating_filter(self):
@@ -318,8 +327,9 @@ class SitterAdvancedSearchByDistanceAPITest(APITestCase):
         response = self.client.get(url, params)
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]['email'], 'sitter1@example.com')
+        data: list = list(response.data) if response.data is not None else []  # type: ignore[arg-type]
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]['email'], 'sitter1@example.com')
     
     def test_advanced_search_sitters_with_availability_filter(self):
         """
@@ -339,7 +349,8 @@ class SitterAdvancedSearchByDistanceAPITest(APITestCase):
         
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         # Все ситтеры должны быть доступны (нет активных заявок)
-        self.assertEqual(len(response.data), 2)
+        data: list = list(response.data) if response.data is not None else []  # type: ignore[arg-type]
+        self.assertEqual(len(data), 2)
 
 
 class DistanceCalculationTest(TestCase):
@@ -360,6 +371,7 @@ class DistanceCalculationTest(TestCase):
         distance = calculate_distance(moscow_lat, moscow_lon, spb_lat, spb_lon)
         
         self.assertIsNotNone(distance)
+        assert distance is not None  # for type checker
         self.assertGreater(distance, 600)  # Должно быть больше 600 км
         self.assertLess(distance, 700)     # И меньше 700 км
     
@@ -393,5 +405,5 @@ class DistanceCalculationTest(TestCase):
         # Некорректные координаты
         self.assertFalse(validate_coordinates(91.0, 37.6176))  # Широта > 90
         self.assertFalse(validate_coordinates(55.7558, 181.0))  # Долгота > 180
-        self.assertFalse(validate_coordinates('invalid', 37.6176))  # Не число
-        self.assertFalse(validate_coordinates(55.7558, 'invalid'))  # Не число 
+        self.assertFalse(validate_coordinates('invalid', 37.6176))  # type: ignore[arg-type]
+        self.assertFalse(validate_coordinates(55.7558, 'invalid'))  # type: ignore[arg-type] 

@@ -1,0 +1,43 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label='providers' %}">Providers</a>
+&rsaquo; {% translate 'Generate Invoices' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <h1>{% translate "Generate invoices for period" %}</h1>
+
+    <form method="post">
+        {% csrf_token %}
+        <div class="module aligned">
+            {{ form.as_p }}
+        </div>
+
+        {% for provider in providers %}
+        <input type="hidden" name="{{ action_checkbox_name }}" value="{{ provider.pk }}">
+        {% endfor %}
+        <input type="hidden" name="action" value="{{ action_name }}">
+        <input type="hidden" name="apply" value="1">
+
+        <div class="submit-row">
+            <input type="submit" value="{% translate 'Generate invoices' %}" class="default">
+            <a href=".." class="button cancel-link">{% translate 'Cancel' %}</a>
+        </div>
+    </form>
+
+    <div class="module" style="margin-top: 24px;">
+        <h2>{% translate "Selected providers" %}</h2>
+        <ul>
+            {% for provider in providers %}
+            <li>{{ provider.name }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,12 @@
+target-version = "py313"
+src = ["PetsCare"]
+line-length = 120
+
+exclude = [
+    ".venv",
+    "**/migrations/**",
+]
+
+[lint]
+# Минимальный набор; по всему дереву сейчас много замечаний — удобно гонять по файлам/директориям.
+select = ["E4", "E7", "E9", "F"]

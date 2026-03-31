@@ -509,7 +509,8 @@ class BlockingScheduleService:
         
         elif settings.frequency == 'monthly':
             # Следующий месяц в указанный день
-            if now.day >= settings.day_of_month:
+            day_of_month = settings.day_of_month if settings.day_of_month is not None else 1
+            if now.day >= day_of_month:
                 # Следующий месяц
                 if now.month == 12:
                     next_month = now.replace(year=now.year + 1, month=1)
@@ -521,7 +522,7 @@ class BlockingScheduleService:
             
             # Устанавливаем день месяца
             try:
-                next_run = next_month.replace(day=settings.day_of_month)
+                next_run = next_month.replace(day=day_of_month)
             except ValueError:
                 # Если день не существует в месяце, берем последний день
                 if next_month.month == 12:
@@ -536,7 +537,7 @@ class BlockingScheduleService:
         
         elif settings.frequency == 'custom':
             # Через указанное количество часов
-            return now + timedelta(hours=settings.custom_interval_hours)
+            return now + timedelta(hours=settings.custom_interval_hours or 24)
         
         # По умолчанию завтра в 02:00
         tomorrow = now.date() + timedelta(days=1)

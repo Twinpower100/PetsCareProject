@@ -67,6 +67,7 @@ class Command(BaseCommand):
         threshold = timezone.now() - timedelta(days=settings.auto_complete_days)
         stale_bookings = Booking.objects.filter(
             status__name=BOOKING_STATUS_ACTIVE,
+            source=Booking.BookingSource.BOOKING_SERVICE,
             end_time__lte=threshold,
             completed_at__isnull=True,
             cancelled_at__isnull=True

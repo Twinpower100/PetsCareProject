@@ -128,7 +128,7 @@ class Address(models.Model):
         self.is_geocoded = bool(self.point)
         super().save(*args, **kwargs)
 
-    def distance_to(self, lat: float, lon: float) -> float:
+    def distance_to(self, lat: float, lon: float) -> float | None:
         """Вычисляет расстояние до указанной точки в километрах"""
         if self.point:
             from django.contrib.gis.geos import Point
@@ -317,9 +317,9 @@ class UserLocation(models.Model):
     def __str__(self):
         return f"{self.user} - {self.point.coords if self.point else 'No coordinates'}"
 
-    def distance_to(self, lat: float, lon: float) -> float:
+    def distance_to(self, lat: float, lon: float) -> float | None:
         """Вычисляет расстояние до указанной точки"""
         if self.point:
             target_point = Point(lon, lat, srid=4326)
             return self.point.distance(target_point) * 111.32  # Convert to km
-        return None 
+        return None

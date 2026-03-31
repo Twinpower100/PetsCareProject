@@ -50,182 +50,233 @@
 
 ## Основные принципы
 
-### 1. **Мультиролевая система**
-- Один пользователь может иметь несколько ролей одновременно
-- Роли управляются вручную администраторами системы
-- Роли не синхронизируются автоматически с моделями
+### 1. **Двухуровневая система ролей**
 
-### 2. **Ручное управление ролями**
-- Роли назначаются и снимаются администраторами вручную
-- Нет автоматической синхронизации с бизнес-логикой
-- Полный контроль над назначением ролей
+Система PetCare использует **двухуровневую архитектуру ролей**:
 
-## Роли пользователей
+- **Уровень 1 — Глобальные роли (UserType):** Определяют, к какому приложению пользователь имеет доступ (мобильное приложение, провайдерская админка, системная админка). Хранятся в `UserType` и привязываются к `User.user_types`.
+- **Уровень 2 — Контекстные роли (EmployeeProvider / EmployeeLocationRole):** Определяют конкретные права пользователя **внутри** провайдерской админки. Хранятся в `EmployeeProvider.role` (уровень организации) и `EmployeeLocationRole.role` (уровень филиала).
 
-### 1. **pet_owner** - Владелец питомца
-- **Назначение:** Вручную администратором
-- **Снятие:** Вручную администратором
-- **Описание:** Пользователь, который владеет питомцами
+**Ключевой принцип:** Глобальная роль = «можно ли открыть дверь», контекстная роль = «что можно делать внутри».
 
-### 2. **pet_sitter** - Передержка питомцев
-- **Назначение:** Вручную администратором
-- **Снятие:** Вручную администратором
+### 2. **Управляемая через БД матрица доступов (RBAC)**
+
+Конкретные права определяются **матрицей доступов**, хранящейся в БД в моделях `ProviderRole`, `ProviderResource`, `ProviderRolePermission`. Матрица управляется системным администратором через Django Admin **без изменения кода**.
+
+### 3. **Мультиролевая система**
+- Один пользователь может иметь несколько глобальных ролей одновременно
+- Один пользователь может быть связан с несколькими провайдерами (разные контекстные роли)
+- Один пользователь может быть branch_manager в нескольких филиалах одного провайдера
+
+### 4. **Provider RBAC: источник прав и совместимость**
+
+- **Источник прав внутри provider admin:** права считаются через `ProviderPermissionService` как union provider-level ролей (`is_owner`, `is_provider_admin`, `is_provider_manager`, `EmployeeProvider.role`) и location-level ролей (`EmployeeLocationRole.role`).
+- **Глобальные роли `UserType` для provider admin остаются только compatibility-layer:** `owner`, `provider_admin`, `provider_manager`, `branch_manager`, `specialist`, `worker` используются для входа в `Petscare-web-admin` и legacy-checks, но не являются primary source of truth для page/resource permissions.
+- **Контракт мастера регистрации не меняется:** `owner_email`, `provider_manager_email`, `admin_email` обязательны; один и тот же email может быть указан во всех трёх полях.
+- **Legacy invite contract сохраняется:** canonical invite type для линейного сотрудника остаётся `specialist`; внутри RBAC он трактуется как worker-invite. При необходимости alias `worker` допустим только как совместимый дополнительный код.
+- **Read-model филиала сохраняется:** `ProviderLocation.manager` не удаляется и синхронизируется с активной записью `EmployeeLocationRole(role='branch_manager')`.
+- **Замечание по историческим разделам ниже:** если в старых сценариях встречаются термины `employee`, `service_worker`, `technical_worker` или `location_manager`, их нужно читать как legacy-обозначения текущих контекстных ролей provider RBAC.
+
+## Глобальные роли (UserType)
+
+Глобальные роли определяют **доступ к приложениям** системы. Они НЕ определяют конкретные права внутри провайдерской админки.
+
+### 1. **basic_user** — Базовый пользователь
+- **Назначение:** Автоматически при регистрации
+- **Описание:** Базовая учётная запись. Доступ только к мобильному приложению
+
+### 2. **pet_owner** — Владелец питомца
+- **Назначение:** Автоматически при создании питомца
+- **Описание:** Пользователь, который владеет питомцами. Доступ к функциям владельца в мобильном приложении
+
+### 3. **pet_sitter** — Передержка питомцев
+- **Назначение:** Автоматически при создании профиля ситтера
 - **Описание:** Пользователь, который может брать питомцев на передержку
 
-### 3. **employee** - Сотрудник учреждения
-- **Назначение:** Вручную администратором провайдера
-- **Снятие:** Вручную администратором провайдера
-- **Описание:** Сотрудник учреждения (ветеринар, грумер и т.д.)
-
-### 4. **provider_admin** - Администратор учреждения
+### 4. **billing_manager** — Менеджер по биллингу
 - **Назначение:** Вручную системным администратором
-- **Снятие:** Вручную системным администратором
-- **Описание:** Администратор учреждения, может управлять сотрудниками
+- **Описание:** Управляет финансовыми операциями платформы. Видит все провайдеры
 
-### 5. **billing_manager** - Менеджер по биллингу
+### 5. **system_admin** — Администратор системы
+- **Назначение:** Вручную через Django Admin
+- **Описание:** Полный доступ ко всей системе, включая Django Admin
+
+### 6. **booking_manager** — Менеджер по бронированиям
 - **Назначение:** Вручную системным администратором
-- **Снятие:** Вручную системным администратором
-- **Описание:** Менеджер по биллингу, управляет финансовыми операциями
+- **Описание:** Управляет процессом завершения и отмены бронирований на уровне платформы
 
-### 6. **system_admin** - Администратор системы
-- **Назначение:** Вручную через админ-панель
-- **Снятие:** Вручную через админ-панель
-- **Описание:** Администратор системы с полными правами
+> **Примечание:** Роли `provider_admin` и `employee` в `UserType` не являются источником прав внутри провайдерской админки. Для входа и legacy-guard-ов используется compatibility-набор ролей `owner / provider_admin / provider_manager / branch_manager / specialist / worker`, а реальные page/resource permissions вычисляются через provider RBAC.
 
-### 7. **booking_manager** - Менеджер по бронированиям
-- **Назначение:** Вручную системным администратором
-- **Снятие:** Вручную системным администратором
-- **Описание:** Менеджер по бронированиям, управляет процессом завершения и отмены бронирований
+## Контекстные роли в организации провайдера
+
+Контекстные роли определяют **конкретные права** пользователя внутри провайдерской админки. Хранятся в `EmployeeProvider.role`.
+
+### 1. **owner** — Владелец организации
+- **Уровень:** Организация
+- **Назначение:** При регистрации организации или через Invite типа `provider_manager`
+- **Описание:** Полный доступ ко всему, включая юридические данные, реквизиты и деактивацию организации
+- **Ограничение:** Один owner на организацию (или несколько по решению бизнеса)
+
+### 2. **provider_admin** — Администратор организации
+- **Уровень:** Организация
+- **Назначение:** Через Invite типа `provider_admin`
+- **Описание:** Административный доступ: настройки организации, интеграции, управление ролями персонала. Не имеет доступа к юридическим данным и деактивации
+
+### 3. **provider_manager** — Менеджер организации
+- **Уровень:** Организация
+- **Назначение:** Через Invite типа `provider_manager`
+- **Описание:** Бизнес-управление: найм персонала, отчёты, аналитика по всем филиалам. Не имеет доступа к настройкам интеграций и изменению ролей
+
+### 4. **branch_manager** — Менеджер филиала
+- **Уровень:** Филиал (через `EmployeeLocationRole`)
+- **Назначение:** Через Invite типа `branch_manager`
+- **Описание:** Управление конкретным филиалом: расписание, персонал, бронирования. Данные фильтруются по назначенным филиалам. Может увольнять только worker-ов в своём филиале
+- **Ограничение:** Один branch_manager на филиал
+
+### 5. **worker** — Работник
+- **Уровень:** Филиал (через `EmployeeLocationRole`)
+- **Назначение:** Через Invite типа `specialist` (legacy API/storage код) или совместимый alias `worker`
+- **Описание:** Исполнитель. Доступ только к своему расписанию, своим бронированиям, своим визитам, своим отзывам
+- **Подтипы через флаг `is_bookable`:**
+  - `is_bookable=True` — **Специалист** (ветеринар, грумер). Доступен для онлайн-записи клиентами
+  - `is_bookable=False` — **Технический работник** (клинер и т.п.). Не виден клиентам в поиске
+- **Примечание:** Оба подтипа имеют одинаковый набор прав в матрице. Различие — только в видимости для публики
+
+## Матрица доступов (RBAC)
+
+Матрица хранится в БД и управляется через Django Admin. Каждая ячейка определяет набор CRUD-операций (Create, Read, Update, Delete) и scope (область видимости данных).
+
+### Scope (область видимости)
+
+| Scope         | Описание                                                                 |
+|---------------|--------------------------------------------------------------------------|
+| `all`         | Полный доступ ко всем данным организации                                  |
+| `own_branch`  | Доступ только к данным назначенных филиалов (Branch Manager)              |
+| `own_only`    | Доступ только к своим записям — бронирования, визиты, профиль (Worker)   |
+
+### Таблица ресурсов и прав
+
+| Ресурс                    | Owner    | Admin    | Manager  | Branch Mgr       | Worker           |
+|---------------------------|----------|----------|----------|-------------------|------------------|
+| `dashboard`               | R        | R        | R        | R (own_branch)    | R (own_only)     |
+| `org.profile`             | CRUD     | RU       | R        | R                 | —                |
+| `org.legal`               | CRUD     | R        | —        | —                 | —                |
+| `org.billing`             | CRUD     | R        | R        | —                 | —                |
+| `org.deactivation`        | D        | —        | —        | —                 | —                |
+| `locations.list`          | CRUD     | CRUD     | R        | R (own_branch)    | R (own_branch)   |
+| `locations.settings`      | CRUD     | CRUD     | RU       | RU (own_branch)   | —                |
+| `locations.schedule`      | CRUD     | CRUD     | CRUD     | CRUD (own_branch) | R (own_only)     |
+| `locations.services`      | CRUD     | CRUD     | CRUD     | CRUD (own_branch) | R                |
+| `staff.list`              | CRUD     | CRUD     | CRUD     | R (own_branch)    | —                |
+| `staff.roles`             | CRUD     | CRUD     | R        | —                 | —                |
+| `staff.invite`            | CRUD     | CRUD     | CRUD     | CR (own_branch)   | —                |
+| `staff.fire`              | D        | D        | D        | D (own_branch, только worker) | — |
+| `bookings`                | CRUD     | CRUD     | CRUD     | CRUD (own_branch) | R (own_only)     |
+| `bookings.create_manual`  | C        | C        | C        | C (own_branch)    | —                |
+| `visits`                  | CRUD     | CRUD     | CRUD     | CRUD (own_branch) | RU (own_only)    |
+| `visits.protocol`         | CRUD     | CRUD     | CRUD     | CRUD (own_branch) | CRU (own_only)   |
+| `clients`                 | R        | R        | R        | R (own_branch)    | R (own_only)     |
+| `reports.financial`       | R        | R        | R        | R (own_branch)    | —                |
+| `reports.operational`     | R        | R        | R        | R (own_branch)    | R (own_only, без финансов) |
+| `settings.integrations`   | CRUD     | CRUD     | R        | —                 | —                |
+| `settings.notifications`  | CRUD     | CRUD     | RU       | RU                | RU (own_only)    |
+| `reviews`                 | RU       | RU       | RU       | RU (own_branch)   | R (own_only)     |
+
+### Модели хранения матрицы
+
+- **`ProviderRole`** — справочник ролей (owner, provider_admin, provider_manager, branch_manager, worker) с уровнем иерархии
+- **`ProviderResource`** — справочник ресурсов (страниц/вкладок) с иерархией и порядком сортировки
+- **`ProviderRolePermission`** — связь Роль ↔ Ресурс с флагами can_create, can_read, can_update, can_delete и полем scope
 
 ## Бизнес-процессы
 
-### Назначение сотрудника в учреждение
+### Назначение персонала в организацию
 
-1. **Подача заявки:**
-   - Пользователь создает заявку `EmployeeJoinRequest`
-   - Заявка отправляется администратору учреждения
+1. **Приглашение через Invite:**
+   - Owner / Admin / Manager создаёт Invite нужного типа (`provider_admin`, `provider_manager`, `branch_manager`, `specialist`)
+   - Система отправляет email с 6-значным кодом
+   - Приглашённый пользователь принимает Invite
 
-2. **Рассмотрение заявки:**
-   - Администратор учреждения рассматривает заявку
-   - Может одобрить или отклонить
+2. **Создание связи:**
+   - При принятии Invite автоматически создаётся или обновляется одна активная связь `EmployeeProvider` для пары user-provider
+   - Provider-level флаги `is_owner`, `is_provider_admin`, `is_provider_manager`, `is_manager` сохраняются как compatibility/read-model слой
+   - Для `branch_manager` и `worker` дополнительно создаётся `EmployeeLocationRole` с привязкой к филиалу
 
-3. **Создание связи:**
-   - При одобрении создается `EmployeeProvider`
-   - **Администратор вручную назначает роль `employee`**
+3. **Автоматическое назначение глобальной роли:**
+   - Пользователю добавляется глобальная роль, дающая доступ к приложению `Petscare-web-admin`
 
-4. **Подтверждение сотрудника:**
-   - Сотрудник может подтвердить или отклонить назначение
-   - При подтверждении устанавливается `is_confirmed=True`
+### Увольнение / снятие роли
 
-### Увольнение сотрудника
+1. **Деактивация:**
+   - Owner / Admin / Manager устанавливает `end_date` в `EmployeeProvider`
+   - `EmployeeLocationRole.is_active` устанавливается в `False`
 
-1. **Установка даты окончания:**
-   - Администратор устанавливает `end_date` в `EmployeeProvider`
-   - **Администратор вручную снимает роль `employee`**
+2. **Ограничения:**
+   - Branch Manager может увольнять только worker-ов в своём филиале
+   - Admin может увольнять manager-ов и ниже
+   - Owner может увольнять всех, включая admin-ов
 
-2. **История работы:**
-   - Связь сохраняется для истории
+3. **История:**
+   - Связи сохраняются для истории
    - Сотрудник может быть повторно принят на работу
 
 ## Техническая реализация
 
-### Методы управления ролями
+### Проверка прав через ProviderPermissionService
 
 ```python
-# Проверка ролей
-user.has_role('employee')  # Проверяет наличие роли employee
-user.has_role('provider_admin')  # Проверяет наличие роли provider_admin
+from providers.services.permission_service import ProviderPermissionService
 
-# Добавление ролей
-user.add_role('employee')  # Добавляет роль employee
-user.add_role('pet_owner')  # Добавляет роль pet_owner
+# Проверка конкретного права
+ProviderPermissionService.check_permission(
+    user=request.user,
+    provider=provider,
+    resource_code='bookings',
+    action='create',
+    target_location=location,  # для scope='own_branch'
+)
 
-# Удаление ролей
-user.remove_role('employee')  # Удаляет роль employee
-user.remove_role('pet_owner')  # Удаляет роль pet_owner
-
-# Получение ролей
-user.get_roles()  # Возвращает все роли пользователя
-
-# Проверка множественных ролей
-user.has_any_role(['employee', 'provider_admin'])  # Хотя бы одна роль
-user.has_all_roles(['employee', 'pet_owner'])  # Все роли
+# Получение полного набора прав (используется для API и фронтенда)
+permissions = ProviderPermissionService.get_user_permissions(
+    user=request.user,
+    provider=provider,
+)
 ```
 
-### Декораторы для проверки доступа
+### Декоратор для DRF views
 
 ```python
-from users.permissions import require_role
+from providers.decorators import require_provider_permission
 
-@require_role('employee')
-def employee_only_view(request):
-    """Только для сотрудников"""
+@require_provider_permission('bookings', 'read')
+def list_bookings(request, provider_id):
+    """Список бронирований с автоматической scope-фильтрацией"""
     pass
 
-@require_role(['employee', 'provider_admin'])
-def employee_or_admin_view(request):
-    """Для сотрудников и администраторов"""
+@require_provider_permission('org.deactivation', 'delete')
+def deactivate_provider(request, provider_id):
+    """Деактивация организации — только Owner"""
     pass
 ```
 
-## Преимущества ручного управления
-
-1. **Контроль:** Полный контроль над назначением ролей
-2. **Гибкость:** Можно назначать роли независимо от бизнес-логики
-3. **Простота:** Нет сложной автоматической синхронизации
-4. **Надежность:** Нет риска неправильной автоматической синхронизации
-5. **Прозрачность:** Явное управление ролями
-
-## Примеры использования
-
-### В представлениях
+### Mixin для ViewSet
 
 ```python
-def approve_employee_request(request, request_id):
-    """Одобрение заявки сотрудника"""
-    join_request = EmployeeJoinRequest.objects.get(id=request_id)
-    
-    # Создаем связь сотрудник-учреждение
-    EmployeeProvider.objects.create(
-        employee=join_request.user.employee_profile,
-        provider=join_request.provider,
-        start_date=date.today()
-    )
-    
-    # ВРУЧНУЮ назначаем роль employee
-    join_request.user.add_role('employee')
-    
-    # Обновляем статус заявки
-    join_request.status = 'approved'
-    join_request.save()
-    
-    return redirect('employee_list')
+from providers.mixins import ProviderPermissionMixin
+
+class BookingViewSet(ProviderPermissionMixin, viewsets.ModelViewSet):
+    provider_resource = 'bookings'
+    # Mixin автоматически проверяет CRUD-права и применяет scope-фильтрацию
 ```
 
-### В админ-панели
+### Глобальные роли (legacy-совместимость)
 
 ```python
-class UserAdmin(admin.ModelAdmin):
-    """Административная панель для пользователей"""
-    
-    def assign_employee_role(self, request, queryset):
-        """Назначить роль employee выбранным пользователям"""
-        for user in queryset:
-            user.add_role('employee')
-        self.message_user(request, f"Роль employee назначена {queryset.count()} пользователям")
-    
-    actions = ['assign_employee_role']
+# Глобальные роли по-прежнему доступны через UserType
+user.has_role('system_admin')
+user.has_role('billing_manager')
+user.has_role('pet_owner')
 ```
-
-## Заключение
-
-Ручное управление ролями обеспечивает:
-- Полный контроль над системой ролей
-- Простоту и надежность
-- Гибкость в назначении ролей
-- Отсутствие сложной автоматической логики
-
-Роли назначаются и снимаются администраторами вручную в соответствии с бизнес-процессами и потребностями системы.
 
 ## Система документов питомца и временные права передержчика
 

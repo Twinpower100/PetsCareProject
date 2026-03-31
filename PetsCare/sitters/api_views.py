@@ -1,206 +1,458 @@
 """
 API представления для модуля передержки питомцев.
 
-Этот модуль содержит представления для:
-1. Управления профилями передержки
-2. Поиска передержек
-3. Получения профиля текущего пользователя
-4. Фильтрации питомцев при создании объявления о передержке
+Этот модуль содержит endpoints для:
+1. Профиля ситтера
+2. Объявлений владельцев
+3. Откликов ситтеров
+4. Жизненного цикла передержки
+5. Отзывов и чатов
+6. Геопоиска ситтеров
 """
 
-from rest_framework import viewsets, permissions, status, generics
-from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.response import Response
-from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework.filters import SearchFilter, OrderingFilter
-from .models import SitterProfile, PetSittingAd, PetSittingResponse, SitterReview, PetSitting
-from .serializers import SitterProfileSerializer, PetSittingAdSerializer, PetSittingResponseSerializer, SitterReviewSerializer, PetSittingSerializer
-from django.shortcuts import get_object_or_404
-from django.db import models
-from django.db.models import Avg, Q
-from notifications.models import Notification
-from notifications.tasks import send_notification_task
-from django.utils.translation import gettext_lazy as _
-from geolocation.services import DeviceLocationService
-from access.models import PetAccess
-from .models import Conversation, Message
-from .serializers import ConversationSerializer, ConversationDetailSerializer, MessageSerializer
+from datetime import date, datetime, time, timedelta
+
 from django.contrib.auth import get_user_model
-from pets.models import Pet, PetType, Breed
-from pets.serializers import PetSerializer
-from datetime import date, timedelta
+from django.db import transaction
+from django.db.models import Avg, Count, Q
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_date
+from django.utils.translation import gettext_lazy as _
+from django_filters.rest_framework import DjangoFilterBackend
+from rest_framework import generics, permissions, status, viewsets
+from rest_framework.decorators import action, api_view, permission_classes
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.filters import OrderingFilter, SearchFilter
+from rest_framework.response import Response
+
+from access.models import PetAccess
+from notifications.models import Notification
+from pets.models import Pet
+from pets.serializers import PetSerializer
+
+from .models import Conversation, Message, PetSitting, PetSittingAd, PetSittingResponse, SitterProfile, SitterReview
+from .serializers import (
+    ConversationDetailSerializer,
+    ConversationSerializer,
+    MessageSerializer,
+    PetSittingAdSerializer,
+    PetSittingResponseSerializer,
+    PetSittingSerializer,
+    SitterProfileSerializer,
+    SitterReviewSerializer,
+)
 
 User = get_user_model()
+
+CAPACITY_BLOCKING_STATUSES = ('waiting_start', 'active', 'waiting_review')
+
+
+def _notify_user(
+    user,
+    *,
+    title: str,
+    message: str,
+    notification_type: str = 'pet_sitting',
+    data: dict | None = None,
+    pet=None,
+) -> Notification:
+    """
+    Создаёт уведомление и сразу отправляет email/in-app каналами.
+    """
+    notification = Notification.objects.create(
+        user=user,
+        pet=pet,
+        notification_type=notification_type,
+        title=title,
+        message=message,
+        channel='all',
+        data=data or {},
+    )
+    notification.send()
+    return notification
+
+
+def _parse_iso_date(raw_value: str | None, field_name: str) -> date | None:
+    """
+    Преобразует ISO-дату из запроса и валидирует формат.
+    """
+    if not raw_value:
+        return None
+
+    parsed_value = parse_date(raw_value)
+    if parsed_value is None:
+        raise ValidationError({field_name: _('Invalid date format. Use YYYY-MM-DD.')})
+    return parsed_value
+
+
+def _resolve_search_coordinates(request) -> tuple[float, float, str]:
+    """
+    Определяет координаты поиска из запроса или сохранённой геолокации.
+    """
+    latitude = request.query_params.get('latitude')
+    longitude = request.query_params.get('longitude')
+
+    if latitude and longitude:
+        try:
+            return float(latitude), float(longitude), 'request_coordinates'
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({'coordinates': _('Invalid coordinates format')}) from exc
+
+    user_location = getattr(request.user, 'user_location', None)
+    if user_location and user_location.point:
+        return float(user_location.point.y), float(user_location.point.x), 'user_location'
+
+    raise ValidationError({'coordinates': _('Provide search coordinates or save your location first.')})
+
+
+def _has_matching_pet_type(profile_pet_types: list, requested_pet_types: set[str]) -> bool:
+    """
+    Проверяет совместимость профиля ситтера с типом питомца.
+    """
+    if not requested_pet_types:
+        return True
+
+    normalized_profile_types = {str(value).strip().lower() for value in (profile_pet_types or []) if str(value).strip()}
+    return bool(normalized_profile_types & requested_pet_types)
+
+
+def _ensure_response_capacity(response: PetSittingResponse) -> int:
+    """
+    Проверяет вместимость ситтера на даты объявления.
+    """
+    overlapping_sittings = PetSitting.objects.select_for_update().filter(
+        sitter=response.sitter,
+        status__in=CAPACITY_BLOCKING_STATUSES,
+        start_date__lte=response.ad.end_date,
+        end_date__gte=response.ad.start_date,
+    )
+    current_load = overlapping_sittings.count()
+
+    if current_load >= response.sitter.max_pets:
+        raise ValidationError({'max_pets': _('Sitter capacity is exceeded for the selected dates.')})
+
+    return current_load
+
+
+def _get_or_create_conversation(*, owner, sitter_user, ad: PetSittingAd | None = None, sitting: PetSitting | None = None) -> Conversation:
+    """
+    Возвращает существующий чат между владельцем и ситтером или создаёт новый.
+    """
+    relation_filter = Q()
+    if ad is not None:
+        relation_filter &= Q(pet_sitting_ad=ad)
+    if sitting is not None:
+        relation_filter &= Q(pet_sitting=sitting)
+
+    conversation = Conversation.objects.filter(
+        participants=owner,
+        is_active=True,
+    ).filter(
+        participants=sitter_user,
+    ).filter(relation_filter).first()
+
+    if conversation is None:
+        conversation = Conversation.objects.create(
+            pet_sitting_ad=ad,
+            pet_sitting=sitting,
+        )
+        conversation.participants.add(owner, sitter_user)
+        return conversation
+
+    updated_fields: list[str] = []
+    if ad is not None and conversation.pet_sitting_ad_id is None:
+        conversation.pet_sitting_ad = ad
+        updated_fields.append('pet_sitting_ad')
+    if sitting is not None and conversation.pet_sitting_id is None:
+        conversation.pet_sitting = sitting
+        updated_fields.append('pet_sitting')
+    if updated_fields:
+        conversation.save(update_fields=updated_fields + ['updated_at'])
+    return conversation
+
+
+def _upsert_pet_access(sitting: PetSitting, *, allow_write: bool) -> PetAccess:
+    """
+    Создаёт или обновляет доступ ситтера к карточке питомца.
+    """
+    end_datetime = timezone.make_aware(datetime.combine(sitting.end_date, time.max))
+    existing_access = PetAccess.objects.select_for_update().filter(
+        pet=sitting.pet,
+        granted_to=sitting.sitter.user,
+        granted_by=sitting.ad.owner,
+    ).first()
+
+    permissions_payload = {
+        'read': True,
+        'book': True,
+        'write': allow_write,
+    }
+
+    if existing_access is None:
+        return PetAccess.objects.create(
+            pet=sitting.pet,
+            granted_to=sitting.sitter.user,
+            granted_by=sitting.ad.owner,
+            expires_at=end_datetime,
+            permissions=permissions_payload,
+            is_active=True,
+        )
+
+    existing_access.expires_at = end_datetime
+    existing_access.permissions = permissions_payload
+    existing_access.is_active = True
+    existing_access.save(update_fields=['expires_at', 'permissions', 'is_active'])
+    return existing_access
+
+
+def _deactivate_pet_access(sitting: PetSitting) -> int:
+    """
+    Полностью отключает временный доступ ситтера к питомцу.
+    """
+    return PetAccess.objects.filter(
+        pet=sitting.pet,
+        granted_to=sitting.sitter.user,
+        granted_by=sitting.ad.owner,
+        is_active=True,
+    ).update(is_active=False)
 
 
 class SitterProfileViewSet(viewsets.ModelViewSet):
     """
-    ViewSet для управления профилями передержки.
-    
-    Предоставляет следующие endpoints:
-    - GET /sitters/profiles/ - список всех профилей
-    - POST /sitters/profiles/ - создание нового профиля
-    - GET /sitters/profiles/{id}/ - детали конкретного профиля
-    - PUT /sitters/profiles/{id}/ - обновление профиля
-    - DELETE /sitters/profiles/{id}/ - удаление профиля
-    
-    Поддерживаемые фильтры:
-    - is_active - фильтрация по активности
-    - min_price - минимальная цена
-    - max_price - максимальная цена
-    
-    Поля для поиска:
-    - name - название услуги
-    - description - описание услуги
-    
-    Поля для сортировки:
-    - name - по названию
-    - price - по цене
-    - rating - по рейтингу
+    ViewSet для профилей ситтеров с кабинетом текущего пользователя.
     """
-    queryset = SitterProfile.objects.all()
+
     serializer_class = SitterProfileSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [SearchFilter, OrderingFilter]  # Убираем DjangoFilterBackend для Swagger
+    filter_backends = [SearchFilter, OrderingFilter]
     search_fields = ['user__first_name', 'user__last_name', 'description']
-    ordering_fields = ['hourly_rate', 'created_at']
+    ordering_fields = ['hourly_rate', 'created_at', 'experience_years']
 
     def get_queryset(self):
         """
-        Возвращает отфильтрованный список профилей.
-        
-        Поддерживает фильтрацию по:
-        - Минимальной цене (min_price)
-        - Максимальной цене (max_price)
-        
-        Returns:
-            QuerySet: Отфильтрованный список профилей
+        Возвращает профили ситтеров с безопасной областью видимости.
         """
         if getattr(self, 'swagger_fake_view', False):
             return SitterProfile.objects.none()
-        queryset = SitterProfile.objects.all()
-        
-        # Фильтрация по активности
-        is_active = self.request.query_params.get('is_active')
-        if is_active is not None:
-            queryset = queryset.filter(is_active=is_active.lower() == 'true')
-        
-        # Фильтрация по ценовому диапазону
-        min_price = self.request.query_params.get('min_price')
-        max_price = self.request.query_params.get('max_price')
-        
-        if min_price:
-            queryset = queryset.filter(hourly_rate__gte=min_price)
-        if max_price:
-            queryset = queryset.filter(hourly_rate__lte=max_price)
-            
-        return queryset 
+
+        queryset = SitterProfile.objects.select_related('user', 'user__user_location').annotate(
+            rating_value=Avg('sittings__reviews__rating'),
+            reviews_count_value=Count('sittings__reviews', distinct=True),
+        )
+
+        if self.action in {'update', 'partial_update', 'destroy', 'me'}:
+            return queryset.filter(user=self.request.user)
+
+        if self.request.query_params.get('mine') == 'true':
+            return queryset.filter(user=self.request.user)
+
+        return queryset.filter(Q(is_active=True) | Q(user=self.request.user))
+
+    def perform_create(self, serializer):
+        """
+        Создаёт профиль ситтера для текущего пользователя.
+        """
+        if SitterProfile.objects.filter(user=self.request.user).exists():
+            raise ValidationError({'detail': _('Sitter profile already exists for this user.')})
+
+        serializer.save(user=self.request.user)
+        self.request.user.add_role('pet_sitter')
+
+    @action(detail=False, methods=['get', 'post', 'put', 'patch'])
+    def me(self, request):
+        """
+        Возвращает или обновляет профиль ситтера текущего пользователя.
+        """
+        profile = SitterProfile.objects.filter(user=request.user).select_related('user', 'user__user_location').first()
+        profile_already_exists = profile is not None
+
+        if request.method == 'GET':
+            if profile is None:
+                return Response({'detail': _('Sitter profile was not found.')}, status=status.HTTP_404_NOT_FOUND)
+            serializer = self.get_serializer(profile)
+            return Response(serializer.data)
+
+        partial = request.method == 'PATCH'
+        serializer = self.get_serializer(instance=profile, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        profile = serializer.save(user=request.user)
+        request.user.add_role('pet_sitter')
+        response_status = status.HTTP_200_OK if profile_already_exists else status.HTTP_201_CREATED
+        return Response(self.get_serializer(profile).data, status=response_status)
 
 
 class PetSittingAdViewSet(viewsets.ModelViewSet):
     """
-    ViewSet для объявлений о передержке питомцев.
-    Позволяет создавать, просматривать, фильтровать и закрывать объявления.
-    Поддерживает фильтрацию по дате, компенсации, статусу, питомцу, поиск по описанию и сортировку по дате, рейтингу.
+    ViewSet объявлений владельцев о поиске передержки.
     """
+
     serializer_class = PetSittingAdSerializer
     permission_classes = [permissions.IsAuthenticated]
-    filter_backends = [SearchFilter, OrderingFilter]  # Убираем DjangoFilterBackend для Swagger
-    search_fields = ['description', 'pet__name']
+    filter_backends = [SearchFilter, OrderingFilter]
+    search_fields = ['description', 'pet__name', 'location']
     ordering_fields = ['start_date', 'created_at']
 
     def get_queryset(self):
         """
-        Возвращает queryset с аннотированным рейтингом для сортировки.
+        Возвращает объявления владельцев с фильтрацией по роли запроса.
         """
         if getattr(self, 'swagger_fake_view', False):
             return PetSittingAd.objects.none()
-        queryset = PetSittingAd.objects.all()
-        
-        # Кастомная фильтрация (заменяет django_filters)
-        start_date = self.request.query_params.get('start_date')
-        end_date = self.request.query_params.get('end_date')
+
+        queryset = PetSittingAd.objects.select_related('pet', 'pet__pet_type', 'pet__breed', 'owner', 'structured_address').prefetch_related(
+            'pet__chronic_conditions'
+        ).annotate(
+            responses_count=Count('responses', distinct=True)
+        )
+
+        if self.action in {'update', 'partial_update', 'destroy', 'close'}:
+            queryset = queryset.filter(owner=self.request.user)
+        elif self.request.query_params.get('mine') == 'true':
+            queryset = queryset.filter(owner=self.request.user)
+        else:
+            queryset = queryset.filter(Q(status='active') | Q(owner=self.request.user))
+
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
         compensation_type = self.request.query_params.get('compensation_type')
-        status = self.request.query_params.get('status')
-        pet = self.request.query_params.get('pet')
-        
-        if start_date:
-            queryset = queryset.filter(start_date__gte=start_date)
-        if end_date:
-            queryset = queryset.filter(end_date__lte=end_date)
         if compensation_type:
             queryset = queryset.filter(compensation_type=compensation_type)
-        if status:
-            queryset = queryset.filter(status=status)
-        if pet:
-            queryset = queryset.filter(pet=pet)
-        
-        # Аннотируем рейтинг ситтера, связанного с объявлением
-        # Временно отключаем аннотацию рейтинга из-за отсутствия поля sitter_rating
-        # queryset = queryset.annotate(
-        #     rating=Avg('responses__sitter__user__sitter_rating')
-        # )
-        return queryset
+
+        return queryset.order_by('-created_at', '-id')
 
     def perform_create(self, serializer):
         """
-        Устанавливает владельца объявления текущим пользователем.
+        Создаёт объявление от имени текущего пользователя.
         """
+        pet = serializer.validated_data['pet']
+        if not pet.owners.filter(id=self.request.user.id).exists():
+            raise ValidationError({'pet': _('You can create pet sitting ads only for your own pets')})
         serializer.save(owner=self.request.user)
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=['post'])
     def close(self, request, pk=None):
         """
-        Закрывает объявление (статус closed).
+        Закрывает объявление владельца.
         """
         ad = self.get_object()
         ad.status = 'closed'
-        ad.save()
-        return Response({'status': 'closed'})
+        ad.save(update_fields=['status', 'updated_at'])
+        return Response(self.get_serializer(ad).data)
 
 
 class PetSittingResponseViewSet(viewsets.ModelViewSet):
     """
-    ViewSet для откликов на объявления о передержке.
-    Позволяет ситтеру откликнуться, владельцу принять/отклонить отклик.
+    ViewSet откликов ситтеров на объявления владельцев.
     """
-    queryset = PetSittingResponse.objects.all()
+
     serializer_class = PetSittingResponseSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        """
+        Возвращает отклики, видимые владельцу или ситтеру.
+        """
+        if getattr(self, 'swagger_fake_view', False):
+            return PetSittingResponse.objects.none()
+
+        queryset = PetSittingResponse.objects.select_related(
+            'ad',
+            'ad__pet',
+            'ad__pet__pet_type',
+            'ad__pet__breed',
+            'ad__structured_address',
+            'ad__owner',
+            'sitter',
+            'sitter__user',
+        ).prefetch_related(
+            'ad__pet__chronic_conditions'
+        ).filter(
+            Q(ad__owner=self.request.user) | Q(sitter__user=self.request.user)
+        )
+
+        role = self.request.query_params.get('role')
+        if role == 'owner':
+            queryset = queryset.filter(ad__owner=self.request.user)
+        elif role == 'sitter':
+            queryset = queryset.filter(sitter__user=self.request.user)
+
+        ad_id = self.request.query_params.get('ad')
+        if ad_id:
+            queryset = queryset.filter(ad_id=ad_id)
+
+        response_status_value = self.request.query_params.get('status')
+        if response_status_value:
+            queryset = queryset.filter(status=response_status_value)
+
+        return queryset
+
     def perform_create(self, serializer):
         """
-        Устанавливает ситтера текущим пользователем и уведомляет владельца объявления о новом отклике.
+        Создаёт отклик текущего ситтера на объявление владельца.
         """
         sitter_profile = get_object_or_404(SitterProfile, user=self.request.user)
-        response = serializer.save(sitter=sitter_profile)
-        # Уведомление владельцу объявления
-        notification = Notification.objects.create(
-            user=response.ad.owner,
-            title=_('New response to your pet sitting ad'),
-            message=_('{user} responded to your ad for {pet}.').format(
-                user=self.request.user.get_full_name(),
-                pet=response.ad.pet
-            ),
-            notification_type='system',
-            channel='both',
-            data={'ad_id': response.ad.id, 'response_id': response.id}
-        )
-        send_notification_task.delay(notification.id)
+        ad = serializer.validated_data['ad']
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+        if not sitter_profile.is_active:
+            raise ValidationError({'detail': _('Activate your sitter profile before responding to ads.')})
+        if ad.owner_id == self.request.user.id:
+            raise ValidationError({'detail': _('Owners cannot respond to their own ads.')})
+        if ad.status != 'active':
+            raise ValidationError({'detail': _('You can respond only to active ads.')})
+
+        duplicate_exists = PetSittingResponse.objects.filter(
+            ad=ad,
+            sitter=sitter_profile,
+        ).exclude(status='rejected').exists()
+        if duplicate_exists:
+            raise ValidationError({'detail': _('You have already responded to this ad.')})
+
+        response = serializer.save(sitter=sitter_profile)
+        _get_or_create_conversation(owner=ad.owner, sitter_user=sitter_profile.user, ad=ad)
+
+        _notify_user(
+            ad.owner,
+            title=_('New pet sitting response'),
+            message=_('%(user)s responded to your ad for %(pet)s.') % {
+                'user': self.request.user.get_full_name() or self.request.user.email,
+                'pet': ad.pet.name,
+            },
+            pet=ad.pet,
+            data={'ad_id': ad.id, 'response_id': response.id},
+        )
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
     def accept(self, request, pk=None):
         """
-        Принимает отклик на заявку о передержке (статус accepted), создает запись в истории передержек. 
+        Принимает отклик и создаёт передержку с проверкой вместимости.
         """
-        response = self.get_object()
+        response = get_object_or_404(
+            PetSittingResponse.objects.select_for_update().select_related(
+                'ad',
+                'ad__pet',
+                'ad__owner',
+                'sitter',
+                'sitter__user',
+            ),
+            pk=pk,
+        )
+
+        if response.ad.owner_id != request.user.id:
+            raise PermissionDenied(_('Only the owner can accept a pet sitting response.'))
         if response.status != 'pending':
-            return Response({'error': _('Already processed')}, status=status.HTTP_400_BAD_REQUEST)
+            raise ValidationError({'detail': _('This response has already been processed.')})
+
+        response.sitter = SitterProfile.objects.select_for_update().get(pk=response.sitter_id)
+        _ensure_response_capacity(response)
+
         response.status = 'accepted'
-        response.save()
-        # Создать запись о передержке
-        PetSitting.objects.create(
+        response.save(update_fields=['status'])
+
+        sitting = PetSitting.objects.create(
             ad=response.ad,
             response=response,
             sitter=response.sitter,
@@ -209,83 +461,109 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
             end_date=response.ad.end_date,
             status='waiting_start',
         )
-        # Уведомление ситтеру о принятии отклика
-        notification = Notification.objects.create(
-            user=response.sitter.user,
-            title=_('Your response was accepted'),
-            message=_('Your response to the ad for {pet} was accepted.').format(pet=response.ad.pet),
-            notification_type='system',
-            channel='both',
-            data={'ad_id': response.ad.id, 'response_id': response.id}
-        )
-        send_notification_task.delay(notification.id)
-        # После response.save()
-        other_responses = PetSittingResponse.objects.filter(
+
+        rejected_responses = PetSittingResponse.objects.select_for_update().filter(
             ad=response.ad,
-            status='pending'
-        ).exclude(id=response.id)
+            status='pending',
+        ).exclude(pk=response.pk)
 
-        for other in other_responses:
-            other.status = 'rejected'
-            other.save()
-            # Уведомление ситтеру об отклонении отклика
-            notification = Notification.objects.create(
-                user=other.sitter.user,
-                title=_('Your response was rejected'),
-                message=_('Your response to the ad for {pet} was rejected.').format(pet=other.ad.pet),
-                notification_type='system',
-                channel='both',
-                data={'ad_id': other.ad.id, 'response_id': other.id}
+        for other_response in rejected_responses:
+            other_response.status = 'rejected'
+            other_response.save(update_fields=['status'])
+            _notify_user(
+                other_response.sitter.user,
+                title=_('Your pet sitting response was rejected'),
+                message=_('Your response to the ad for %(pet)s was not selected.') % {
+                    'pet': response.ad.pet.name,
+                },
+                pet=response.ad.pet,
+                data={'ad_id': response.ad.id, 'response_id': other_response.id},
             )
-            send_notification_task.delay(notification.id)
-        return Response({'status': 'accepted'})
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+        response.ad.status = 'closed'
+        response.ad.save(update_fields=['status', 'updated_at'])
+
+        _get_or_create_conversation(
+            owner=response.ad.owner,
+            sitter_user=response.sitter.user,
+            ad=response.ad,
+            sitting=sitting,
+        )
+
+        _notify_user(
+            response.sitter.user,
+            title=_('Your pet sitting response was accepted'),
+            message=_('Your response to the ad for %(pet)s was accepted.') % {'pet': response.ad.pet.name},
+            pet=response.ad.pet,
+            data={'ad_id': response.ad.id, 'response_id': response.id, 'sitting_id': sitting.id},
+        )
+
+        serializer = PetSittingSerializer(sitting, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
     def reject(self, request, pk=None):
         """
-        Отклоняет отклик на заявку о передержке до принятия какого-то отклика по какой-то причине, например, плохая оценка ситтера (статус rejected).
+        Отклоняет отклик ситтера.
         """
-        response = self.get_object()
-        if response.status != 'pending':
-            return Response({'error': _('Already processed')}, status=status.HTTP_400_BAD_REQUEST)
-        response.status = 'rejected'
-        response.save()
-        # Уведомление ситтеру об отклонении отклика
-        notification = Notification.objects.create(
-            user=response.sitter.user,
-            title=_('Your response was rejected'),
-            message=_('Your response to the ad for {pet} was rejected.').format(pet=response.ad.pet),
-            notification_type='system',
-            channel='both',
-            data={'ad_id': response.ad.id, 'response_id': response.id}
+        response = get_object_or_404(
+            PetSittingResponse.objects.select_for_update().select_related('ad', 'ad__owner', 'ad__pet', 'sitter__user'),
+            pk=pk,
         )
-        send_notification_task.delay(notification.id)
-        return Response({'status': 'rejected'})
+
+        if response.ad.owner_id != request.user.id:
+            raise PermissionDenied(_('Only the owner can reject a pet sitting response.'))
+        if response.status != 'pending':
+            raise ValidationError({'detail': _('This response has already been processed.')})
+
+        response.status = 'rejected'
+        response.save(update_fields=['status'])
+
+        _notify_user(
+            response.sitter.user,
+            title=_('Your pet sitting response was rejected'),
+            message=_('Your response to the ad for %(pet)s was rejected.') % {'pet': response.ad.pet.name},
+            pet=response.ad.pet,
+            data={'ad_id': response.ad.id, 'response_id': response.id},
+        )
+
+        return Response(self.get_serializer(response).data)
 
 
 class SitterReviewViewSet(viewsets.ModelViewSet):
     """
-    ViewSet для отзывов о передержке.
-    Позволяет оставлять и просматривать отзывы.
+    ViewSet отзывов о передержке.
     """
-    queryset = SitterReview.objects.all()
+
     serializer_class = SitterReviewSerializer
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_queryset(self):
+        """
+        Возвращает отзывы, доступные текущему пользователю.
+        """
+        if getattr(self, 'swagger_fake_view', False):
+            return SitterReview.objects.none()
+
+        queryset = SitterReview.objects.select_related('history', 'history__sitter', 'author')
+        sitter_id = self.request.query_params.get('sitter')
+        if sitter_id:
+            queryset = queryset.filter(history__sitter_id=sitter_id)
+        return queryset
+
     def perform_create(self, serializer):
         """
-        Устанавливает автора текущим пользователем.
+        Сохраняет автора отзыва как текущего пользователя.
         """
         serializer.save(author=self.request.user)
 
 
 class PetSittingViewSet(viewsets.ModelViewSet):
     """
-    ViewSet для управления процессом передержки (PetSitting).
-    Позволяет подтверждать передачу/возврат, отменять, завершать с обязательной оценкой, отправлять напоминания.
-    Фильтр по статусу: ?status=waiting_start|active|waiting_end|completed|cancelled
+    ViewSet жизненного цикла передержки питомца.
     """
-    queryset = PetSitting.objects.all()
+
     serializer_class = PetSittingSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
@@ -293,568 +571,501 @@ class PetSittingViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """
-        Фильтрует передержки по текущему пользователю (как владелец или ситтер).
+        Возвращает передержки текущего владельца или ситтера.
         """
         if getattr(self, 'swagger_fake_view', False):
             return PetSitting.objects.none()
-        
-        user = self.request.user
-        return PetSitting.objects.filter(
-            models.Q(sitter__user=user) | models.Q(ad__owner=user)
+
+        queryset = PetSitting.objects.select_related(
+            'ad',
+            'ad__owner',
+            'response',
+            'pet',
+            'pet__pet_type',
+            'pet__breed',
+            'sitter',
+            'sitter__user',
+        ).filter(
+            Q(sitter__user=self.request.user) | Q(ad__owner=self.request.user)
         )
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+        role = self.request.query_params.get('role')
+        if role == 'owner':
+            queryset = queryset.filter(ad__owner=self.request.user)
+        elif role == 'sitter':
+            queryset = queryset.filter(sitter__user=self.request.user)
+
+        return queryset
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
     def confirm_start(self, request, pk=None):
         """
-        Подтверждение передачи питомца (обе стороны должны подтвердить).
+        Подтверждает начало передержки и активирует доступ после двух подтверждений.
         """
-        sitting = self.get_object()
-        user = request.user
-        if user == sitting.ad.owner:
+        sitting = get_object_or_404(
+            PetSitting.objects.select_for_update().select_related('ad', 'ad__owner', 'pet', 'sitter', 'sitter__user'),
+            pk=pk,
+        )
+
+        if request.user.id == sitting.ad.owner_id:
+            if sitting.owner_confirmed_start:
+                raise ValidationError({'detail': _('You have already confirmed the start of this pet sitting.')})
             sitting.owner_confirmed_start = True
-        elif user == sitting.sitter.user:
+        elif request.user.id == sitting.sitter.user_id:
+            if sitting.sitter_confirmed_start:
+                raise ValidationError({'detail': _('You have already confirmed the start of this pet sitting.')})
             sitting.sitter_confirmed_start = True
         else:
-            return Response({'error': 'Not allowed'}, status=status.HTTP_403_FORBIDDEN)
-        sitting.save()
-        # Уведомления о подтверждении передачи
-        if user == sitting.ad.owner:
-            notification = Notification.objects.create(
-                user=sitting.sitter.user,
-                title=_('Owner confirmed pet transfer'),
-                message=_('{user} confirmed pet transfer for {pet}.').format(
-                    user=user.get_full_name(),
-                    pet=sitting.pet
-                ),
-                notification_type='system',
-                channel='both',
-                data={'sitting_id': sitting.id}
-            )
-            send_notification_task.delay(notification.id)
-        else:
-            notification = Notification.objects.create(
-                user=sitting.ad.owner,
-                title=_('Sitter confirmed pet transfer'),
-                message=_('{user} confirmed pet transfer for {pet}.').format(
-                    user=user.get_full_name(),
-                    pet=sitting.pet
-                ),
-                notification_type='system',
-                channel='both',
-                data={'sitting_id': sitting.id}
-            )
-            send_notification_task.delay(notification.id)
-        # Если обе стороны подтвердили — статус active, создать PetAccess и уведомить обеих
+            raise PermissionDenied(_('Only participants can confirm the start of pet sitting.'))
+
+        if sitting.status != 'waiting_start':
+            raise ValidationError({'detail': _('Pet sitting cannot be started from the current status.')})
+
         if sitting.owner_confirmed_start and sitting.sitter_confirmed_start:
             sitting.status = 'active'
-            sitting.save()
-            
-            # Создаем временный доступ для ситтера к питомцу
-            from datetime import datetime, time
-            start_datetime = datetime.combine(sitting.start_date, time.min)
-            end_datetime = datetime.combine(sitting.end_date, time.max)
-            
-            PetAccess.objects.create(
-                pet=sitting.pet,
-                granted_to=sitting.sitter.user,
-                granted_by=sitting.ad.owner,
-                expires_at=end_datetime,
-                permissions={
-                    'read': True,
-                    'book': True,  # Ситтер может записывать питомца на услуги
-                    'write': False  # Но не может изменять данные питомца
-                }
+            _upsert_pet_access(sitting, allow_write=False)
+            _get_or_create_conversation(
+                owner=sitting.ad.owner,
+                sitter_user=sitting.sitter.user,
+                ad=sitting.ad,
+                sitting=sitting,
             )
-            
-            for notify_user in [sitting.ad.owner, sitting.sitter.user]:
-                notification = Notification.objects.create(
-                    user=notify_user,
-                    title=_('Pet sitting started'),
-                    message=_('Pet sitting for {pet} has started.').format(pet=sitting.pet),
-                    notification_type='system',
-                    channel='both',
-                    data={'sitting_id': sitting.id}
-                )
-                send_notification_task.delay(notification.id)
-        return Response(PetSittingSerializer(sitting).data)
+            _notify_user(
+                sitting.ad.owner,
+                title=_('Pet sitting has started'),
+                message=_('The pet sitting for %(pet)s is now active.') % {'pet': sitting.pet.name},
+                pet=sitting.pet,
+                data={'sitting_id': sitting.id},
+            )
+            _notify_user(
+                sitting.sitter.user,
+                title=_('Pet sitting has started'),
+                message=_('The pet sitting for %(pet)s is now active.') % {'pet': sitting.pet.name},
+                pet=sitting.pet,
+                data={'sitting_id': sitting.id},
+            )
+        else:
+            counterpart = sitting.sitter.user if request.user.id == sitting.ad.owner_id else sitting.ad.owner
+            _notify_user(
+                counterpart,
+                title=_('Pet sitting start confirmation is waiting for you'),
+                message=_('Please confirm the start of pet sitting for %(pet)s.') % {'pet': sitting.pet.name},
+                pet=sitting.pet,
+                data={'sitting_id': sitting.id},
+            )
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+        sitting.save(
+            update_fields=[
+                'owner_confirmed_start',
+                'sitter_confirmed_start',
+                'status',
+                'updated_at',
+            ]
+        )
+        return Response(self.get_serializer(sitting).data)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
     def confirm_end(self, request, pk=None):
         """
-        Подтверждение возврата питомца (обе стороны должны подтвердить).
+        Подтверждает завершение передержки и переводит её в этап отзыва.
         """
-        sitting = self.get_object()
-        user = request.user
-        if user == sitting.ad.owner:
+        sitting = get_object_or_404(
+            PetSitting.objects.select_for_update().select_related('ad', 'ad__owner', 'pet', 'sitter', 'sitter__user'),
+            pk=pk,
+        )
+
+        if sitting.status != 'active':
+            raise ValidationError({'detail': _('Pet sitting can be finished only while it is active.')})
+
+        if request.user.id == sitting.ad.owner_id:
+            if sitting.owner_confirmed_end:
+                raise ValidationError({'detail': _('You have already confirmed the end of this pet sitting.')})
             sitting.owner_confirmed_end = True
-        elif user == sitting.sitter.user:
+        elif request.user.id == sitting.sitter.user_id:
+            if sitting.sitter_confirmed_end:
+                raise ValidationError({'detail': _('You have already confirmed the end of this pet sitting.')})
             sitting.sitter_confirmed_end = True
         else:
-            return Response({'error': 'Not allowed'}, status=status.HTTP_403_FORBIDDEN)
-        sitting.save()
-        # Уведомления о подтверждении возврата
-        if user == sitting.ad.owner:
-            notification = Notification.objects.create(
-                user=sitting.sitter.user,
-                title=_('Owner confirmed pet return'),
-                message=_('{user} confirmed pet return for {pet}.').format(
-                    user=user.get_full_name(),
-                    pet=sitting.pet
-                ),
-                notification_type='system',
-                channel='both',
-                data={'sitting_id': sitting.id}
-            )
-            send_notification_task.delay(notification.id)
-        else:
-            notification = Notification.objects.create(
-                user=sitting.ad.owner,
-                title=_('Sitter confirmed pet return'),
-                message=_('{user} confirmed pet return for {pet}.').format(
-                    user=user.get_full_name(),
-                    pet=sitting.pet
-                ),
-                notification_type='system',
-                channel='both',
-                data={'sitting_id': sitting.id}
-            )
-            send_notification_task.delay(notification.id)
-        # Если обе стороны подтвердили — статус waiting_review, отозвать PetAccess и уведомить владельца
+            raise PermissionDenied(_('Only participants can confirm the end of pet sitting.'))
+
         if sitting.owner_confirmed_end and sitting.sitter_confirmed_end:
             sitting.status = 'waiting_review'
-            sitting.save()
-            
-            # Отзываем временный доступ ситтера к питомцу
-            PetAccess.objects.filter(
+            _deactivate_pet_access(sitting)
+            _notify_user(
+                sitting.ad.owner,
+                title=_('Please leave a review'),
+                message=_('Pet sitting for %(pet)s has ended. Please leave a review.') % {'pet': sitting.pet.name},
                 pet=sitting.pet,
-                granted_to=sitting.sitter.user,
-                granted_by=sitting.ad.owner,
-                is_active=True
-            ).update(is_active=False)
-            
-            notification = Notification.objects.create(
-                user=sitting.ad.owner,
-                title=_('Leave a review for pet sitting'),
-                message=_('Please leave a review for pet sitting of {pet}.').format(pet=sitting.pet),
-                notification_type='system',
-                channel='both',
-                data={'sitting_id': sitting.id}
+                data={'sitting_id': sitting.id},
             )
-            send_notification_task.delay(notification.id)
-        return Response(PetSittingSerializer(sitting).data)
+            _notify_user(
+                sitting.sitter.user,
+                title=_('Pet sitting has been finished'),
+                message=_('Pet sitting for %(pet)s is waiting for the owner review.') % {'pet': sitting.pet.name},
+                pet=sitting.pet,
+                data={'sitting_id': sitting.id},
+            )
+        else:
+            counterpart = sitting.sitter.user if request.user.id == sitting.ad.owner_id else sitting.ad.owner
+            _notify_user(
+                counterpart,
+                title=_('Pet sitting end confirmation is waiting for you'),
+                message=_('Please confirm the end of pet sitting for %(pet)s.') % {'pet': sitting.pet.name},
+                pet=sitting.pet,
+                data={'sitting_id': sitting.id},
+            )
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+        sitting.save(
+            update_fields=[
+                'owner_confirmed_end',
+                'sitter_confirmed_end',
+                'status',
+                'updated_at',
+            ]
+        )
+        return Response(self.get_serializer(sitting).data)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
     def leave_review(self, request, pk=None):
         """
-        Оставить обязательный отзыв после завершения передержки (только владелец).
+        Сохраняет обязательный отзыв владельца и завершает передержку.
         """
-        sitting = self.get_object()
-        user = request.user
-        if user != sitting.ad.owner:
-            return Response({'error': _('Only owner can leave review')}, status=status.HTTP_403_FORBIDDEN)
+        sitting = get_object_or_404(
+            PetSitting.objects.select_for_update().select_related('ad', 'ad__owner', 'pet', 'sitter', 'sitter__user'),
+            pk=pk,
+        )
+
+        if request.user.id != sitting.ad.owner_id:
+            raise PermissionDenied(_('Only the owner can leave a review for pet sitting.'))
         if sitting.status != 'waiting_review':
-            return Response({'error': _('Not allowed at this stage')}, status=status.HTTP_400_BAD_REQUEST)
-        # Оценка обязательна
+            raise ValidationError({'detail': _('A review can be left only after both sides confirm the end.')})
+        if sitting.review_left:
+            raise ValidationError({'detail': _('The review for this pet sitting has already been submitted.')})
+
         rating = request.data.get('rating')
         text = request.data.get('text', '')
-        if not rating:
-            return Response({'error': _('Rating is required')}, status=status.HTTP_400_BAD_REQUEST)
-        from .models import SitterReview
+        try:
+            rating_value = int(rating)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({'rating': _('Rating is required and must be an integer from 1 to 5.')}) from exc
+
+        if rating_value < 1 or rating_value > 5:
+            raise ValidationError({'rating': _('Rating must be between 1 and 5.')})
+
         review = SitterReview.objects.create(
             history=sitting,
-            author=user,
-            rating=rating,
-            text=text
+            author=request.user,
+            rating=rating_value,
+            text=text,
         )
+
         sitting.review_left = True
         sitting.status = 'completed'
-        sitting.save()
-        # Уведомление ситтеру о завершении и отзыве
-        notification = Notification.objects.create(
-            user=sitting.sitter.user,
-            title=_('Pet sitting completed and reviewed'),
-            message=_('Pet sitting for {pet} has been completed and reviewed.').format(pet=sitting.pet),
-            notification_type='system',
-            channel='both',
-            data={'sitting_id': sitting.id, 'review_id': review.id}
-        )
-        send_notification_task.delay(notification.id)
-        return Response({'review_id': review.id, 'status': 'completed'})
+        sitting.save(update_fields=['review_left', 'status', 'updated_at'])
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
-    def cancel(self, request, pk=None):
-        """
-        Отмена передержки (до передачи или по force majeure).
-        """
-        sitting = self.get_object()
-        user = request.user
-        if sitting.status in ['completed', 'cancelled']:
-            return Response({'error': _('Already finished')}, status=status.HTTP_400_BAD_REQUEST)
-        # Только владелец или ситтер могут отменить
-        if user != sitting.ad.owner and user != sitting.sitter.user:
-            return Response({'error': _('Not allowed')}, status=status.HTTP_403_FORBIDDEN)
-        sitting.status = 'cancelled'
-        sitting.save()
-        # Уведомления обеим сторонам об отмене
-        for notify_user in [sitting.ad.owner, sitting.sitter.user]:
-            notification = Notification.objects.create(
-                user=notify_user,
-                title=_('Pet sitting cancelled'),
-                message=_('Pet sitting for {pet} has been cancelled.').format(pet=sitting.pet),
-                notification_type='system',
-                channel='both',
-                data={'sitting_id': sitting.id}
-            )
-            send_notification_task.delay(notification.id)
-        return Response({'status': 'cancelled'})
-
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
-    def grant_access(self, request, pk=None):
-        """
-        Предоставить ситтеру дополнительный доступ к питомцу (опционально).
-        """
-        sitting = self.get_object()
-        
-        # Проверяем, что запрос от владельца питомца
-        if request.user != sitting.ad.owner:
-            return Response({'error': _('Only pet owner can grant access')}, status=status.HTTP_403_FORBIDDEN)
-        
-        # Проверяем, что передержка активна
-        if sitting.status != 'active':
-            return Response({'error': _('Pet sitting must be active to grant access')}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Создаем или обновляем PetAccess с расширенными правами
-        from datetime import datetime, time
-        end_datetime = datetime.combine(sitting.end_date, time.max)
-        
-        pet_access, created = PetAccess.objects.get_or_create(
+        _notify_user(
+            sitting.sitter.user,
+            title=_('Pet sitting has been completed'),
+            message=_('The owner completed pet sitting for %(pet)s and left a review.') % {'pet': sitting.pet.name},
             pet=sitting.pet,
-            granted_to=sitting.sitter.user,
-            granted_by=sitting.ad.owner,
-            defaults={
-                'expires_at': end_datetime,
-                'permissions': {
-                    'read': True,
-                    'book': True,
-                    'write': True  # Расширенные права
-                }
+            data={'sitting_id': sitting.id, 'review_id': review.id},
+        )
+
+        return Response(
+            {
+                'status': 'completed',
+                'review': SitterReviewSerializer(review, context={'request': request}).data,
+                'sitting': self.get_serializer(sitting).data,
             }
         )
-        
-        if not created:
-            # Обновляем существующий доступ
-            pet_access.permissions['write'] = True
-            pet_access.expires_at = end_datetime
-            pet_access.is_active = True
-            pet_access.save()
-        
-        notification = Notification.objects.create(
-            user=sitting.sitter.user,
-            title=_('Extended access granted'),
-            message=_('You have been granted extended access to {pet}.').format(pet=sitting.pet),
-            notification_type='system',
-            channel='both',
-            data={'sitting_id': sitting.id}
-        )
-        send_notification_task.delay(notification.id)
-        
-        return Response({'status': 'access_granted'})
 
-    @action(detail=True, methods=['post'], permission_classes=[permissions.IsAuthenticated])
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def cancel(self, request, pk=None):
+        """
+        Отменяет передержку и отзывает временный доступ.
+        """
+        sitting = get_object_or_404(
+            PetSitting.objects.select_for_update().select_related('ad', 'ad__owner', 'pet', 'sitter', 'sitter__user'),
+            pk=pk,
+        )
+
+        if request.user.id not in {sitting.ad.owner_id, sitting.sitter.user_id}:
+            raise PermissionDenied(_('Only participants can cancel pet sitting.'))
+        if sitting.status in {'completed', 'cancelled'}:
+            raise ValidationError({'detail': _('This pet sitting has already been finished.')})
+
+        sitting.status = 'cancelled'
+        sitting.save(update_fields=['status', 'updated_at'])
+        _deactivate_pet_access(sitting)
+
+        for participant in (sitting.ad.owner, sitting.sitter.user):
+            _notify_user(
+                participant,
+                title=_('Pet sitting was cancelled'),
+                message=_('Pet sitting for %(pet)s has been cancelled.') % {'pet': sitting.pet.name},
+                pet=sitting.pet,
+                data={'sitting_id': sitting.id},
+            )
+
+        return Response(self.get_serializer(sitting).data)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def grant_access(self, request, pk=None):
+        """
+        Выдаёт ситтеру расширенный write-доступ к питомцу.
+        """
+        sitting = get_object_or_404(
+            PetSitting.objects.select_for_update().select_related('ad', 'ad__owner', 'pet', 'sitter', 'sitter__user'),
+            pk=pk,
+        )
+
+        if request.user.id != sitting.ad.owner_id:
+            raise PermissionDenied(_('Only the owner can grant additional access.'))
+        if sitting.status != 'active':
+            raise ValidationError({'detail': _('Additional access can be granted only while pet sitting is active.')})
+
+        _upsert_pet_access(sitting, allow_write=True)
+        _notify_user(
+            sitting.sitter.user,
+            title=_('Extended pet access granted'),
+            message=_('You have been granted extended access to %(pet)s.') % {'pet': sitting.pet.name},
+            pet=sitting.pet,
+            data={'sitting_id': sitting.id},
+        )
+        return Response(self.get_serializer(sitting).data)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
     def revoke_access(self, request, pk=None):
         """
-        Отозвать дополнительный доступ ситтера к питомцу.
+        Отключает только расширенный write-доступ, сохраняя базовый доступ до конца передержки.
         """
-        sitting = self.get_object()
-        
-        # Проверяем, что запрос от владельца питомца
-        if request.user != sitting.ad.owner:
-            return Response({'error': _('Only pet owner can revoke access')}, status=status.HTTP_403_FORBIDDEN)
-        
-        # Отзываем доступ
-        PetAccess.objects.filter(
-            pet=sitting.pet,
-            granted_to=sitting.sitter.user,
-            granted_by=sitting.ad.owner,
-            is_active=True
-        ).update(is_active=False)
-        
-        notification = Notification.objects.create(
-            user=sitting.sitter.user,
-            title=_('Access revoked'),
-            message=_('Your extended access to {pet} has been revoked.').format(pet=sitting.pet),
-            notification_type='system',
-            channel='both',
-            data={'sitting_id': sitting.id}
+        sitting = get_object_or_404(
+            PetSitting.objects.select_for_update().select_related('ad', 'ad__owner', 'pet', 'sitter', 'sitter__user'),
+            pk=pk,
         )
-        send_notification_task.delay(notification.id)
-        
-        return Response({'status': 'access_revoked'})
 
-    @action(detail=False, methods=['get'], url_path='remind')
+        if request.user.id != sitting.ad.owner_id:
+            raise PermissionDenied(_('Only the owner can revoke additional access.'))
+        if sitting.status != 'active':
+            raise ValidationError({'detail': _('Additional access can be revoked only while pet sitting is active.')})
+
+        _upsert_pet_access(sitting, allow_write=False)
+        _notify_user(
+            sitting.sitter.user,
+            title=_('Extended pet access revoked'),
+            message=_('Your extended access to %(pet)s has been revoked.') % {'pet': sitting.pet.name},
+            pet=sitting.pet,
+            data={'sitting_id': sitting.id},
+        )
+        return Response(self.get_serializer(sitting).data)
+
+    @action(detail=False, methods=['post'], url_path='remind')
     def remind(self, request):
         """
-        Напоминания о необходимости подтверждения передачи/возврата или оставления отзыва.
-        Может вызываться по расписанию (например, Celery beat).
+        Отправляет email/in-app напоминания о зависших шагах передержки.
         """
-        # Найти все зависшие процессы и отправить напоминания
-        count = 0
-        for sitting in PetSitting.objects.filter(status__in=['waiting_start', 'waiting_end', 'waiting_review']):
-            if sitting.status == 'waiting_start':
-                for notify_user, role in [(sitting.ad.owner, 'owner'), (sitting.sitter.user, 'sitter')]:
-                    if (role == 'owner' and not sitting.owner_confirmed_start) or (role == 'sitter' and not sitting.sitter_confirmed_start):
-                        notification = Notification.objects.create(
-                            user=notify_user,
-                            title=_('Confirm pet transfer'),
-                            message=_('Please confirm pet transfer for {pet}.').format(pet=sitting.pet),
-                            notification_type='system',
-                            channel='both',
-                            data={'sitting_id': sitting.id}
-                        )
-                        send_notification_task.delay(notification.id)
-                        count += 1
-            elif sitting.status == 'waiting_end':
-                for notify_user, role in [(sitting.ad.owner, 'owner'), (sitting.sitter.user, 'sitter')]:
-                    if (role == 'owner' and not sitting.owner_confirmed_end) or (role == 'sitter' and not sitting.sitter_confirmed_end):
-                        notification = Notification.objects.create(
-                            user=notify_user,
-                            title=_('Confirm pet return'),
-                            message=_('Please confirm pet return for {pet}.').format(pet=sitting.pet),
-                            notification_type='system',
-                            channel='both',
-                            data={'sitting_id': sitting.id}
-                        )
-                        send_notification_task.delay(notification.id)
-                        count += 1
-            elif sitting.status == 'waiting_review' and not sitting.review_left:
-                notification = Notification.objects.create(
-                    user=sitting.ad.owner,
-                    title=_('Leave a review for pet sitting'),
-                    message=_('Please leave a review for pet sitting of {pet}.').format(pet=sitting.pet),
-                    notification_type='system',
-                    channel='both',
-                    data={'sitting_id': sitting.id}
+        today = timezone.now().date()
+        reminders_sent = 0
+
+        waiting_start_sittings = PetSitting.objects.select_related('ad', 'pet', 'sitter__user').filter(
+            status='waiting_start',
+            start_date__lte=today + timedelta(days=1),
+        )
+        for sitting in waiting_start_sittings:
+            if not sitting.owner_confirmed_start:
+                _notify_user(
+                    sitting.ad.owner,
+                    title=_('Confirm the start of pet sitting'),
+                    message=_('Please confirm the start of pet sitting for %(pet)s.') % {'pet': sitting.pet.name},
+                    pet=sitting.pet,
+                    data={'sitting_id': sitting.id},
                 )
-                send_notification_task.delay(notification.id)
-                count += 1
-        return Response({'reminders_sent': count})
+                reminders_sent += 1
+            if not sitting.sitter_confirmed_start:
+                _notify_user(
+                    sitting.sitter.user,
+                    title=_('Confirm the start of pet sitting'),
+                    message=_('Please confirm the start of pet sitting for %(pet)s.') % {'pet': sitting.pet.name},
+                    pet=sitting.pet,
+                    data={'sitting_id': sitting.id},
+                )
+                reminders_sent += 1
+
+        waiting_end_sittings = PetSitting.objects.select_related('ad', 'pet', 'sitter__user').filter(
+            status='active',
+            end_date__lte=today,
+        )
+        for sitting in waiting_end_sittings:
+            if not sitting.owner_confirmed_end:
+                _notify_user(
+                    sitting.ad.owner,
+                    title=_('Confirm the end of pet sitting'),
+                    message=_('Please confirm the end of pet sitting for %(pet)s.') % {'pet': sitting.pet.name},
+                    pet=sitting.pet,
+                    data={'sitting_id': sitting.id},
+                )
+                reminders_sent += 1
+            if not sitting.sitter_confirmed_end:
+                _notify_user(
+                    sitting.sitter.user,
+                    title=_('Confirm the end of pet sitting'),
+                    message=_('Please confirm the end of pet sitting for %(pet)s.') % {'pet': sitting.pet.name},
+                    pet=sitting.pet,
+                    data={'sitting_id': sitting.id},
+                )
+                reminders_sent += 1
+
+        review_sittings = PetSitting.objects.select_related('ad', 'pet').filter(
+            status='waiting_review',
+            review_left=False,
+        )
+        for sitting in review_sittings:
+            _notify_user(
+                sitting.ad.owner,
+                title=_('Leave a pet sitting review'),
+                message=_('Please leave a review for pet sitting of %(pet)s.') % {'pet': sitting.pet.name},
+                pet=sitting.pet,
+                data={'sitting_id': sitting.id},
+            )
+            reminders_sent += 1
+
+        return Response({'reminders_sent': reminders_sent})
 
 
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def search_sitters(request):
     """
-    Поиск ситтеров по геолокации с учетом ролей пользователей.
-    
-    Логика определения местоположения по ролям:
-    1. Обычный пользователь: адрес НЕ обязателен, используется геолокация устройства
-    2. Ситтер: адрес ОБЯЗАТЕЛЕН (где оказывает услуги)
-    3. Учреждение: адрес ОБЯЗАТЕЛЕН (где находится учреждение)
-    
-    Параметры:
-    - latitude, longitude: Координаты (опционально)
-    - radius: Радиус поиска в км (по умолчанию 10)
-    - service_type: Тип услуги (опционально)
-    - price_min, price_max: Диапазон цен (опционально)
-    - rating_min: Минимальный рейтинг (опционально)
-    - available_from, available_to: Период доступности (опционально)
+    Выполняет геопоиск ситтеров с фильтрами по дате, типу питомца и ставке.
     """
+    search_lat, search_lon, location_source = _resolve_search_coordinates(request)
+
     try:
-        # Получаем параметры поиска
-        latitude = request.GET.get('latitude')
-        longitude = request.GET.get('longitude')
-        radius = float(request.GET.get('radius', 10))
-        service_type = request.GET.get('service_type')
-        price_min = request.GET.get('price_min')
-        price_max = request.GET.get('price_max')
-        rating_min = request.GET.get('rating_min')
-        available_from = request.GET.get('available_from')
-        available_to = request.GET.get('available_to')
-        
-        # Проверяем требования к адресу для пользователя
-        device_service = DeviceLocationService()
-        address_check = device_service.check_address_requirement(request.user)
-        
-        # Определяем местоположение для поиска
-        search_lat = None
-        search_lon = None
-        location_source = None
-        
-        if latitude and longitude:
-            # Используем переданные координаты
-            try:
-                search_lat = float(latitude)
-                search_lon = float(longitude)
-                location_source = 'request_coordinates'
-            except ValueError:
-                return Response({
-                    'success': False,
-                    'error': _('Invalid coordinates format')
-                }, status=status.HTTP_400_BAD_REQUEST)
-        else:
-            # Проверяем роль пользователя
-            if address_check['address_required'] and address_check['missing_address']:
-                # Адрес обязателен, но отсутствует
-                return Response({
-                    'success': False,
-                    'error': _('Address required'),
-                    'message': address_check['message'],
-                    'role': address_check['role'],
-                    'requires_address': True
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Если адрес не обязателен или есть адрес, используем местоположение пользователя
-            user_location = device_service.get_user_location(request.user)
-            
-            if user_location:
-                search_lat = float(user_location['latitude'])
-                search_lon = float(user_location['longitude'])
-                location_source = 'user_location'
-            else:
-                # Местоположение не определено
-                if address_check['address_required']:
-                    # Для ситтеров и учреждений адрес обязателен
-                    return Response({
-                        'success': False,
-                        'error': _('Address required'),
-                        'message': address_check['message'],
-                        'role': address_check['role'],
-                        'requires_address': True
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                else:
-                    # Для обычных пользователей требуем включить геолокацию
-                    return Response({
-                        'success': False,
-                        'error': _('Location not available'),
-                        'message': _('Please enable device location or select area on map'),
-                        'requires_location': True
-                    }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Валидируем параметры поиска
-        if not (-90 <= search_lat <= 90) or not (-180 <= search_lon <= 180):
-            return Response({
-                'success': False,
-                'error': _('Invalid coordinates')
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        if not (0.1 <= radius <= 100):
-            return Response({
-                'success': False,
-                'error': _('Invalid search radius (0.1-100 km)')
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Выполняем поиск ситтеров
-        sitters = SitterProfile.objects.filter(is_active=True)
-        
-        # Фильтрация по расстоянию
-        sitters_with_distance = []
-        for sitter in sitters:
-            # Проверяем, есть ли у ситтера адрес (обязательно для ситтеров)
-            if not sitter.user.address:
-                continue  # Пропускаем ситтеров без адреса
-            
-            if sitter.user.address and sitter.user.address.point:
-                distance = sitter.user.address.distance_to(search_lat, search_lon)
-                if distance <= radius:
-                    sitters_with_distance.append({
-                        'sitter': sitter,
-                        'distance': distance
-                    })
-        
-        # Сортировка по расстоянию
-        sitters_with_distance.sort(key=lambda x: x['distance'])
-        
-        # Применяем дополнительные фильтры
-        filtered_sitters = []
-        for item in sitters_with_distance:
-            sitter = item['sitter']
-            
-            # Фильтр по типу услуги
-            if service_type and service_type not in sitter.services.all().values_list('name', flat=True):
+        radius = float(request.query_params.get('radius', 10))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError({'radius': _('Radius must be a number between 0.1 and 100.')}) from exc
+
+    if not (0.1 <= radius <= 100):
+        raise ValidationError({'radius': _('Radius must be a number between 0.1 and 100.')})
+
+    available_from = _parse_iso_date(request.query_params.get('available_from'), 'available_from')
+    available_to = _parse_iso_date(request.query_params.get('available_to'), 'available_to')
+    if available_from and available_to and available_from > available_to:
+        raise ValidationError({'available_to': _('End date must be after start date')})
+
+    requested_pet_types = {
+        value.strip().lower()
+        for value in request.query_params.get('pet_type', '').split(',')
+        if value.strip()
+    }
+    compensation_type = request.query_params.get('compensation_type')
+    price_min = request.query_params.get('price_min')
+    price_max = request.query_params.get('price_max')
+    rating_min = request.query_params.get('rating_min')
+
+    sitters = SitterProfile.objects.select_related('user', 'user__user_location').annotate(
+        rating_value=Avg('sittings__reviews__rating'),
+        reviews_count_value=Count('sittings__reviews', distinct=True),
+    ).filter(is_active=True)
+
+    matched_sitters: list[SitterProfile] = []
+    for sitter in sitters:
+        user_location = getattr(sitter.user, 'user_location', None)
+        if user_location is None or not user_location.point:
+            continue
+
+        distance_km = user_location.distance_to(search_lat, search_lon)
+        if distance_km is None or distance_km > radius:
+            continue
+
+        if not _has_matching_pet_type(sitter.pet_types, requested_pet_types):
+            continue
+
+        if compensation_type and sitter.compensation_type != compensation_type:
+            continue
+
+        sitter_rate = float(sitter.hourly_rate) if sitter.hourly_rate is not None else None
+        if price_min and (sitter_rate is None or sitter_rate < float(price_min)):
+            continue
+        if price_max and sitter_rate is not None and sitter_rate > float(price_max):
+            continue
+
+        sitter_rating = float(getattr(sitter, 'rating_value', 0) or 0)
+        if rating_min and sitter_rating < float(rating_min):
+            continue
+
+        if available_from and sitter.available_from and sitter.available_from > available_from:
+            continue
+        if available_to and sitter.available_to and sitter.available_to < available_to:
+            continue
+
+        current_load = 0
+        if available_from and available_to:
+            current_load = PetSitting.objects.filter(
+                sitter=sitter,
+                status__in=CAPACITY_BLOCKING_STATUSES,
+                start_date__lte=available_to,
+                end_date__gte=available_from,
+            ).count()
+            if current_load >= sitter.max_pets:
                 continue
-            
-            # Фильтр по цене
-            if price_min and sitter.hourly_rate < float(price_min):
-                continue
-            if price_max and sitter.hourly_rate > float(price_max):
-                continue
-            
-            # Фильтр по рейтингу
-            if rating_min and sitter.rating < float(rating_min):
-                continue
-            
-            # Фильтр по доступности
-            if available_from and available_to:
-                # Здесь должна быть логика проверки доступности
-                # Пока пропускаем этот фильтр
-                pass
-            
-            filtered_sitters.append(item)
-        
-        # Формируем ответ
-        result = []
-        for item in filtered_sitters:
-            sitter = item['sitter']
-            result.append({
-                'id': sitter.id,
-                'name': f"{sitter.user.first_name} {sitter.user.last_name}",
-                'rating': sitter.rating,
-                'hourly_rate': sitter.hourly_rate,
-                'services': list(sitter.services.all().values_list('name', flat=True)),
-                'experience_years': sitter.experience_years,
-                'bio': sitter.bio,
-                'distance_km': round(item['distance'], 2),
-                'location': {
-                                    'latitude': float(sitter.user.address.point.coords[1]),  # latitude
-                'longitude': float(sitter.user.address.point.coords[0]),  # longitude
-                    'address': sitter.user.address.formatted_address
-                }
-            })
-        
-        return Response({
-            'success': True,
-            'sitters': result,
-            'search_params': {
+
+        sitter.distance_km = round(float(distance_km), 2)
+        sitter.current_load = current_load
+        matched_sitters.append(sitter)
+
+    matched_sitters.sort(key=lambda profile: getattr(profile, 'distance_km', 0))
+    serializer = SitterProfileSerializer(matched_sitters, many=True, context={'request': request})
+    serialized_data = serializer.data
+
+    for payload, sitter in zip(serialized_data, matched_sitters, strict=False):
+        payload['distance_km'] = getattr(sitter, 'distance_km', None)
+        payload['current_load'] = getattr(sitter, 'current_load', 0)
+
+    return Response(
+        {
+            'results': serialized_data,
+            'search': {
                 'latitude': search_lat,
                 'longitude': search_lon,
                 'radius_km': radius,
                 'location_source': location_source,
-                'total_found': len(result)
+                'total_found': len(serialized_data),
             },
-            'user_role_info': {
-                'role': address_check['role'],
-                'address_required': address_check['address_required'],
-                'has_address': address_check['has_address']
-            }
-        })
-        
-    except Exception as e:
-        return Response({
-            'success': False,
-            'error': _('Error searching sitters'),
-            'details': str(e)
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR) 
+        }
+    )
 
 
 class ConversationViewSet(viewsets.ModelViewSet):
     """
-    ViewSet для управления диалогами между владельцами и ситтерами.
+    ViewSet диалогов между владельцами и ситтерами.
     """
+
     serializer_class = ConversationSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_queryset(self):
-        """Возвращает диалоги текущего пользователя"""
+        """
+        Возвращает активные диалоги текущего пользователя.
+        """
         if getattr(self, 'swagger_fake_view', False):
             return Conversation.objects.none()
-        
-        return Conversation.objects.filter(
-            participants=self.request.user,
-            is_active=True
+
+        return Conversation.objects.filter(participants=self.request.user, is_active=True).prefetch_related(
+            'participants',
+            'messages',
         )
 
     def get_serializer_class(self):
-        """Выбирает сериализатор в зависимости от действия"""
+        """
+        Подбирает сериализатор в зависимости от действия.
+        """
         if self.action == 'retrieve':
             return ConversationDetailSerializer
         return ConversationSerializer
@@ -862,304 +1073,158 @@ class ConversationViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def send_message(self, request, pk=None):
         """
-        Отправка сообщения в диалог.
+        Отправляет сообщение в диалог между участниками.
         """
         conversation = self.get_object()
-        text = request.data.get('text', '').strip()
-        
+        text = str(request.data.get('text', '')).strip()
         if not text:
-            return Response({'error': _('Message text is required')}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Получаем другого участника диалога
+            raise ValidationError({'text': _('Message text is required.')})
+
         other_participant = conversation.get_other_participant(request.user)
-        if not other_participant:
-            return Response({'error': _('No other participant found')}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Создаем сообщение
+        if other_participant is None:
+            raise ValidationError({'detail': _('No other participant found for this conversation.')})
+
         message = Message.objects.create(
             conversation=conversation,
             sender=request.user,
             recipient=other_participant,
-            text=text
+            text=text,
         )
-        
-        # Отправляем уведомление другому участнику
-        other_participant = conversation.get_other_participant(request.user)
-        if other_participant:
-            notification = Notification.objects.create(
-                user=other_participant,
-                title=_('New message'),
-                message=_('You have a new message from {sender}').format(sender=request.user.get_full_name()),
-                notification_type='chat',
-                channel='both',
-                data={
-                    'conversation_id': conversation.id,
-                    'message_id': message.id
-                }
-            )
-            send_notification_task.delay(notification.id)
-        
-        return Response(MessageSerializer(message).data)
+
+        _notify_user(
+            other_participant,
+            title=_('New chat message'),
+            message=_('%(sender)s sent you a new message.') % {
+                'sender': request.user.get_full_name() or request.user.email,
+            },
+            notification_type='system',
+            data={'conversation_id': conversation.id, 'message_id': message.id},
+        )
+
+        conversation.updated_at = timezone.now()
+        conversation.save(update_fields=['updated_at'])
+        return Response(MessageSerializer(message, context={'request': request}).data)
 
     @action(detail=True, methods=['post'])
     def mark_as_read(self, request, pk=None):
         """
-        Отмечает все сообщения в диалоге как прочитанные.
+        Отмечает непрочитанные сообщения как прочитанные.
         """
         conversation = self.get_object()
-        user = request.user
-        
-        # Отмечаем все непрочитанные сообщения, где текущий пользователь - получатель
-        conversation.messages.filter(
+        updated_count = conversation.messages.filter(
             is_read=False,
-            recipient=user
+            recipient=request.user,
         ).update(is_read=True)
-        
-        return Response({'status': 'marked_as_read'})
+        return Response({'marked_as_read': updated_count})
 
     @action(detail=False, methods=['post'])
     def create_or_get(self, request):
         """
-        Создает новый диалог или возвращает существующий.
+        Создаёт новый диалог или возвращает уже существующий.
         """
         other_user_id = request.data.get('other_user_id')
         ad_id = request.data.get('ad_id')
         sitting_id = request.data.get('sitting_id')
-        
+
         if not other_user_id:
-            return Response({'error': _('other_user_id is required')}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            other_user = User.objects.get(id=other_user_id)
-        except User.DoesNotExist:
-            return Response({'error': _('User not found')}, status=status.HTTP_404_NOT_FOUND)
-        
-        # Ищем существующий диалог
-        conversation = Conversation.objects.filter(
-            participants=request.user
-        ).filter(
-            participants=other_user
-        ).filter(
-            is_active=True
-        ).first()
-        
-        if not conversation:
-            # Создаем новый диалог
-            conversation = Conversation.objects.create()
-            conversation.participants.add(request.user, other_user)
-            
-            # Привязываем к объявлению или передержке
-            if ad_id:
-                try:
-                    ad = PetSittingAd.objects.get(id=ad_id)
-                    conversation.pet_sitting_ad = ad
-                    conversation.save()
-                except PetSittingAd.DoesNotExist:
-                    pass
-            elif sitting_id:
-                try:
-                    sitting = PetSitting.objects.get(id=sitting_id)
-                    conversation.pet_sitting = sitting
-                    conversation.save()
-                except PetSitting.DoesNotExist:
-                    pass
-        
-        return Response(ConversationDetailSerializer(conversation, context={'request': request}).data) 
+            raise ValidationError({'other_user_id': _('other_user_id is required.')})
+        if int(other_user_id) == request.user.id:
+            raise ValidationError({'other_user_id': _('You cannot create a conversation with yourself.')})
+
+        other_user = get_object_or_404(User, pk=other_user_id)
+        ad = get_object_or_404(PetSittingAd, pk=ad_id) if ad_id else None
+        sitting = get_object_or_404(PetSitting, pk=sitting_id) if sitting_id else None
+
+        conversation = _get_or_create_conversation(
+            owner=request.user if ad is None or ad.owner_id == request.user.id else other_user,
+            sitter_user=other_user if ad is None or ad.owner_id == request.user.id else request.user,
+            ad=ad,
+            sitting=sitting,
+        )
+        serializer = ConversationDetailSerializer(conversation, context={'request': request})
+        return Response(serializer.data)
 
 
 class PetFilterForSittingAPIView(generics.ListAPIView):
     """
-    API endpoint для фильтрации питомцев пользователя при создании объявления о передержке.
-    
-    Поддерживает фильтрацию по:
-    - Типу питомца (pet_type)
-    - Породе (breed)
-    - Возрасту (age_min, age_max)
-    - Весу (weight_min, weight_max)
-    - Медицинским условиям (has_medical_conditions)
-    - Особым потребностям (has_special_needs)
-    - Статусу (is_active)
-    - Удаленности (distance_km)
-    
-    Поддерживает сортировку по:
-    - Возрасту (age)
-    - Весу (weight)
-    - Удаленности (distance)
+    Возвращает питомцев текущего пользователя для формы объявления.
     """
+
     permission_classes = [permissions.IsAuthenticated]
-    
+
     def get_serializer_class(self):
-        """Возвращает сериализатор для Swagger"""
-        if getattr(self, 'swagger_fake_view', False):
-            from pets.serializers import PetSerializer
-            return PetSerializer
-        from pets.serializers import PetSerializer
+        """
+        Возвращает сериализатор питомца для Swagger и runtime.
+        """
         return PetSerializer
-    
+
     def get_queryset(self):
         """
-        Возвращает отфильтрованный список питомцев пользователя.
-        
-        Returns:
-            QuerySet: Отфильтрованный список питомцев
+        Возвращает только питомцев текущего пользователя с фильтрами.
         """
         if getattr(self, 'swagger_fake_view', False):
             return Pet.objects.none()
-            
-        user = self.request.user
-        
-        # Базовый queryset - только питомцы пользователя
-        queryset = Pet.objects.filter(
-            Q(main_owner=user) | Q(owners=user)
-        ).distinct()
-        
-        # Фильтрация по типу питомца
+
+        queryset = Pet.objects.filter(owners=self.request.user).distinct()
+
         pet_type = self.request.query_params.get('pet_type')
         if pet_type:
             queryset = queryset.filter(pet_type__code=pet_type)
-        
-        # Фильтрация по породе
+
         breed = self.request.query_params.get('breed')
         if breed:
             queryset = queryset.filter(breed__code=breed)
-        
-        # Фильтрация по возрасту
+
         age_min = self.request.query_params.get('age_min')
         age_max = self.request.query_params.get('age_max')
-        
         if age_min:
             max_birth_date = timezone.now().date() - timedelta(days=int(age_min) * 365)
             queryset = queryset.filter(birth_date__lte=max_birth_date)
-        
         if age_max:
             min_birth_date = timezone.now().date() - timedelta(days=(int(age_max) + 1) * 365)
             queryset = queryset.filter(birth_date__gt=min_birth_date)
-        
-        # Фильтрация по весу
+
         weight_min = self.request.query_params.get('weight_min')
         weight_max = self.request.query_params.get('weight_max')
-        
         if weight_min:
             queryset = queryset.filter(weight__gte=float(weight_min))
-        
         if weight_max:
             queryset = queryset.filter(weight__lte=float(weight_max))
-        
-        # Фильтрация по медицинским условиям
+
         has_medical_conditions = self.request.query_params.get('has_medical_conditions')
         if has_medical_conditions is not None:
             if has_medical_conditions.lower() == 'true':
-                queryset = queryset.filter(
-                    ~Q(medical_conditions={}) & ~Q(medical_conditions__isnull=True)
-                )
+                queryset = queryset.filter(~Q(medical_conditions={}) & ~Q(medical_conditions__isnull=True))
             else:
-                queryset = queryset.filter(
-                    Q(medical_conditions={}) | Q(medical_conditions__isnull=True)
-                )
-        
-        # Фильтрация по особым потребностям
+                queryset = queryset.filter(Q(medical_conditions={}) | Q(medical_conditions__isnull=True))
+
         has_special_needs = self.request.query_params.get('has_special_needs')
         if has_special_needs is not None:
             if has_special_needs.lower() == 'true':
-                queryset = queryset.filter(
-                    ~Q(special_needs={}) & ~Q(special_needs__isnull=True)
-                )
+                queryset = queryset.filter(~Q(special_needs={}) & ~Q(special_needs__isnull=True))
             else:
-                queryset = queryset.filter(
-                    Q(special_needs={}) | Q(special_needs__isnull=True)
-                )
-        
-        # Фильтрация по статусу (активные/неактивные)
-        is_active = self.request.query_params.get('is_active')
-        if is_active is not None:
-            if is_active.lower() == 'true':
-                # Активные питомцы - без недееспособности владельцев
-                queryset = queryset.exclude(
-                    incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
-                )
-            else:
-                # Неактивные питомцы - с недееспособностью владельцев
-                queryset = queryset.filter(
-                    incapacity_records__status__in=['pending_confirmation', 'confirmed_incapacity']
-                )
-        
-        # Фильтрация по удаленности (если переданы координаты)
-        distance_km = self.request.query_params.get('distance_km')
-        lat = self.request.query_params.get('lat')
-        lng = self.request.query_params.get('lng')
-        
-        if distance_km and lat and lng:
-            try:
-                from geolocation.utils import calculate_distance
-                
-                # Получаем координаты пользователя
-                user_lat = float(lat)
-                user_lng = float(lng)
-                max_distance = float(distance_km)
-                
-                # Фильтруем питомцев по расстоянию (если у них есть геолокация)
-                # Пока это заглушка - в реальной реализации нужно добавить геолокацию к питомцам
-                # queryset = queryset.filter(...)
-                
-            except (ValueError, ImportError):
-                # Если ошибка в координатах или нет модуля геолокации, игнорируем фильтр
-                pass
-        
-        # Сортировка
+                queryset = queryset.filter(Q(special_needs={}) | Q(special_needs__isnull=True))
+
         ordering = self.request.query_params.get('ordering', 'name')
-        if ordering in ['age', '-age']:
-            if ordering == 'age':
-                queryset = queryset.order_by('birth_date')
-            else:
-                queryset = queryset.order_by('-birth_date')
-        elif ordering in ['weight', '-weight']:
+        if ordering in ['birth_date', '-birth_date', 'weight', '-weight', 'name', '-name']:
             queryset = queryset.order_by(ordering)
-        elif ordering in ['distance', '-distance']:
-            # Сортировка по удаленности (заглушка)
-            # В реальной реализации нужно добавить расчет расстояния
-            pass
         else:
-            # По умолчанию сортируем по имени
             queryset = queryset.order_by('name')
-        
+
         return queryset
-    
+
     def list(self, request, *args, **kwargs):
         """
-        Возвращает отфильтрованный список питомцев с дополнительной информацией.
-        
-        Returns:
-            Response: Список питомцев с метаданными
+        Возвращает список питомцев с метаданными фильтрации.
         """
         queryset = self.get_queryset()
-        
-        # Пагинация
-        page = self.paginate_queryset(queryset)
-        if page is not None:
-            serializer = self.get_serializer(page, many=True)
-            return self.get_paginated_response(serializer.data)
-        
         serializer = self.get_serializer(queryset, many=True)
-        
-        # Добавляем метаданные
-        response_data = {
-            'results': serializer.data,
-            'meta': {
-                'total_count': queryset.count(),
-                'filters_applied': {
-                    'pet_type': request.query_params.get('pet_type'),
-                    'breed': request.query_params.get('breed'),
-                    'age_min': request.query_params.get('age_min'),
-                    'age_max': request.query_params.get('age_max'),
-                    'weight_min': request.query_params.get('weight_min'),
-                    'weight_max': request.query_params.get('weight_max'),
-                    'has_medical_conditions': request.query_params.get('has_medical_conditions'),
-                    'has_special_needs': request.query_params.get('has_special_needs'),
-                    'is_active': request.query_params.get('is_active'),
-                    'distance_km': request.query_params.get('distance_km'),
+        return Response(
+            {
+                'results': serializer.data,
+                'meta': {
+                    'total_count': queryset.count(),
+                    'ordering': request.query_params.get('ordering', 'name'),
                 },
-                'ordering': request.query_params.get('ordering', 'name')
             }
-        }
-        
-        return Response(response_data) 
+        )

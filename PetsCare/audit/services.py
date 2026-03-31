@@ -58,9 +58,15 @@ class LoggingService:
                 })()
         return self._settings
     
-    def log_action(self, user: Optional[Any], action_type: str, 
-                  content_object: Optional[Any] = None, details: Dict[str, Any] = None,
-                  request: Optional[Any] = None, execution_time: float = None) -> UserAction:
+    def log_action(
+        self,
+        user: Optional[Any],
+        action_type: str,
+        content_object: Optional[Any] = None,
+        details: Optional[Dict[str, Any]] = None,
+        request: Optional[Any] = None,
+        execution_time: Optional[float] = None,
+    ) -> Optional[UserAction]:
         """
         Логирует действие пользователя.
         
@@ -137,8 +143,13 @@ class LoggingService:
             execution_time=execution_time
         )
     
-    def log_business_operation(self, user: Any, operation: str, 
-                             content_object: Any = None, details: Dict[str, Any] = None) -> UserAction:
+    def log_business_operation(
+        self,
+        user: Any,
+        operation: str,
+        content_object: Any = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Optional[UserAction]:
         """
         Логирует бизнес-операцию.
         
@@ -161,7 +172,9 @@ class LoggingService:
             details=details or {}
         )
     
-    def log_system_event(self, event: str, details: Dict[str, Any] = None) -> UserAction:
+    def log_system_event(
+        self, event: str, details: Optional[Dict[str, Any]] = None
+    ) -> Optional[UserAction]:
         """
         Логирует системное событие.
         
@@ -292,9 +305,15 @@ class SecurityAuditService:
                 })()
         return self._settings
     
-    def audit_role_change(self, user: Any, target_user: Any, 
-                         old_roles: List[str], new_roles: List[str],
-                         reason: str = '', is_critical: bool = False) -> SecurityAudit:
+    def audit_role_change(
+        self,
+        user: Any,
+        target_user: Any,
+        old_roles: List[str],
+        new_roles: List[str],
+        reason: str = '',
+        is_critical: bool = False,
+    ) -> Optional[SecurityAudit]:
         """
         Аудирует изменение ролей пользователя.
         
@@ -326,8 +345,9 @@ class SecurityAuditService:
             is_critical=is_critical
         )
     
-    def audit_invite_management(self, user: Any, invite: Any, action: str,
-                               reason: str = '') -> SecurityAudit:
+    def audit_invite_management(
+        self, user: Any, invite: Any, action: str, reason: str = ''
+    ) -> Optional[SecurityAudit]:
         """
         Аудирует управление инвайтами.
         
@@ -349,8 +369,8 @@ class SecurityAuditService:
             content_object=invite,
             details={
                 'action': action,
-                'invite_type': getattr(invite, 'invite_type', ''),
-                'invite_email': getattr(invite, 'email', ''),
+                'invite_type': getattr(invite, 'invite_type', None) or '',
+                'invite_email': getattr(invite, 'email', None) or '',
             },
             old_values={},
             new_values={'action': action},
@@ -358,10 +378,15 @@ class SecurityAuditService:
             is_critical=True
         )
     
-    def audit_financial_operation(self, user: Any, operation: str,
-                                amount: float, currency: str,
-                                content_object: Any = None,
-                                details: Dict[str, Any] = None) -> SecurityAudit:
+    def audit_financial_operation(
+        self,
+        user: Any,
+        operation: str,
+        amount: float,
+        currency: str,
+        content_object: Any = None,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Optional[SecurityAudit]:
         """
         Аудирует финансовую операцию.
         
@@ -399,8 +424,14 @@ class SecurityAuditService:
             is_critical=True
         )
     
-    def audit_blocking_operation(self, user: Any, target: Any, action: str,
-                               reason: str, duration: str = None) -> SecurityAudit:
+    def audit_blocking_operation(
+        self,
+        user: Any,
+        target: Any,
+        action: str,
+        reason: str,
+        duration: Optional[str] = None,
+    ) -> Optional[SecurityAudit]:
         """
         Аудирует операцию блокировки/разблокировки.
         
@@ -423,7 +454,7 @@ class SecurityAuditService:
             content_object=target,
             details={
                 'action': action,
-                'duration': duration,
+                'duration': duration or '',
                 'target_type': target.__class__.__name__,
             },
             old_values={'blocked': action == 'unblock'},
@@ -432,9 +463,14 @@ class SecurityAuditService:
             is_critical=True
         )
     
-    def audit_ownership_transfer(self, user: Any, pet: Any,
-                               old_owner: Any, new_owner: Any,
-                               reason: str = '') -> SecurityAudit:
+    def audit_ownership_transfer(
+        self,
+        user: Any,
+        pet: Any,
+        old_owner: Any,
+        new_owner: Any,
+        reason: str = '',
+    ) -> Optional[SecurityAudit]:
         """
         Аудирует передачу прав владения питомцем.
         
@@ -465,8 +501,13 @@ class SecurityAuditService:
             is_critical=True
         )
     
-    def audit_suspicious_activity(self, user: Any, activity_type: str,
-                                details: Dict[str, Any], risk_level: str = 'medium') -> SecurityAudit:
+    def audit_suspicious_activity(
+        self,
+        user: Any,
+        activity_type: str,
+        details: Dict[str, Any],
+        risk_level: str = 'medium',
+    ) -> Optional[SecurityAudit]:
         """
         Аудирует подозрительную активность.
         

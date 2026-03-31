@@ -369,7 +369,7 @@ class UserTypeAdmin(admin.ModelAdmin):
             return _('No permissions')
         
         from .permissions import get_permission_description
-        descriptions = [get_permission_description(perm) for perm in obj.permissions[:5]]
+        descriptions: list[str] = [str(get_permission_description(perm)) for perm in obj.permissions[:5]]
         if len(obj.permissions) > 5:
             descriptions.append(f'... and {len(obj.permissions) - 5} more')
         return ', '.join(descriptions)

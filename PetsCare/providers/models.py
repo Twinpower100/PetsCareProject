@@ -30,6 +30,7 @@ from catalog.models import Service
 import googlemaps
 from geopy.distance import geodesic
 from decimal import Decimal
+import uuid
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator, MinLengthValidator
 from users.models import User
@@ -661,7 +662,7 @@ class Provider(models.Model):
     
     def calculate_debt(self):
         """
-        Рассчитывает задолженность провайдера на основе неоплаченных Invoice.
+        Рассчитывает задолженность провайдера на основе актуальной PaymentHistory.
         
         Returns:
             dict: Словарь с полями:
@@ -669,27 +670,26 @@ class Provider(models.Model):
                 - overdue_debt: Decimal - просроченная задолженность (Invoice со статусом 'overdue')
                 - currency: Currency - валюта задолженности (из первого Invoice)
         """
-        from billing.models import Invoice
+        from billing.models import PaymentHistory
         from decimal import Decimal
         
-        # Получаем неоплаченные Invoice
-        unpaid_invoices = Invoice.objects.filter(
+        payment_records = PaymentHistory.objects.filter(
             provider=self,
-            status__in=['sent', 'overdue']
+            status__in=['pending', 'partially_paid', 'overdue']
         )
         
         total_debt = Decimal('0.00')
         overdue_debt = Decimal('0.00')
         currency = None
         
-        for invoice in unpaid_invoices:
+        for payment_record in payment_records:
             if currency is None:
-                currency = invoice.currency
+                currency = payment_record.currency
             
-            total_debt += invoice.amount
+            total_debt += payment_record.outstanding_amount
             
-            if invoice.status == 'overdue':
-                overdue_debt += invoice.amount
+            if payment_record.due_date < timezone.now().date():
+                overdue_debt += payment_record.outstanding_amount
         
         return {
             'total_debt': total_debt,
@@ -699,36 +699,24 @@ class Provider(models.Model):
     
     def get_max_overdue_days(self):
         """
-        Получает максимальное количество дней просрочки среди всех Invoice провайдера.
+        Получает максимальное количество дней просрочки среди всех долгов provайдера.
         
         Returns:
             int: Максимальное количество дней просрочки, или 0 если нет просроченных Invoice
         """
-        from billing.models import Invoice
-        from django.utils import timezone
-        
-        overdue_invoices = Invoice.objects.filter(
+        from billing.models import PaymentHistory
+
+        overdue_payments = PaymentHistory.objects.filter(
             provider=self,
-            status='overdue'
+            status__in=['pending', 'partially_paid', 'overdue']
         )
         
         max_overdue_days = 0
         today = timezone.now().date()
         
-        for invoice in overdue_invoices:
-            # Предполагаем, что у Invoice есть поле due_date или payment_deadline
-            # Если нет, используем end_date + payment_deferral_days
-            if hasattr(invoice, 'due_date') and invoice.due_date:
-                due_date = invoice.due_date
-            elif invoice.end_date:
-                # Получаем payment_deferral_days из оферты или специальных условий
-                payment_deferral_days = self._get_payment_deferral_days()
-                due_date = invoice.end_date + timezone.timedelta(days=payment_deferral_days)
-            else:
-                continue
-            
-            if due_date < today:
-                overdue_days = (today - due_date).days
+        for payment_record in overdue_payments:
+            if payment_record.outstanding_amount > Decimal('0.00') and payment_record.due_date < today:
+                overdue_days = (today - payment_record.due_date).days
                 max_overdue_days = max(max_overdue_days, overdue_days)
         
         return max_overdue_days
@@ -801,14 +789,21 @@ class Provider(models.Model):
             is_active=True
         ).first()
         if active_acceptance and active_acceptance.document:
-            # Пороги блокировки могут быть в оферте или в глобальных настройках
-            # Пока используем глобальные настройки
             blocking_settings = getattr(settings, 'BLOCKING_SETTINGS', {})
+            document = active_acceptance.document
             return {
-                'debt_threshold': blocking_settings.get('DEFAULT_DEBT_THRESHOLD', 1000.00),
-                'overdue_threshold_1': blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_1', 7),
-                'overdue_threshold_2': blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_2', 14),
-                'overdue_threshold_3': blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_3', 30),
+                'debt_threshold': document.debt_threshold
+                if document.debt_threshold is not None
+                else blocking_settings.get('DEFAULT_DEBT_THRESHOLD', 1000.00),
+                'overdue_threshold_1': document.overdue_threshold_1
+                if document.overdue_threshold_1 is not None
+                else blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_1', 7),
+                'overdue_threshold_2': document.overdue_threshold_2
+                if document.overdue_threshold_2 is not None
+                else blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_2', 14),
+                'overdue_threshold_3': document.overdue_threshold_3
+                if document.overdue_threshold_3 is not None
+                else blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_3', 30),
             }
         
         # Если нет активной оферты, используем глобальные настройки
@@ -1175,21 +1170,141 @@ class EmployeeLocationService(models.Model):
         return f"{self.employee} @ {self.provider_location}: {self.service}"
 
 
+class ProviderRole(models.Model):
+    """DB-managed provider RBAC roles."""
+
+    CODE_OWNER = 'owner'
+    CODE_PROVIDER_ADMIN = 'provider_admin'
+    CODE_PROVIDER_MANAGER = 'provider_manager'
+    CODE_BRANCH_MANAGER = 'branch_manager'
+    CODE_WORKER = 'worker'
+
+    code = models.CharField(_('Code'), max_length=30, unique=True)
+    name = models.CharField(_('Name'), max_length=100)
+    description = models.TextField(_('Description'), blank=True)
+    level = models.PositiveSmallIntegerField(
+        _('Level'),
+        help_text=_('Hierarchy level: 1=Owner, 2=Admin, 3=Manager, 4=Branch Manager, 5=Worker'),
+    )
+    is_active = models.BooleanField(_('Is Active'), default=True)
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Provider Role')
+        verbose_name_plural = _('Provider Roles')
+        ordering = ['level', 'code']
+
+    def __str__(self):
+        return f'{self.name} ({self.code})'
+
+
+class ProviderResource(models.Model):
+    """DB-managed provider admin resources."""
+
+    code = models.CharField(_('Code'), max_length=60, unique=True)
+    name = models.CharField(_('Name'), max_length=150)
+    description = models.TextField(_('Description'), blank=True)
+    parent = models.ForeignKey(
+        'self',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='children',
+        verbose_name=_('Parent Resource'),
+        help_text=_('Parent resource for hierarchical grouping (e.g., org -> org.profile)'),
+    )
+    sort_order = models.PositiveIntegerField(_('Sort Order'), default=0)
+    is_active = models.BooleanField(_('Is Active'), default=True)
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Provider Resource')
+        verbose_name_plural = _('Provider Resources')
+        ordering = ['sort_order', 'code']
+
+    def __str__(self):
+        return f'{self.name} ({self.code})'
+
+
+class ProviderRolePermission(models.Model):
+    """RBAC matrix entry Role <-> Resource <-> CRUD + scope."""
+
+    SCOPE_ALL = 'all'
+    SCOPE_OWN_BRANCH = 'own_branch'
+    SCOPE_OWN_ONLY = 'own_only'
+    SCOPE_CHOICES = [
+        (SCOPE_ALL, _('Full access')),
+        (SCOPE_OWN_BRANCH, _('Own branches only')),
+        (SCOPE_OWN_ONLY, _('Own records only')),
+    ]
+
+    role = models.ForeignKey(
+        ProviderRole,
+        on_delete=models.CASCADE,
+        related_name='permissions',
+        verbose_name=_('Role'),
+    )
+    resource = models.ForeignKey(
+        ProviderResource,
+        on_delete=models.CASCADE,
+        related_name='permissions',
+        verbose_name=_('Resource'),
+    )
+    can_create = models.BooleanField(_('Can Create'), default=False)
+    can_read = models.BooleanField(_('Can Read'), default=False)
+    can_update = models.BooleanField(_('Can Update'), default=False)
+    can_delete = models.BooleanField(_('Can Delete'), default=False)
+    scope = models.CharField(
+        _('Scope'),
+        max_length=20,
+        default=SCOPE_ALL,
+        choices=SCOPE_CHOICES,
+        help_text=_('Scope of the permission: all data, own branches only, or own records only'),
+    )
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Provider Role Permission')
+        verbose_name_plural = _('Provider Role Permissions')
+        constraints = [
+            models.UniqueConstraint(
+                fields=['role', 'resource'],
+                name='providers_rolepermission_role_resource_uniq',
+            ),
+        ]
+        ordering = ['role__level', 'resource__sort_order', 'resource__code']
+
+    def __str__(self):
+        actions = []
+        if self.can_create:
+            actions.append('C')
+        if self.can_read:
+            actions.append('R')
+        if self.can_update:
+            actions.append('U')
+        if self.can_delete:
+            actions.append('D')
+        return f'{self.role.code} -> {self.resource.code}: {"".join(actions) or "-"} ({self.scope})'
+
+
 class EmployeeLocationRole(models.Model):
     """
     Роль сотрудника в филиале (локации).
 
-    - location_manager: руководитель филиала, один на филиал. Может увольнять 5, 6 в своём филиале.
-    - service_worker: оказывает услуги клиентам. Доступ только к своему расписанию и визитам.
-    - technical_worker: техработник (клинер и т.п.). Доступ только к своему расписанию.
+    - branch_manager: руководитель филиала, один на филиал.
+    - worker: исполнитель филиала.
     """
-    ROLE_LOCATION_MANAGER = 'location_manager'
-    ROLE_SERVICE_WORKER = 'service_worker'
-    ROLE_TECHNICAL_WORKER = 'technical_worker'
+    ROLE_BRANCH_MANAGER = 'branch_manager'
+    ROLE_WORKER = 'worker'
+    ROLE_LOCATION_MANAGER = ROLE_BRANCH_MANAGER
+    ROLE_SERVICE_WORKER = ROLE_WORKER
+    ROLE_TECHNICAL_WORKER = ROLE_WORKER
     ROLE_CHOICES = [
-        (ROLE_LOCATION_MANAGER, _('Location manager')),
-        (ROLE_SERVICE_WORKER, _('Service worker')),
-        (ROLE_TECHNICAL_WORKER, _('Technical worker')),
+        (ROLE_BRANCH_MANAGER, _('Branch Manager')),
+        (ROLE_WORKER, _('Worker')),
     ]
 
     employee = models.ForeignKey(
@@ -1208,7 +1323,7 @@ class EmployeeLocationRole(models.Model):
         _('Role'),
         max_length=20,
         choices=ROLE_CHOICES,
-        help_text=_('Staff role at this location. Only one location_manager per location.'),
+        help_text=_('Staff role at this location. Only one branch manager per location.'),
     )
     is_active = models.BooleanField(
         _('Is Active'),
@@ -1234,8 +1349,8 @@ class EmployeeLocationRole(models.Model):
             # В одном филиале только один руководитель.
             models.UniqueConstraint(
                 fields=['provider_location'],
-                condition=models.Q(role='location_manager'),
-                name='providers_employeelocationrole_one_manager_per_location',
+                condition=models.Q(role='branch_manager'),
+                name='providers_employeelocationrole_one_branch_manager_per_location',
             ),
         ]
         indexes = [
@@ -1244,6 +1359,49 @@ class EmployeeLocationRole(models.Model):
 
     def __str__(self):
         return f"{self.employee} @ {self.provider_location}: {self.get_role_display()}"
+
+    def is_active_record(self) -> bool:
+        if not self.is_active:
+            return False
+        if self.end_date is None:
+            return True
+        return self.end_date >= timezone.now()
+
+    @classmethod
+    def sync_location_manager(cls, location):
+        active_manager = (
+            cls.objects.filter(
+                provider_location=location,
+                role=cls.ROLE_BRANCH_MANAGER,
+                is_active=True,
+            )
+            .filter(Q(end_date__isnull=True) | Q(end_date__gte=timezone.now()))
+            .select_related('employee__user')
+            .order_by('-id')
+            .first()
+        )
+        manager_user = active_manager.employee.user if active_manager else None
+        if location.manager_id != getattr(manager_user, 'id', None):
+            ProviderLocation.objects.filter(pk=location.pk).update(manager=manager_user)
+            location.manager = manager_user
+
+    def save(self, *args, **kwargs):
+        previous_location_id = None
+        if self.pk:
+            previous_location_id = (
+                type(self).objects.filter(pk=self.pk).values_list('provider_location_id', flat=True).first()
+            )
+        super().save(*args, **kwargs)
+        self.sync_location_manager(self.provider_location)
+        if previous_location_id and previous_location_id != self.provider_location_id:
+            old_location = ProviderLocation.objects.filter(pk=previous_location_id).first()
+            if old_location is not None:
+                self.sync_location_manager(old_location)
+
+    def delete(self, *args, **kwargs):
+        location = self.provider_location
+        super().delete(*args, **kwargs)
+        self.sync_location_manager(location)
 
 
 class EmployeeProvider(models.Model):
@@ -1254,14 +1412,14 @@ class EmployeeProvider(models.Model):
     ROLE_OWNER = 'owner'
     ROLE_PROVIDER_MANAGER = 'provider_manager'
     ROLE_PROVIDER_ADMIN = 'provider_admin'
-    ROLE_SERVICE_WORKER = 'service_worker'
-    ROLE_TECHNICAL_WORKER = 'technical_worker'
+    ROLE_WORKER = 'worker'
+    ROLE_SERVICE_WORKER = ROLE_WORKER
+    ROLE_TECHNICAL_WORKER = ROLE_WORKER
     ROLE_CHOICES = [
         (ROLE_OWNER, _('Owner')),
         (ROLE_PROVIDER_MANAGER, _('Provider manager')),
         (ROLE_PROVIDER_ADMIN, _('Provider admin')),
-        (ROLE_SERVICE_WORKER, _('Service worker')),
-        (ROLE_TECHNICAL_WORKER, _('Technical worker')),
+        (ROLE_WORKER, _('Worker')),
     ]
     employee = models.ForeignKey(
         Employee,
@@ -1279,8 +1437,8 @@ class EmployeeProvider(models.Model):
         _('Role'),
         max_length=20,
         choices=ROLE_CHOICES,
-        default=ROLE_SERVICE_WORKER,
-        help_text=_('Role at this provider: owner, manager, admin, service worker, technical worker'),
+        default=ROLE_WORKER,
+        help_text=_('Primary role at this provider. Effective permissions are calculated from flags and location roles.'),
     )
     start_date = models.DateField(
         _('Start Date'),
@@ -1343,6 +1501,33 @@ class EmployeeProvider(models.Model):
         """
         return f"{self.employee} - {self.provider} ({self.start_date})"
 
+    def get_primary_role_code(self):
+        if self.is_owner:
+            return self.ROLE_OWNER
+        if self.is_provider_admin:
+            return self.ROLE_PROVIDER_ADMIN
+        if self.is_provider_manager:
+            return self.ROLE_PROVIDER_MANAGER
+        return self.role or self.ROLE_WORKER
+
+    def get_effective_role_codes(self):
+        roles = set()
+        if self.is_owner:
+            roles.add(self.ROLE_OWNER)
+        if self.is_provider_admin:
+            roles.add(self.ROLE_PROVIDER_ADMIN)
+        if self.is_provider_manager:
+            roles.add(self.ROLE_PROVIDER_MANAGER)
+        if self.role:
+            roles.add(self.role)
+        if not roles:
+            roles.add(self.ROLE_WORKER)
+        return roles
+
+    def sync_primary_role_from_flags(self):
+        self.is_manager = bool(self.is_provider_manager)
+        self.role = self.get_primary_role_code()
+
     def is_currently_employed(self):
         """
         Проверяет, работает ли сотрудник в учреждении в настоящее время.
@@ -1350,7 +1535,7 @@ class EmployeeProvider(models.Model):
         Returns:
             bool: True, если сотрудник работает в учреждении
         """
-        return self.end_date is None
+        return self.end_date is None or self.end_date >= timezone.localdate()
 
     @classmethod
     def get_active_admin_links(cls, provider):
@@ -1374,10 +1559,8 @@ class EmployeeProvider(models.Model):
     def can_conduct_visits(self):
         """
         Может ли сотрудник проводить приёмы и вносить записи в карточку питомца.
-        True для owner, provider_manager, provider_admin, service_worker.
-        False для technical_worker (только доступ к своему расписанию).
         """
-        return self.role != self.ROLE_TECHNICAL_WORKER
+        return True
 
     @classmethod
     def get_active_ep_for_user_provider(cls, user, provider):
@@ -1391,6 +1574,10 @@ class EmployeeProvider(models.Model):
             employee__user=user,
             provider=provider,
         ).filter(Q(end_date__isnull=True) | Q(end_date__gte=today)).select_related('employee').first()
+
+    def save(self, *args, **kwargs):
+        self.sync_primary_role_from_flags()
+        super().save(*args, **kwargs)
 
 
 class Schedule(models.Model):
@@ -2390,11 +2577,11 @@ class ProviderLocation(models.Model):
         if self.phone_number:
             ok, err = validate_phone_contact(self.phone_number)
             if not ok:
-                raise ValidationError({'phone_number': err})
+                raise ValidationError({'phone_number': err or 'Invalid phone format'})
         if self.email:
             ok, err = validate_email_contact(self.email)
             if not ok:
-                raise ValidationError({'email': err})
+                raise ValidationError({'email': err or 'Invalid email format'})
         if self.structured_address_id and self.pk:
             # При редактировании: при необходимости проверять open_time < close_time у LocationSchedule
             pass
@@ -2417,3 +2604,175 @@ class ProviderLocation(models.Model):
         return None
 
 
+def provider_report_export_upload_to(instance, filename):
+    """
+    Строит путь хранения файла экспорта отчетов.
+
+    Args:
+        instance: Экземпляр ProviderReportExportJob.
+        filename: Исходное имя файла.
+
+    Returns:
+        str: Относительный путь внутри MEDIA_ROOT.
+    """
+    extension = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'bin'
+    return (
+        f'provider_reports/{instance.provider_id}/'
+        f'{instance.requested_by_id}/{instance.export_token}.{extension}'
+    )
+
+
+class ProviderReportExportJob(models.Model):
+    """
+    Асинхронная задача генерации выгрузки отчета для provider admin.
+
+    Особенности:
+    - Хранит snapshot параметров отчета
+    - Поддерживает optimistic locking через version
+    - Позволяет безопасно поллить статус и скачивать готовый файл
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_RUNNING = 'running'
+    STATUS_COMPLETED = 'completed'
+    STATUS_FAILED = 'failed'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, _('Pending')),
+        (STATUS_RUNNING, _('Running')),
+        (STATUS_COMPLETED, _('Completed')),
+        (STATUS_FAILED, _('Failed')),
+    ]
+
+    FORMAT_XLSX = 'xlsx'
+    FORMAT_CHOICES = [
+        (FORMAT_XLSX, _('XLSX')),
+    ]
+
+    provider = models.ForeignKey(
+        Provider,
+        on_delete=models.CASCADE,
+        related_name='report_export_jobs',
+        verbose_name=_('Provider'),
+    )
+    location = models.ForeignKey(
+        'providers.ProviderLocation',
+        on_delete=models.SET_NULL,
+        related_name='report_export_jobs',
+        verbose_name=_('Location'),
+        null=True,
+        blank=True,
+    )
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='provider_report_export_jobs',
+        verbose_name=_('Requested By'),
+    )
+    report_code = models.CharField(
+        _('Report Code'),
+        max_length=64,
+    )
+    scope = models.CharField(
+        _('Scope'),
+        max_length=20,
+    )
+    export_format = models.CharField(
+        _('Export Format'),
+        max_length=20,
+        choices=FORMAT_CHOICES,
+        default=FORMAT_XLSX,
+    )
+    language_code = models.CharField(
+        _('Language Code'),
+        max_length=16,
+        default='en',
+    )
+    start_date = models.DateField(
+        _('Start Date'),
+        null=True,
+        blank=True,
+    )
+    end_date = models.DateField(
+        _('End Date'),
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(
+        _('Status'),
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDING,
+        db_index=True,
+    )
+    file = models.FileField(
+        _('File'),
+        upload_to=provider_report_export_upload_to,
+        null=True,
+        blank=True,
+    )
+    filename = models.CharField(
+        _('Filename'),
+        max_length=255,
+        blank=True,
+    )
+    task_id = models.CharField(
+        _('Task Id'),
+        max_length=128,
+        blank=True,
+    )
+    export_token = models.UUIDField(
+        _('Export Token'),
+        default=uuid.uuid4,
+        editable=False,
+        unique=True,
+    )
+    error_message = models.TextField(
+        _('Error Message'),
+        blank=True,
+    )
+    version = models.PositiveIntegerField(
+        _('Version'),
+        default=1,
+    )
+    created_at = models.DateTimeField(
+        _('Created At'),
+        auto_now_add=True,
+    )
+    started_at = models.DateTimeField(
+        _('Started At'),
+        null=True,
+        blank=True,
+    )
+    completed_at = models.DateTimeField(
+        _('Completed At'),
+        null=True,
+        blank=True,
+    )
+    downloaded_at = models.DateTimeField(
+        _('Downloaded At'),
+        null=True,
+        blank=True,
+    )
+    updated_at = models.DateTimeField(
+        _('Updated At'),
+        auto_now=True,
+    )
+
+    class Meta:
+        verbose_name = _('Provider Report Export Job')
+        verbose_name_plural = _('Provider Report Export Jobs')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['provider', 'status']),
+            models.Index(fields=['requested_by', 'status']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        """
+        Возвращает краткое представление async job.
+
+        Returns:
+            str: Человекочитаемая строка job.
+        """
+        return f'{self.provider_id}:{self.report_code}:{self.export_format}:{self.status}'

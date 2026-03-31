@@ -34,6 +34,7 @@ import logging
 
 from .document_type_catalog import (
     DOCUMENT_TYPE_NAME_CHOICES,
+    PROVIDER_VISIT_DOCUMENT_TYPE_CODES,
     get_document_type_definition_by_code,
     get_document_type_definition_by_name,
 )
@@ -1151,7 +1152,17 @@ class PetDocument(models.Model):
     - Метаданными (даты выдачи/истечения, номер, орган выдачи)
     - Аудитом (кто загрузил, дата загрузки)
     - Связями с записями
+    - Управлением жизненным циклом без физического удаления
     """
+    STATUS_ACTIVE = 'active'
+    STATUS_DEACTIVATED = 'deactivated'
+    STATUS_WITHDRAWN = 'withdrawn'
+    LIFECYCLE_STATUS_CHOICES = [
+        (STATUS_ACTIVE, _('Active')),
+        (STATUS_DEACTIVATED, _('Deactivated')),
+        (STATUS_WITHDRAWN, _('Withdrawn')),
+    ]
+
     # Основные поля
     file = models.FileField(
         _('File'),
@@ -1182,8 +1193,6 @@ class PetDocument(models.Model):
         on_delete=models.PROTECT,
         verbose_name=_('Document Type'),
         related_name='documents',
-        null=True,
-        blank=True,
         help_text=_('Type of the document')
     )
     health_note = models.ForeignKey(
@@ -1203,6 +1212,15 @@ class PetDocument(models.Model):
         null=True,
         blank=True,
         help_text=_('Visit record to which the document is attached')
+    )
+    visit_record_addendum = models.ForeignKey(
+        'VisitRecordAddendum',
+        on_delete=models.CASCADE,
+        verbose_name=_('Visit Record Addendum'),
+        related_name='documents',
+        null=True,
+        blank=True,
+        help_text=_('Visit addendum to which the document is attached')
     )
     
     # Метаданные документа
@@ -1244,7 +1262,61 @@ class PetDocument(models.Model):
         auto_now_add=True,
         help_text=_('Upload date and time')
     )
-    
+
+    version = models.PositiveIntegerField(
+        _('Version'),
+        default=1,
+        help_text=_('Optimistic lock version for concurrent document updates.')
+    )
+    lifecycle_status = models.CharField(
+        _('Lifecycle Status'),
+        max_length=20,
+        choices=LIFECYCLE_STATUS_CHOICES,
+        default=STATUS_ACTIVE,
+        help_text=_('Current lifecycle state of the document.')
+    )
+    lifecycle_reason_code = models.CharField(
+        _('Lifecycle Reason Code'),
+        max_length=100,
+        blank=True,
+        help_text=_('Optional structured reason code for deactivation or withdrawal.')
+    )
+    lifecycle_reason_comment = models.TextField(
+        _('Lifecycle Reason Comment'),
+        blank=True,
+        help_text=_('Optional comment for deactivation or withdrawal.')
+    )
+    deactivated_at = models.DateTimeField(
+        _('Deactivated At'),
+        null=True,
+        blank=True,
+        help_text=_('When the owner-space document was deactivated.')
+    )
+    deactivated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        verbose_name=_('Deactivated By'),
+        related_name='deactivated_pet_documents',
+        null=True,
+        blank=True,
+        help_text=_('User who deactivated the owner-space document.')
+    )
+    withdrawn_at = models.DateTimeField(
+        _('Withdrawn At'),
+        null=True,
+        blank=True,
+        help_text=_('When the provider document was withdrawn.')
+    )
+    withdrawn_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        verbose_name=_('Withdrawn By'),
+        related_name='withdrawn_pet_documents',
+        null=True,
+        blank=True,
+        help_text=_('User who withdrew the provider-managed document.')
+    )
+
     # Системные поля
     created_at = models.DateTimeField(
         _('Created At'),
@@ -1260,6 +1332,14 @@ class PetDocument(models.Model):
         verbose_name = _('Pet Document')
         verbose_name_plural = _('Pet Documents')
         ordering = ['-uploaded_at']
+        indexes = [
+            models.Index(fields=['pet', 'lifecycle_status']),
+            models.Index(fields=['visit_record', 'lifecycle_status']),
+            models.Index(
+                fields=['visit_record_addendum', 'lifecycle_status'],
+                name='pets_petrec_visit_r_10d72f_idx',
+            ),
+        ]
 
     def __str__(self):
         return f"{self.name} - {self.pet.name}"
@@ -1275,10 +1355,28 @@ class PetDocument(models.Model):
         # Проверяем, что документ привязан только к одной записи
         record_count = sum([
             1 if self.health_note else 0,
-            1 if self.visit_record else 0
+            1 if self.visit_record else 0,
+            1 if self.visit_record_addendum else 0,
         ])
         if record_count > 1:
             raise ValidationError(_('Document can only be attached to one record'))
+
+        if (
+            self.visit_record_addendum_id
+            and self.visit_record_addendum.visit_record.pet_id != self.pet_id
+        ):
+            raise ValidationError({
+                'visit_record_addendum': _('Visit addendum belongs to another pet')
+            })
+
+        if (
+            self.provider_context_visit_record_id
+            and self.document_type
+            and self.document_type.code not in PROVIDER_VISIT_DOCUMENT_TYPE_CODES
+        ):
+            raise ValidationError({
+                'document_type': _('This document type is not allowed for provider-managed visit documents')
+            })
         
         # Проверяем требования типа документа
         if self.document_type:
@@ -1298,12 +1396,99 @@ class PetDocument(models.Model):
         if self.issue_date and self.expiry_date and self.issue_date > self.expiry_date:
             raise ValidationError(_('Issue date cannot be after expiry date'))
 
+        if self.lifecycle_status == self.STATUS_ACTIVE:
+            if any([
+                self.deactivated_at,
+                self.deactivated_by_id,
+                self.withdrawn_at,
+                self.withdrawn_by_id,
+                self.lifecycle_reason_code,
+                self.lifecycle_reason_comment,
+            ]):
+                raise ValidationError(
+                    _('Active documents cannot contain lifecycle audit information')
+                )
+
+        if self.lifecycle_status == self.STATUS_DEACTIVATED:
+            if self.provider_context_visit_record_id:
+                raise ValidationError(
+                    _('Only owner-space documents can be deactivated')
+                )
+            if not self.deactivated_at or not self.deactivated_by_id:
+                raise ValidationError(
+                    _('Deactivated documents must contain deactivation audit information')
+                )
+            if self.withdrawn_at or self.withdrawn_by_id:
+                raise ValidationError(
+                    _('Deactivated documents cannot contain withdrawal audit information')
+                )
+
+        if self.lifecycle_status == self.STATUS_WITHDRAWN:
+            if not self.provider_context_visit_record_id:
+                raise ValidationError(
+                    _('Only visit-linked documents can be withdrawn')
+                )
+            if not self.withdrawn_at or not self.withdrawn_by_id:
+                raise ValidationError(
+                    _('Withdrawn documents must contain withdrawal audit information')
+                )
+            if self.deactivated_at or self.deactivated_by_id:
+                raise ValidationError(
+                    _('Withdrawn documents cannot contain deactivation audit information')
+                )
+
     @property
     def is_expired(self):
         """Проверяет, истек ли срок действия документа"""
         if self.expiry_date:
             return self.expiry_date < date.today()
         return False
+
+    @property
+    def is_active(self):
+        """Возвращает True только для активных документов."""
+        return self.lifecycle_status == self.STATUS_ACTIVE
+
+    @property
+    def provider_context_visit_record(self):
+        """Возвращает визит, управляющий provider-side документом."""
+        if self.visit_record_id:
+            return self.visit_record
+        if self.visit_record_addendum_id:
+            return self.visit_record_addendum.visit_record
+        return None
+
+    @property
+    def provider_context_visit_record_id(self):
+        """Возвращает идентификатор визита provider-side документа."""
+        if self.visit_record_id:
+            return self.visit_record_id
+        if self.visit_record_addendum_id:
+            return self.visit_record_addendum.visit_record_id
+        return None
+
+    @property
+    def management_context(self):
+        """Возвращает канонический контекст управления документом."""
+        return 'provider_visit' if self.provider_context_visit_record_id else 'owner_pet_card'
+
+    @property
+    def lifecycle_changed_at(self):
+        """Возвращает время последнего lifecycle-перехода."""
+        if self.lifecycle_status == self.STATUS_DEACTIVATED:
+            return self.deactivated_at
+        if self.lifecycle_status == self.STATUS_WITHDRAWN:
+            return self.withdrawn_at
+        return None
+
+    @property
+    def lifecycle_changed_by(self):
+        """Возвращает пользователя, выполнившего lifecycle-переход."""
+        if self.lifecycle_status == self.STATUS_DEACTIVATED:
+            return self.deactivated_by
+        if self.lifecycle_status == self.STATUS_WITHDRAWN:
+            return self.withdrawn_by
+        return None
 
     @property
     def days_until_expiry(self):
@@ -1314,6 +1499,12 @@ class PetDocument(models.Model):
         return None
 
     def save(self, *args, **kwargs):
+        """Сохраняет документ с валидацией и инкрементом версии."""
+        update_fields = kwargs.get('update_fields')
+        if self.pk:
+            self.version = (self.version or 0) + 1
+            if update_fields is not None:
+                kwargs['update_fields'] = list(set(update_fields) | {'version'})
         self.full_clean()
         super().save(*args, **kwargs)
 

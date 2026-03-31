@@ -90,10 +90,10 @@ def send_notification_task(
     notification_type: str,
     title: str,
     message: str,
-    channels: List[str] = None,
+    channels: List[str] | None = None,
     priority: str = 'medium',
-    pet_id: int = None,
-    data: Dict[str, Any] = None
+    pet_id: int | None = None,
+    data: Dict[str, Any] | None = None
 ):
     """
     Задача для асинхронной отправки уведомления.
@@ -144,9 +144,9 @@ def send_bulk_notifications_task(
     notification_type: str,
     title: str,
     message: str,
-    channels: List[str] = None,
+    channels: List[str] | None = None,
     priority: str = 'medium',
-    data: Dict[str, Any] = None
+    data: Dict[str, Any] | None = None
 ):
     """
     Задача для массовой отправки уведомлений.
@@ -164,7 +164,7 @@ def send_bulk_notifications_task(
         from django.contrib.auth import get_user_model
         User = get_user_model()
         
-        users = User.objects.filter(id__in=user_ids)
+        users = list(User.objects.filter(id__in=user_ids))
         
         notification_service = NotificationService()
         notifications = notification_service.send_bulk_notifications(
@@ -397,7 +397,7 @@ def send_booking_confirmation_task(booking_id: int):
 
 
 @shared_task
-def send_booking_cancellation_task(booking_id: int, reason: str = None):
+def send_booking_cancellation_task(booking_id: int, reason: str | None = None):
     """
     Задача для отправки уведомления об отмене бронирования.
     
@@ -647,7 +647,7 @@ def send_pet_sitting_notification_task(sitting_id: int, status: str):
 
 
 @shared_task
-def send_payment_failed_notification_task(payment_id: int, reason: str = None):
+def send_payment_failed_notification_task(payment_id: int, reason: str | None = None):
     """
     Задача для отправки уведомления о неудачном платеже.
     
@@ -724,7 +724,7 @@ def send_refund_notification_task(refund_id: int):
 
 
 @shared_task
-def send_system_maintenance_notification_task(message: str, user_ids: List[int] = None):
+def send_system_maintenance_notification_task(message: str, user_ids: List[int] | None = None):
     """
     Задача для отправки системных уведомлений о техническом обслуживании.
     

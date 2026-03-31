@@ -13,7 +13,10 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
+from django.http import FileResponse
 from .models import Payment, Invoice, Refund, BillingManagerProvider, BillingManagerEvent, BlockingRule, ProviderBlocking, BlockingNotification, Currency
+from .export_utils import build_excel_response
+from .invoice_services import build_invoice_breakdown_rows, summarize_invoice_breakdown
 from .serializers import (
     PaymentSerializer,
     InvoiceSerializer,
@@ -39,6 +42,7 @@ from rest_framework import generics
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from providers.models import Provider
+from providers.permission_service import ProviderPermissionService
 
 
 # ContractTypeViewSet удален - используется LegalDocument и DocumentAcceptance
@@ -55,8 +59,9 @@ class PaymentViewSet(viewsets.ModelViewSet):
     serializer_class = PaymentSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['status', 'payment_method']
+    filterset_fields = ['status', 'payment_method', 'provider', 'invoice']
     ordering_fields = ['created_at', 'amount']
+    search_fields = ['provider__name', 'invoice__number', 'transaction_id']
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -101,37 +106,17 @@ class PaymentViewSet(viewsets.ModelViewSet):
         # Используем select_for_update для предотвращения гонки
         with transaction.atomic():
             payment = Payment.objects.select_for_update().get(id=payment_id)
-            
+
             if payment.status != 'pending':
                 return Response(
                     {'error': _('Payment is not pending')},
                     status=status.HTTP_400_BAD_REQUEST
                 )
-            
+
             payment.status = 'completed'
             payment.save()
-        
-        # Создаем счет
-        booking = payment.booking
-        provider = None
-        if booking:
-            provider = booking.provider
-            if not provider and booking.provider_location:
-                provider = booking.provider_location.provider
-        
-        start_date = booking.start_time.date() if booking and booking.start_time else None
-        end_date = booking.end_time.date() if booking and booking.end_time else None
-        
-        Invoice.objects.create(
-            provider=provider,
-            start_date=start_date,
-            end_date=end_date,
-            amount=payment.amount,
-            status='paid',
-            currency=None
-        )
-        
-        return Response({'status': _('payment confirmed')})
+
+        return Response({'status': _('Payment confirmed')})
 
 
 class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
@@ -141,11 +126,11 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
     Используется для просмотра списка и деталей счетов.
     Поддерживает фильтрацию и сортировку.
     """
-    queryset = Invoice.objects.all()
+    queryset = Invoice.objects.select_related('provider', 'currency', 'platform_company').prefetch_related('payment_history')
     serializer_class = InvoiceSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['status']
+    filterset_fields = ['status', 'provider']
     ordering_fields = ['created_at', 'amount']
 
     def get_queryset(self):
@@ -174,13 +159,112 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
             queryset = queryset.filter(provider__in=managed_providers)
         # Для обычных пользователей счета недоступны
         elif not user.is_staff:
-            if hasattr(user, 'has_role') and user.has_role('provider_admin'):
-                managed_providers = user.get_managed_providers()
-                queryset = queryset.filter(provider__in=managed_providers)
+            managed_provider_ids = []
+            for provider in user.get_managed_providers().only('id'):
+                if ProviderPermissionService.check_permission(user, provider, 'org.billing', 'read'):
+                    managed_provider_ids.append(provider.id)
+            if managed_provider_ids:
+                queryset = queryset.filter(provider_id__in=managed_provider_ids)
             else:
                 return queryset.none()
             
         return queryset
+
+    @action(detail=True, methods=['get'], url_path='download-pdf')
+    def download_pdf(self, request, pk=None):
+        """
+        Возвращает PDF-файл счета для скачивания.
+        """
+        invoice = self.get_object()
+        pdf_file = invoice.ensure_pdf_file(force=True)
+
+        if not pdf_file:
+            return Response(
+                {'error': _('Invoice PDF is not available')},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        response = FileResponse(
+            pdf_file.open('rb'),
+            as_attachment=True,
+            filename=pdf_file.name.rsplit('/', 1)[-1],
+            content_type='application/pdf',
+        )
+        return response
+
+    @action(detail=True, methods=['get'], url_path='booking-breakdown')
+    def booking_breakdown(self, request, pk=None):
+        """
+        Возвращает прозрачную детализацию бронирований по счету или Excel-выгрузку.
+        """
+        invoice = self.get_object()
+        rows = build_invoice_breakdown_rows(invoice)
+        summary = summarize_invoice_breakdown(invoice, rows=rows)
+
+        if request.query_params.get('export') == 'xlsx':
+            return build_excel_response(
+                f'invoice-{invoice.number}-bookings.xlsx',
+                'Invoice Bookings',
+                [
+                    str(_('Booking ID')),
+                    str(_('Booking Code')),
+                    str(_('Completed At')),
+                    str(_('Service')),
+                    str(_('Client')),
+                    str(_('Pet')),
+                    str(_('Location')),
+                    str(_('Booking Amount')),
+                    str(_('Commission')),
+                    str(_('VAT')),
+                    str(_('Total')),
+                ],
+                [
+                    [
+                        row['booking_id'],
+                        row['booking_code'],
+                        row['completed_at_label'],
+                        row['service'],
+                        row['client'],
+                        row['pet'],
+                        row['location'],
+                        row['amount'],
+                        row['commission'],
+                        row['vat_amount'],
+                        row['total_with_vat'],
+                    ]
+                    for row in rows
+                ],
+            )
+
+        return Response({
+            'invoice_id': invoice.pk,
+            'invoice_number': invoice.number,
+            'period_label': summary['period_label'],
+            'currency_code': summary['currency_code'],
+            'booking_count': summary['booking_count'],
+            'booking_amount_total': summary['booking_amount_total'],
+            'commission_total': summary['commission_total'],
+            'vat_total': summary['vat_total'],
+            'total_amount': summary['total_amount'],
+            'rows': [
+                {
+                    'booking_id': row['booking_id'],
+                    'booking_code': row['booking_code'],
+                    'booking_label': row['booking_label'],
+                    'completed_at': row['completed_at'].isoformat() if row['completed_at'] else None,
+                    'completed_at_label': row['completed_at_label'],
+                    'service': row['service'],
+                    'client': row['client'],
+                    'pet': row['pet'],
+                    'location': row['location'],
+                    'amount': row['amount'],
+                    'commission': row['commission'],
+                    'vat_amount': row['vat_amount'],
+                    'total_with_vat': row['total_with_vat'],
+                }
+                for row in rows
+            ],
+        })
 
 
 class RefundViewSet(viewsets.ModelViewSet):
@@ -482,16 +566,18 @@ class ProviderBlockingResolveAPIView(generics.UpdateAPIView):
         # Проверяем, что блокировка активна
         if blocking.status != 'active':
             return Response({
-                'error': 'Блокировка уже неактивна'
+                'error': _('Blocking is already inactive')
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Снимаем блокировку
-        notes = request.data.get('notes', 'Снято через API')
+        notes = request.data.get('notes', 'Resolved through API')
         blocking.resolve(resolved_by=request.user, notes=notes)
         
         return Response({
             'success': True,
-            'message': f'Блокировка учреждения {blocking.provider.name} снята',
+            'message': _('Blocking for provider %(provider)s has been resolved') % {
+                'provider': blocking.provider.name,
+            },
             'resolved_at': blocking.resolved_at,
             'resolved_by': blocking.resolved_by.username if blocking.resolved_by else None
         })
@@ -572,7 +658,7 @@ class BlockingNotificationRetryAPIView(generics.GenericAPIView):
         
         if notification.status != 'failed':
             return Response({
-                'error': 'Уведомление не является неудачным'
+                'error': _('Notification is not in failed status')
             }, status=status.HTTP_400_BAD_REQUEST)
         
         # Здесь должна быть логика повторной отправки уведомления
@@ -581,7 +667,7 @@ class BlockingNotificationRetryAPIView(generics.GenericAPIView):
         
         return Response({
             'success': True,
-            'message': 'Уведомление отправлено повторно',
+            'message': _('Notification has been retried'),
             'sent_at': notification.sent_at
         }) 
 

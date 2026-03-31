@@ -194,6 +194,9 @@ SIMPLE_JWT = {
     'TOKEN_TYPE_CLAIM': 'token_type',
 }
 
+# Настройки ручного бронирования и emergency override.
+BOOKING_EMERGENCY_TIME_WINDOW_HOURS = config('BOOKING_EMERGENCY_TIME_WINDOW_HOURS', default=4, cast=int)
+
 # CORS настройки (основной фронт + Provider Admin App)
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",

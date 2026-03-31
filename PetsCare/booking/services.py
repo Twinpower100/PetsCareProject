@@ -371,6 +371,14 @@ class BookingTransactionService:
 
 class BookingCompletionService:
     """Сервис для завершения бронирований"""
+
+    @staticmethod
+    def _ensure_visit_record_allowed(booking):
+        if booking.is_manual_guest_booking:
+            raise BookingDomainError(
+                code='visit_record_guest_unavailable',
+                message=_('Visit protocol is unavailable for guest manual bookings.'),
+            )
     
     @staticmethod
     def complete_booking(booking, user, status='completed', pet_record_data=None):
@@ -383,6 +391,13 @@ class BookingCompletionService:
             status: Статус завершения
             pet_record_data: Данные для записи в карте питомца
         """
+        has_meaningful_data = bool(pet_record_data) and any(
+            value not in (None, '', [], {})
+            for value in pet_record_data.values()
+        )
+        if has_meaningful_data:
+            BookingCompletionService._ensure_visit_record_allowed(booking)
+
         with transaction.atomic():
             actor = COMPLETED_BY_SYSTEM if user is None else 'user'
             reason_code = COMPLETION_REASON_AUTO_TIMEOUT if actor == COMPLETED_BY_SYSTEM else COMPLETION_REASON_MANUAL
@@ -408,6 +423,8 @@ class BookingCompletionService:
         """
         Создать или обновить структурированный протокол уже завершённого визита.
         """
+        BookingCompletionService._ensure_visit_record_allowed(booking)
+
         if booking.status.name != BOOKING_STATUS_COMPLETED:
             raise BookingDomainError(
                 code='visit_record_unavailable',
@@ -553,6 +570,7 @@ class BookingCompletionService:
         threshold = timezone.now() - timedelta(days=settings.auto_complete_days)
         stale_bookings = Booking.objects.filter(
             status__name='active',
+            source=Booking.BookingSource.BOOKING_SERVICE,
             end_time__lte=threshold,
             completed_at__isnull=True,
             cancelled_at__isnull=True
@@ -833,9 +851,9 @@ class BookingAvailabilityService:
         employee: Employee,
         provider: Provider,
         date: date,
-        service: Service = None,
-        service_duration_minutes: int = None,
-        provider_location=None
+        service: Optional[Service] = None,
+        service_duration_minutes: Optional[int] = None,
+        provider_location: Optional[ProviderLocation] = None,
     ) -> List[Dict]:
         """
         Получает доступные слоты для сотрудника на конкретную дату.
@@ -915,7 +933,9 @@ class BookingAvailabilityService:
             schedule = schedule_query.get()
         except Schedule.DoesNotExist:
             return []
-        
+        if schedule.start_time is None or schedule.end_time is None:
+            return []
+
         # Получаем существующие бронирования
         existing_bookings = Booking.objects.filter(
             employee=employee,
@@ -1050,11 +1070,13 @@ class BookingAvailabilityService:
         
         try:
             schedule = schedule_query.get()
-            
+            if schedule.start_time is None or schedule.end_time is None:
+                return False
+
             # Проверяем, попадает ли время в рабочие часы
             start_time_only = start_time.time()
             end_time_only = end_time.time()
-            
+
             if not (schedule.start_time <= start_time_only and schedule.end_time >= end_time_only):
                 return False
             
@@ -1287,7 +1309,7 @@ class EmployeeAutoBookingService:
         return [ep.employee for ep in employee_providers]
     
     @staticmethod
-    def _calculate_employee_workload(employee: Employee, date: date) -> int:
+    def _calculate_employee_workload(employee: Employee, date: date) -> float:
         """
         Рассчитывает загруженность работника на конкретную дату.
         
@@ -1333,7 +1355,7 @@ class EmployeeAutoBookingService:
         provider: Provider,
         service: Service,
         date: date,
-        service_duration_minutes: int = None
+        service_duration_minutes: Optional[int] = None,
     ) -> List[Dict]:
         """
         Получает список доступных работников с их свободными слотами.
@@ -1383,5 +1405,5 @@ from .unified_services import (  # noqa: E402
 )
 
 # Единый источник истины для новых и legacy-вызовов.
-BookingAvailabilityService = UnifiedBookingAvailabilityService
-BookingTransactionService = UnifiedBookingTransactionService
+BookingAvailabilityService = UnifiedBookingAvailabilityService  # type: ignore[assignment]
+BookingTransactionService = UnifiedBookingTransactionService  # type: ignore[assignment]

@@ -43,7 +43,9 @@ def _can_create_invite(request, invite_type, provider=None, provider_location=No
     if invite_type in (Invite.TYPE_BRANCH_MANAGER, Invite.TYPE_SPECIALIST):
         if not provider_location:
             return False, _('Provider location is required.')
-        qs = _location_manager_queryset(request)
+        resource_code = 'staff.roles' if invite_type == Invite.TYPE_BRANCH_MANAGER else 'staff.invite'
+        action = 'update' if invite_type == Invite.TYPE_BRANCH_MANAGER else 'create'
+        qs = _location_manager_queryset(request, resource_code, action)
         if not qs.filter(pk=provider_location.pk).exists():
             return False, _('You do not manage this location.')
         return True, None

@@ -44,17 +44,57 @@ class DocumentTypeCatalogTests(APITestCase):
             [definition.name_de for definition in DOCUMENT_TYPE_DEFINITIONS],
         )
 
-    def test_admin_cannot_create_custom_document_type_outside_catalog(self):
-        self.client.force_authenticate(self.admin)
+    def test_catalog_supports_owner_pet_card_context_filter(self):
+        self.client.force_authenticate(self.user)
 
-        response = self.client.post(
-            '/api/v1/document-types/',
-            {'name': 'Несогласованный тип'},
-            format='json',
+        response = self.client.get('/api/v1/document-types/?context=owner_pet_card')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = _extract_results(response.data)
+        self.assertEqual(
+            [item['code'] for item in results],
+            [definition.code for definition in DOCUMENT_TYPE_DEFINITIONS],
         )
 
+    def test_catalog_supports_provider_visit_context_filter(self):
+        self.client.force_authenticate(self.user)
+
+        response = self.client.get('/api/v1/document-types/?context=provider_visit')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        results = _extract_results(response.data)
+        self.assertEqual(
+            [item['code'] for item in results],
+            ['lab_results', 'diagnostics', 'discharge_doctor_orders'],
+        )
+
+    def test_catalog_rejects_unknown_context_filter(self):
+        self.client.force_authenticate(self.user)
+
+        response = self.client.get('/api/v1/document-types/?context=unknown')
+
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('name', response.data)
+        self.assertIn('context', response.data)  # type: ignore[arg-type]
+
+    def test_public_catalog_mutations_are_not_exposed(self):
+        self.client.force_authenticate(self.admin)
+
+        create_response = self.client.post(
+            '/api/v1/document-types/',
+            {'name': 'Unsupported custom type'},
+            format='json',
+        )
+        document_type = DocumentType.objects.get(code=DOCUMENT_TYPE_DEFINITIONS[0].code)
+        patch_response = self.client.patch(
+            f'/api/v1/document-types/{document_type.id}/',
+            {'is_active': False},
+            format='json',
+        )
+        delete_response = self.client.delete(f'/api/v1/document-types/{document_type.id}/')
+
+        self.assertEqual(create_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(patch_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+        self.assertEqual(delete_response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
 
     def test_model_resyncs_derived_fields_from_selected_name(self):
         document_type = DocumentType.objects.get(code=DOCUMENT_TYPE_DEFINITIONS[2].code)

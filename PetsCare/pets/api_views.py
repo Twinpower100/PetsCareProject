@@ -1,24 +1,26 @@
-from rest_framework import viewsets, permissions, status, generics
+from rest_framework import viewsets, permissions, status, generics, mixins
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from django.core.exceptions import ObjectDoesNotExist
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext_lazy as _
 from rest_framework.views import APIView
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError as DRFValidationError
 from django.utils import timezone
 from datetime import timedelta
 from users.models import User
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction
-from .models import Pet, PetHealthNote, VisitRecord, PetAccess, PetDocument, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
+from .models import Pet, PetHealthNote, VisitRecord, VisitRecordAddendum, PetAccess, PetDocument, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
 from .serializers import (
     PetSerializer,
     PetHealthNoteSerializer,
     VisitRecordSerializer,
     VisitRecordDetailSerializer,
     PetAccessSerializer,
-    PetDocumentSerializer,
+    CanonicalPetDocumentCreateSerializer,
+    CanonicalPetDocumentUpdateSerializer,
+    PetDocumentLifecycleActionSerializer,
     PetDocumentSummarySerializer,
     PetMedicalCardSerializer,
     VisitRecordAddendumSerializer,
@@ -44,12 +46,17 @@ from django.core.exceptions import ValidationError
 from .services import PetOwnerIncapacityService
 from .models import PetOwnerIncapacity, PetIncapacityNotification
 from django.db import models
+from django.http import Http404
 import logging
 from .filters import PetFilter, PetTypeFilter, BreedFilter
 from .models import PetType, Breed, SizeRule
 from .constants import get_pet_photo_constraints_for_api
 from .medical_card_access import (
+    can_deactivate_pet_document,
+    can_update_pet_document,
+    can_view_pet_document,
     can_manage_visit_record_as_provider,
+    can_withdraw_pet_document,
     can_view_health_notes,
     can_view_pet_medical_card,
     get_accessible_documents_queryset,
@@ -58,6 +65,7 @@ from .medical_card_access import (
     is_pet_owner,
 )
 from .document_type_catalog import get_document_type_order_expression
+from .document_type_catalog import get_document_type_codes_for_context
 from rest_framework.filters import OrderingFilter
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.pagination import PageNumberPagination
@@ -74,6 +82,11 @@ def _with_base_pet_related(queryset):
         'chronic_conditions',
         'accesses',
     )
+
+
+def _is_truthy_query_param(value):
+    """Преобразует строковый query-параметр в булево значение."""
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 class PetViewSet(viewsets.ModelViewSet):
@@ -438,38 +451,198 @@ class VisitRecordViewSet(viewsets.ReadOnlyModelViewSet):
     def addenda(self, request, pk=None):
         record = self.get_object()
         serializer = VisitRecordAddendumSerializer(
-            record.addenda.select_related('author').order_by('created_at'),
+            record.addenda.select_related('author').prefetch_related(
+                models.Prefetch(
+                    'documents',
+                    queryset=PetDocument._default_manager.select_related(
+                        'document_type',
+                        'visit_record_addendum',
+                        'visit_record_addendum__visit_record',
+                        'uploaded_by',
+                        'deactivated_by',
+                        'withdrawn_by',
+                    ).filter(lifecycle_status=PetDocument.STATUS_ACTIVE).order_by('-uploaded_at', '-created_at'),
+                ),
+            ).order_by('created_at'),
             many=True,
             context={'request': request},
         )
         return Response(serializer.data)
 
 
-class PetDocumentViewSet(viewsets.ReadOnlyModelViewSet):
+class PetDocumentViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    viewsets.GenericViewSet,
+):
     """
-    Canonical read-only API for the single document entity.
+    Канонический API жизненного цикла документа питомца.
 
-    Writes stay pet-centric through /pets/{pet_id}/documents/ to keep the target
-    workflow explicit about document ownership and context.
+    Поддерживает:
+    - список и detail чтения
+    - PATCH метаданных
+    - deactivate для owner-space документов
+    - withdraw для provider-managed visit-linked документов
     """
     serializer_class = PetDocumentSummarySerializer
     permission_classes = [permissions.IsAuthenticated]
+    http_method_names = ['get', 'patch', 'post', 'head', 'options']
+
+    def _include_inactive(self):
+        """Определяет, нужно ли включать неактивные документы в выборку."""
+        if self.action in {'retrieve', 'partial_update', 'deactivate', 'withdraw'}:
+            return True
+        return _is_truthy_query_param(
+            self.request.query_params.get('include_inactive')
+        )
+
+    def get_serializer_class(self):
+        """Возвращает сериализатор в зависимости от действия."""
+        if self.action == 'partial_update':
+            return CanonicalPetDocumentUpdateSerializer
+        if self.action in {'deactivate', 'withdraw'}:
+            return PetDocumentLifecycleActionSerializer
+        return PetDocumentSummarySerializer
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):
             return PetDocument._default_manager.none()
 
-        queryset = get_globally_accessible_documents_queryset(self.request.user)
+        queryset = get_globally_accessible_documents_queryset(
+            self.request.user,
+            include_inactive=self._include_inactive(),
+        )
         pet_id = self.request.query_params.get('pet')
         visit_record_id = self.request.query_params.get('visit_record')
+        visit_record_addendum_id = self.request.query_params.get('visit_record_addendum')
         health_note_id = self.request.query_params.get('health_note')
         if pet_id:
             queryset = queryset.filter(pet_id=pet_id)
         if visit_record_id:
             queryset = queryset.filter(visit_record_id=visit_record_id)
+        if visit_record_addendum_id:
+            queryset = queryset.filter(visit_record_addendum_id=visit_record_addendum_id)
         if health_note_id:
             queryset = queryset.filter(health_note_id=health_note_id)
         return queryset.distinct()
+
+    def _get_locked_document(self):
+        """Возвращает документ с блокировкой строки для мутаций."""
+        queryset = PetDocument._default_manager.select_for_update()
+        document = get_object_or_404(queryset, pk=self.kwargs['pk'])
+        if not can_view_pet_document(self.request.user, document):
+            raise Http404
+        return document
+
+    @transaction.atomic
+    def partial_update(self, request, *args, **kwargs):
+        """Обновляет только метаданные документа без замены файла."""
+        document = self._get_locked_document()
+        if not document.is_active:
+            raise DRFValidationError(
+                {'detail': _('Only active documents can be updated')}
+            )
+        if not can_update_pet_document(request.user, document):
+            raise PermissionDenied(
+                _('You do not have permission to update this document')
+            )
+
+        serializer = self.get_serializer(
+            document,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+
+        response_serializer = PetDocumentSummarySerializer(
+            document,
+            context={'request': request},
+        )
+        return Response(response_serializer.data)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def deactivate(self, request, pk=None):
+        """Деактивирует owner-space документ без физического удаления."""
+        document = self._get_locked_document()
+        if not document.is_active:
+            raise DRFValidationError(
+                {'detail': _('Only active documents can be deactivated')}
+            )
+        if not can_deactivate_pet_document(request.user, document):
+            raise PermissionDenied(
+                _('You do not have permission to deactivate this document')
+            )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        document.lifecycle_status = PetDocument.STATUS_DEACTIVATED
+        document.lifecycle_reason_code = serializer.validated_data.get('reason_code', '')
+        document.lifecycle_reason_comment = serializer.validated_data.get('reason_comment', '')
+        document.deactivated_at = timezone.now()
+        document.deactivated_by = request.user
+        document.withdrawn_at = None
+        document.withdrawn_by = None
+        document.save(update_fields=[
+            'lifecycle_status',
+            'lifecycle_reason_code',
+            'lifecycle_reason_comment',
+            'deactivated_at',
+            'deactivated_by',
+            'withdrawn_at',
+            'withdrawn_by',
+            'updated_at',
+        ])
+
+        response_serializer = PetDocumentSummarySerializer(
+            document,
+            context={'request': request},
+        )
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def withdraw(self, request, pk=None):
+        """Отзывает provider-managed visit-linked документ без hard delete."""
+        document = self._get_locked_document()
+        if not document.is_active:
+            raise DRFValidationError(
+                {'detail': _('Only active documents can be withdrawn')}
+            )
+        if not can_withdraw_pet_document(request.user, document):
+            raise PermissionDenied(
+                _('You do not have permission to withdraw this document')
+            )
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        document.lifecycle_status = PetDocument.STATUS_WITHDRAWN
+        document.lifecycle_reason_code = serializer.validated_data.get('reason_code', '')
+        document.lifecycle_reason_comment = serializer.validated_data.get('reason_comment', '')
+        document.withdrawn_at = timezone.now()
+        document.withdrawn_by = request.user
+        document.deactivated_at = None
+        document.deactivated_by = None
+        document.save(update_fields=[
+            'lifecycle_status',
+            'lifecycle_reason_code',
+            'lifecycle_reason_comment',
+            'withdrawn_at',
+            'withdrawn_by',
+            'deactivated_at',
+            'deactivated_by',
+            'updated_at',
+        ])
+
+        response_serializer = PetDocumentSummarySerializer(
+            document,
+            context={'request': request},
+        )
+        return Response(response_serializer.data, status=status.HTTP_200_OK)
 
 
 class PetAccessViewSet(viewsets.ModelViewSet):
@@ -508,14 +681,14 @@ class PetAccessViewSet(viewsets.ModelViewSet):
         return Response({'status': 'Access revoked'})
 
 
-class DocumentTypeViewSet(viewsets.ModelViewSet):
+class DocumentTypeViewSet(viewsets.ReadOnlyModelViewSet):
     """
     ViewSet for approved pet document types.
 
     Features:
     - Returns only active catalog items
     - Keeps a stable business order for the fixed catalog
-    - Allows administrators to toggle activity without editing derived fields
+    - Exposes the fixed catalog as a read-only public API
     """
     queryset = DocumentType._default_manager.all()
     serializer_class = DocumentTypeSerializer
@@ -523,31 +696,19 @@ class DocumentTypeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Возвращает активные типы документов"""
-        return self.queryset.filter(is_active=True).order_by(
+        queryset = self.queryset.filter(is_active=True)
+        context_code = self.request.query_params.get('context')
+        if context_code:
+            allowed_codes = get_document_type_codes_for_context(context_code)
+            if allowed_codes is None:
+                raise DRFValidationError({
+                    'context': _('Unsupported document type context')
+                })
+            queryset = queryset.filter(code__in=allowed_codes)
+        return queryset.order_by(
             get_document_type_order_expression(),
             'id',
         )
-
-    def perform_create(self, serializer):
-        """Создает тип документа"""
-        # Только системные администраторы могут создавать типы документов
-        if not (self.request.user.is_staff or self.request.user.is_superuser):
-            raise PermissionDenied(_('Only administrators can create document types'))
-        serializer.save()
-
-    def perform_update(self, serializer):
-        """Обновляет тип документа"""
-        # Только системные администраторы могут обновлять типы документов
-        if not (self.request.user.is_staff or self.request.user.is_superuser):
-            raise PermissionDenied(_('Only administrators can update document types'))
-        serializer.save()
-
-    def perform_destroy(self, instance):
-        """Удаляет тип документа"""
-        # Только системные администраторы могут удалять типы документов
-        if not (self.request.user.is_staff or self.request.user.is_superuser):
-            raise PermissionDenied(_('Only administrators can delete document types'))
-        instance.delete()
 
     @action(detail=False, methods=['get'])
     def by_service_category(self, request):
@@ -648,13 +809,21 @@ class PetDocumentListCreateAPIView(APIView):
     parser_classes = (MultiPartParser, FormParser)
     permission_classes = [permissions.IsAuthenticated]
 
+    def _include_inactive(self, request):
+        """Определяет, нужно ли вернуть неактивную историю документов."""
+        return _is_truthy_query_param(request.query_params.get('include_inactive'))
+
     def get(self, request, pet_id):
         pet = get_object_or_404(Pet, pk=pet_id)
         if not can_view_pet_medical_card(request.user, pet):
             raise PermissionDenied(
                 _('You do not have permission to access documents for this pet')
             )
-        queryset = get_accessible_documents_queryset(request.user, pet)
+        queryset = get_accessible_documents_queryset(
+            request.user,
+            pet,
+            include_inactive=self._include_inactive(request),
+        )
         serializer = PetDocumentSummarySerializer(
             queryset,
             many=True,
@@ -662,13 +831,34 @@ class PetDocumentListCreateAPIView(APIView):
         )
         return Response(serializer.data)
 
+    @transaction.atomic
     def post(self, request, pet_id):
-        pet = get_object_or_404(Pet, pk=pet_id)
-        serializer = PetDocumentSerializer(
+        pet = get_object_or_404(
+            Pet.objects.select_for_update(),
+            pk=pet_id,
+        )
+        serializer = CanonicalPetDocumentCreateSerializer(
             data=request.data,
             context={'request': request, 'pet': pet},
         )
         serializer.is_valid(raise_exception=True)
+        visit_record = serializer.validated_data.get('visit_record')
+        visit_record_addendum = serializer.validated_data.get('visit_record_addendum')
+        health_note = serializer.validated_data.get('health_note')
+        if visit_record is not None:
+            serializer.validated_data['visit_record'] = VisitRecord.objects.select_for_update().get(
+                pk=visit_record.pk
+            )
+        if visit_record_addendum is not None:
+            serializer.validated_data['visit_record_addendum'] = (
+                VisitRecordAddendum._default_manager.select_related('visit_record').select_for_update().get(
+                    pk=visit_record_addendum.pk
+                )
+            )
+        if health_note is not None:
+            serializer.validated_data['health_note'] = PetHealthNote.objects.select_for_update().get(
+                pk=health_note.pk
+            )
         document = serializer.save(
             pet=pet,
             uploaded_by=request.user,
@@ -767,18 +957,7 @@ class PetDocumentDownloadAPIView(APIView):
         Returns:
             bool: True if the user has rights
         """
-        # Системный администратор может все
-        if user.is_superuser or user.has_role('system_admin'):
-            return True
-        
-        # Владелец питомца может скачивать документы своих питомцев
-        if is_pet_owner(user, document.pet):
-            return True
-
-        if document.visit_record_id is None:
-            return False
-
-        return can_manage_visit_record_as_provider(user, document.visit_record)
+        return can_view_pet_document(user, document)
 
     def get(self, request, document_id):
         """
@@ -838,11 +1017,13 @@ class PetDocumentDownloadAPIView(APIView):
 
 class PetDocumentPreviewAPIView(APIView):
     """
-    API for previewing a pet document (only for images).
+    API for previewing a pet document inline.
     
     Access rights: same as for downloading
     """
     permission_classes = [permissions.IsAuthenticated]
+
+    PREVIEWABLE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.pdf']
 
     def has_document_permission(self, user, document):
         """
@@ -854,14 +1035,14 @@ class PetDocumentPreviewAPIView(APIView):
 
     def get(self, request, document_id):
         """
-        Document preview (only for images).
+        Document preview for images and PDF files.
         
         Args:
             request: HTTP request
             document_id: ID of PetDocument
             
         Returns:
-            Response: Preview image
+            Response: Inline preview response
         """
         document = get_object_or_404(PetDocument, pk=document_id)
         
@@ -878,13 +1059,12 @@ class PetDocumentPreviewAPIView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
         
-        # Проверяем, что это изображение
-        image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp']
+        # Проверяем, что формат поддерживается для inline preview
         file_extension = document.file.name.lower()
         
-        if not any(file_extension.endswith(ext) for ext in image_extensions):
+        if not any(file_extension.endswith(ext) for ext in self.PREVIEWABLE_EXTENSIONS):
             return Response(
-                {'error': _('Preview is only available for images')},
+                {'error': _('Preview is only available for PDF and image files')},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -896,9 +1076,9 @@ class PetDocumentPreviewAPIView(APIView):
             import mimetypes
             content_type, encoding = mimetypes.guess_type(document.file.name)
             if not content_type:
-                content_type = 'image/jpeg'
+                content_type = 'application/pdf' if file_extension.endswith('.pdf') else 'image/jpeg'
             
-            # Создаем ответ с изображением
+            # Создаем inline-ответ для поддерживаемого файла
             from django.http import FileResponse
             response = FileResponse(
                 file_handle,
@@ -913,7 +1093,7 @@ class PetDocumentPreviewAPIView(APIView):
             
         except Exception as e:
             return Response(
-                {'error': _('Error loading image')},
+                {'error': _('Error loading preview file')},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             ) 
 

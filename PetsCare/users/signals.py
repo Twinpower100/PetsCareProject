@@ -151,6 +151,7 @@ def assign_provider_staff_from_form(provider, provider_form):
     from django.utils import timezone
     from django.contrib.auth import get_user_model
     from providers.models import Employee, EmployeeProvider
+    from providers.permission_service import ProviderPermissionService
 
     User = get_user_model()
     today = timezone.now().date()
@@ -185,7 +186,7 @@ def assign_provider_staff_from_form(provider, provider_form):
             ep.is_provider_manager = is_provider_manager
             ep.is_provider_admin = is_provider_admin
             ep.is_manager = is_provider_manager
-            ep.role = EmployeeProvider.ROLE_PROVIDER_ADMIN
+            ep.sync_primary_role_from_flags()
             ep.save(update_fields=['is_owner', 'is_provider_manager', 'is_provider_admin', 'is_manager', 'role', 'updated_at'])
         else:
             EmployeeProvider.objects.create(
@@ -193,17 +194,13 @@ def assign_provider_staff_from_form(provider, provider_form):
                 provider=provider,
                 start_date=today,
                 end_date=None,
-                role=EmployeeProvider.ROLE_PROVIDER_ADMIN,
+                role=EmployeeProvider.ROLE_WORKER,
                 is_owner=is_owner,
                 is_provider_manager=is_provider_manager,
                 is_provider_admin=is_provider_admin,
                 is_manager=is_provider_manager,
             )
-        for ut_name in ('provider_admin', 'owner', 'provider_manager'):
-            if ut_name == 'provider_admin' or (ut_name == 'owner' and is_owner) or (ut_name == 'provider_manager' and is_provider_manager):
-                ut, _ = UserType.objects.get_or_create(name=ut_name)
-                if not user.user_types.filter(name=ut_name).exists():
-                    user.user_types.add(ut)
+        ProviderPermissionService.sync_user_access_roles(user)
     return True
 
 

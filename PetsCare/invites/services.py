@@ -30,6 +30,7 @@ def maybe_remove_role(user, role_name):
     активной связи, требующей эту роль.
     """
     from providers.models import EmployeeProvider
+    from providers.permission_service import ProviderPermissionService
     from billing.models import BillingManagerProvider
     from pets.models import Pet
 
@@ -68,8 +69,7 @@ def maybe_remove_role(user, role_name):
             user.remove_role('billing_manager')
 
     elif role_name == 'branch_manager':
-        from providers.models import ProviderLocation
-        has_active = ProviderLocation.objects.filter(manager=user).exists()
+        has_active = 'branch_manager' in ProviderPermissionService.ensure_provider_access_roles(user)
         if not has_active:
             user.remove_role('branch_manager')
 
@@ -83,12 +83,11 @@ def maybe_remove_role(user, role_name):
             user.remove_role('pet_owner')
 
     elif role_name == 'specialist':
-        has_active = EmployeeProvider.objects.filter(
-            employee__user=user,
-            end_date__isnull=True,
-        ).exists()
+        active_roles = ProviderPermissionService.ensure_provider_access_roles(user)
+        has_active = 'specialist' in active_roles or 'worker' in active_roles
         if not has_active:
             user.remove_role('specialist')
+            user.remove_role('worker')
 
 
 def accept_invite(invite, user):
@@ -126,6 +125,7 @@ def accept_invite(invite, user):
 def _accept_provider_manager(invite, user):
     """Принимает инвайт менеджера организации."""
     from providers.models import EmployeeProvider
+    from providers.permission_service import ProviderPermissionService
 
     provider = invite.provider
     today = timezone.now().date()
@@ -162,20 +162,19 @@ def _accept_provider_manager(invite, user):
     if not created:
         ep.is_provider_manager = True
         ep.is_manager = True
-        ep.save(update_fields=['is_provider_manager', 'is_manager'])
+        ep.save(update_fields=['is_provider_manager', 'is_manager', 'role', 'updated_at'])
 
-    # Назначаем только UserType, соответствующий роли по инвайту (manager, не admin).
-    user.add_role('provider_manager')
+    ProviderPermissionService.sync_user_access_roles(user)
 
     for old_user in old_manager_users:
         if old_user.pk != user.pk:
-            maybe_remove_role(old_user, 'provider_manager')
-            maybe_remove_role(old_user, 'provider_admin')
+            ProviderPermissionService.sync_user_access_roles(old_user)
 
 
 def _accept_provider_admin(invite, user):
     """Принимает инвайт админа организации."""
     from providers.models import EmployeeProvider
+    from providers.permission_service import ProviderPermissionService
 
     provider = invite.provider
     today = timezone.now().date()
@@ -200,13 +199,14 @@ def _accept_provider_admin(invite, user):
     elif not ep.is_provider_admin:
         ep.is_provider_admin = True
         ep.role = EmployeeProvider.ROLE_PROVIDER_ADMIN
-        ep.save(update_fields=['is_provider_admin', 'role'])
-    user.add_role('provider_admin')
+        ep.save(update_fields=['is_provider_admin', 'role', 'updated_at'])
+    ProviderPermissionService.sync_user_access_roles(user)
 
 
 def _accept_branch_manager(invite, user):
     """Принимает инвайт руководителя филиала."""
-    from providers.models import EmployeeProvider, ProviderLocation
+    from providers.models import EmployeeLocationRole, EmployeeProvider
+    from providers.permission_service import ProviderPermissionService
 
     location = invite.provider_location
     provider = location.provider
@@ -227,23 +227,33 @@ def _accept_branch_manager(invite, user):
             provider=provider,
             start_date=timezone.now().date(),
             end_date=None,
-            role=EmployeeProvider.ROLE_SERVICE_WORKER,
+            role=EmployeeProvider.ROLE_WORKER,
             is_owner=False,
             is_provider_manager=False,
             is_provider_admin=False,
             is_manager=False,
         )
+    EmployeeLocationRole.objects.update_or_create(
+        employee=employee,
+        provider_location=location,
+        defaults={
+            'role': EmployeeLocationRole.ROLE_BRANCH_MANAGER,
+            'is_active': True,
+            'end_date': None,
+        },
+    )
     if not employee.locations.filter(pk=location.pk).exists():
         employee.locations.add(location)
 
-    user.add_role('branch_manager')
+    ProviderPermissionService.sync_user_access_roles(user)
     if old_manager and old_manager.pk != user.pk:
-        maybe_remove_role(old_manager, 'branch_manager')
+        ProviderPermissionService.sync_user_access_roles(old_manager)
 
 
 def _accept_specialist(invite, user):
     """Принимает инвайт в персонал филиала."""
-    from providers.models import Employee, EmployeeProvider
+    from providers.models import Employee, EmployeeLocationRole, EmployeeProvider
+    from providers.permission_service import ProviderPermissionService
 
     location = invite.provider_location
     provider = location.provider
@@ -262,15 +272,24 @@ def _accept_specialist(invite, user):
             provider=provider,
             start_date=timezone.now().date(),
             end_date=None,
-            role=EmployeeProvider.ROLE_SERVICE_WORKER,
+            role=EmployeeProvider.ROLE_WORKER,
             is_owner=False,
             is_provider_manager=False,
             is_provider_admin=False,
             is_manager=False,
         )
+    EmployeeLocationRole.objects.update_or_create(
+        employee=employee,
+        provider_location=location,
+        defaults={
+            'role': EmployeeLocationRole.ROLE_WORKER,
+            'is_active': True,
+            'end_date': None,
+        },
+    )
     if not employee.locations.filter(pk=location.pk).exists():
         employee.locations.add(location)
-    user.add_role('specialist')
+    ProviderPermissionService.sync_user_access_roles(user)
 
 
 def _accept_pet_co_owner(invite, user):

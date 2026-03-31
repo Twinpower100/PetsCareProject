@@ -383,7 +383,7 @@ class User(AbstractUser):
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []  # username генерируется автоматически
 
-    objects = UserManager()
+    objects = UserManager()  # type: ignore[assignment]
 
     class Meta:
         verbose_name = _('User')

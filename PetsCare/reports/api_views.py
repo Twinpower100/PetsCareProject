@@ -56,11 +56,11 @@ def get_date_range_from_request(request) -> tuple:
     return start_date, end_date
 
 
-def get_providers_from_request(request) -> List[Provider]:
+def get_providers_from_request(request) -> List[Provider] | None:
     """Извлекает список провайдеров из запроса."""
     provider_ids = request.GET.getlist('providers')
     if provider_ids:
-        return Provider.objects.filter(id__in=provider_ids)
+        return list(Provider.objects.filter(id__in=provider_ids))
     return None
 
 

@@ -795,6 +795,8 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
     schedule_filled = serializers.SerializerMethodField()
     employees_count = serializers.SerializerMethodField()
     staff_schedule_filled = serializers.SerializerMethodField()
+    has_services = serializers.SerializerMethodField()
+    has_prices = serializers.SerializerMethodField()
     manager = serializers.SerializerMethodField()
     manager_filled = serializers.SerializerMethodField()
     manager_invite_pending_email = serializers.SerializerMethodField()
@@ -863,6 +865,8 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
         """
         Возвращает список доступных услуг в локации.
         """
+        if not self.context.get('include_available_services'):
+            return []
         # Для Swagger возвращаем пустой список, чтобы избежать циклических импортов
         if getattr(self, 'swagger_fake_view', False):
             return []
@@ -927,6 +931,20 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
                 return False
         return True
 
+    def get_has_services(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return False
+        if hasattr(obj, '_prefetched_objects_cache') and 'location_services' in obj._prefetched_objects_cache:
+            return any(ls.is_active for ls in obj.location_services.all())
+        return ProviderLocationService.objects.filter(location=obj, is_active=True).exists()
+
+    def get_has_prices(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return False
+        if hasattr(obj, '_prefetched_objects_cache') and 'location_services' in obj._prefetched_objects_cache:
+            return any(ls.is_active and ls.price is not None for ls in obj.location_services.all())
+        return ProviderLocationService.objects.filter(location=obj, is_active=True, price__isnull=False).exists()
+
     def get_manager(self, obj):
         """Данные руководителя точки (имя, фамилия, email, телефон) для отображения во вкладке «Общая информация». Только для поддержки/эскалации."""
         if getattr(self, 'swagger_fake_view', False):
@@ -989,6 +1007,8 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
             'schedule_filled',
             'employees_count',
             'staff_schedule_filled',
+            'has_services',
+            'has_prices',
             'manager',
             'manager_filled',
             'manager_invite_pending_email',
@@ -996,7 +1016,7 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
             'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['created_at', 'updated_at', 'provider_name', 'country', 'full_address', 'latitude', 'longitude', 'served_pet_types_details', 'available_services', 'schedule_filled', 'employees_count', 'staff_schedule_filled', 'manager', 'manager_filled', 'manager_invite_pending_email', 'provider_currency_code']
+        read_only_fields = ['created_at', 'updated_at', 'provider_name', 'country', 'full_address', 'latitude', 'longitude', 'served_pet_types_details', 'available_services', 'schedule_filled', 'employees_count', 'staff_schedule_filled', 'has_services', 'has_prices', 'manager', 'manager_filled', 'manager_invite_pending_email', 'provider_currency_code']
 
     def validate_phone_number(self, value):
         """Валидация формата телефона (10–15 цифр, E.164-подобный)."""

@@ -14,6 +14,7 @@ from .models import (
     BookingStatus,
     BookingServiceIssue,
 )
+from .manual_v2_models import ManualBooking, ManualVisitProtocol, ProviderClientLead
 from .constants import (
     CANCELLED_BY_PROVIDER,
     CANCELLATION_REASON_CLIENT_NO_SHOW,
@@ -376,13 +377,15 @@ class BookingAutoCompleteSettingsAdmin(admin.ModelAdmin):
         'auto_complete_days',
         'service_periodicity_hours',
         'service_start_time',
+        'manual_booking_emergency_window_hours',
         'updated_at'
     ]
     
     list_editable = [
         'auto_complete_days',
         'service_periodicity_hours',
-        'service_start_time'
+        'service_start_time',
+        'manual_booking_emergency_window_hours',
     ]
     
     list_display_links = ['auto_complete_enabled']
@@ -398,6 +401,7 @@ class BookingAutoCompleteSettingsAdmin(admin.ModelAdmin):
             'fields': (
                 'service_periodicity_hours',
                 'service_start_time',
+                'manual_booking_emergency_window_hours',
             )
         }),
         (_('System Information'), {
@@ -434,6 +438,7 @@ custom_admin_site.register(BookingNote, BookingNoteAdmin)
 custom_admin_site.register(BookingCancellation, BookingCancellationAdmin)
 custom_admin_site.register(BookingPayment, BookingPaymentAdmin)
 custom_admin_site.register(BookingReview, BookingReviewAdmin)
+custom_admin_site.register(BookingAutoCompleteSettings, BookingAutoCompleteSettingsAdmin)
 
 
 @admin.register(BookingServiceIssue)
@@ -445,4 +450,98 @@ class BookingServiceIssueAdmin(admin.ModelAdmin):
     raw_id_fields = ('booking', 'reported_by_user', 'resolved_by_user')
 
 custom_admin_site.register(BookingServiceIssue, BookingServiceIssueAdmin)
+
+
+@admin.register(ProviderClientLead)
+class ProviderClientLeadAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'provider',
+        'provider_location',
+        'last_name',
+        'first_name',
+        'phone_number',
+        'email',
+        'invitation_status',
+        'updated_at',
+    )
+    list_filter = ('provider', 'provider_location', 'source', 'invitation_status')
+    search_fields = ('first_name', 'last_name', 'phone_number', 'normalized_phone_number', 'email')
+    readonly_fields = ('normalized_phone_number', 'created_at', 'updated_at', 'version')
+    raw_id_fields = ('provider', 'provider_location')
+
+
+@admin.register(ManualBooking)
+class ManualBookingAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'code',
+        'provider',
+        'provider_location',
+        'service',
+        'employee',
+        'owner_last_name',
+        'owner_first_name',
+        'owner_phone_number',
+        'pet_name',
+        'size_code',
+        'is_emergency',
+        'status',
+        'start_time',
+        'updated_at',
+    )
+    list_filter = ('provider', 'provider_location', 'status', 'is_emergency', 'service', 'pet_type', 'size_code')
+    search_fields = ('code', 'owner_first_name', 'owner_last_name', 'owner_phone_number', 'owner_email', 'pet_name')
+    readonly_fields = (
+        'code',
+        'created_at',
+        'updated_at',
+        'completed_at',
+        'cancelled_at',
+        'version',
+    )
+    raw_id_fields = (
+        'provider',
+        'provider_location',
+        'lead',
+        'employee',
+        'service',
+        'pet_type',
+        'breed',
+        'created_by',
+        'updated_by',
+        'completed_by_user',
+        'cancelled_by_user',
+        'cancellation_reason',
+    )
+
+
+@admin.register(ManualVisitProtocol)
+class ManualVisitProtocolAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'manual_booking',
+        'protocol_family',
+        'service',
+        'employee',
+        'date',
+        'next_date',
+        'updated_at',
+    )
+    list_filter = ('protocol_family', 'provider_location', 'service')
+    search_fields = ('manual_booking__code', 'manual_booking__pet_name', 'manual_booking__owner_phone_number')
+    readonly_fields = ('created_at', 'updated_at', 'version')
+    raw_id_fields = (
+        'manual_booking',
+        'provider_location',
+        'service',
+        'employee',
+        'created_by',
+        'updated_by',
+    )
+
+
+custom_admin_site.register(ProviderClientLead, ProviderClientLeadAdmin)
+custom_admin_site.register(ManualBooking, ManualBookingAdmin)
+custom_admin_site.register(ManualVisitProtocol, ManualVisitProtocolAdmin)
 

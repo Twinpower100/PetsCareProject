@@ -33,7 +33,7 @@ class DocumentTypeDefinition:
 DOCUMENT_TYPE_DEFINITIONS = (
     DocumentTypeDefinition(
         code='passport_identification',
-        name='Паспорт / идентификация',
+        name='Passport / identification',
         name_en='Passport / identification',
         name_ru='Паспорт / идентификация',
         name_me='Pasos / identifikacija',
@@ -42,7 +42,7 @@ DOCUMENT_TYPE_DEFINITIONS = (
     ),
     DocumentTypeDefinition(
         code='veterinary_certificate',
-        name='Ветеринарная справка / сертификат',
+        name='Veterinary certificate',
         name_en='Veterinary certificate',
         name_ru='Ветеринарная справка / сертификат',
         name_me='Veterinarska potvrda / sertifikat',
@@ -52,7 +52,7 @@ DOCUMENT_TYPE_DEFINITIONS = (
     ),
     DocumentTypeDefinition(
         code='lab_results',
-        name='Анализы',
+        name='Laboratory results',
         name_en='Laboratory results',
         name_ru='Анализы',
         name_me='Analize',
@@ -62,7 +62,7 @@ DOCUMENT_TYPE_DEFINITIONS = (
     ),
     DocumentTypeDefinition(
         code='diagnostics',
-        name='Диагностика',
+        name='Diagnostics',
         name_en='Diagnostics',
         name_ru='Диагностика',
         name_me='Dijagnostika',
@@ -72,7 +72,7 @@ DOCUMENT_TYPE_DEFINITIONS = (
     ),
     DocumentTypeDefinition(
         code='discharge_doctor_orders',
-        name='Выписка / назначения врача',
+        name='Discharge / doctor orders',
         name_en='Discharge / doctor orders',
         name_ru='Выписка / назначения врача',
         name_me='Otpusno pismo / preporuke veterinara',
@@ -100,6 +100,23 @@ DOCUMENT_TYPE_ALLOWED_MIME_TYPES = (
     'image/png',
 )
 
+OWNER_PET_CARD_DOCUMENT_CONTEXT = 'owner_pet_card'
+PROVIDER_VISIT_DOCUMENT_CONTEXT = 'provider_visit'
+LEGACY_DEFAULT_DOCUMENT_TYPE_CODE = 'discharge_doctor_orders'
+
+PROVIDER_VISIT_DOCUMENT_TYPE_CODES = (
+    'lab_results',
+    'diagnostics',
+    'discharge_doctor_orders',
+)
+
+DOCUMENT_TYPE_CODES_BY_CONTEXT = {
+    OWNER_PET_CARD_DOCUMENT_CONTEXT: tuple(
+        definition.code for definition in DOCUMENT_TYPE_DEFINITIONS
+    ),
+    PROVIDER_VISIT_DOCUMENT_CONTEXT: PROVIDER_VISIT_DOCUMENT_TYPE_CODES,
+}
+
 _DOCUMENT_TYPES_BY_NAME = {
     definition.name: definition
     for definition in DOCUMENT_TYPE_DEFINITIONS
@@ -120,6 +137,18 @@ def get_document_type_definition_by_code(code):
     """Возвращает описание типа документа по техническому коду."""
 
     return _DOCUMENT_TYPES_BY_CODE.get(code)
+
+
+def get_document_type_codes_for_context(context):
+    """Возвращает допустимые коды типов документов для заданного контекста."""
+
+    return DOCUMENT_TYPE_CODES_BY_CONTEXT.get(context)
+
+
+def get_legacy_default_document_type_code():
+    """Возвращает согласованный fallback-код для deprecated write-путей."""
+
+    return LEGACY_DEFAULT_DOCUMENT_TYPE_CODE
 
 
 def get_document_type_order_expression(field_name='code'):

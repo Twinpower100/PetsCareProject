@@ -241,7 +241,7 @@ class AnalyticsDashboardAdmin(AnalyticsAccessMixin, admin.ModelAdmin):
         # Активные пользователи
         active_users = activity_tracking_service.get_most_active_users(7, 5)
         
-        extra_context.update({
+        extra_context.update({  # type: ignore[arg-type]
             'growth_week': growth_week,
             'growth_month': growth_month,
             'conversion_funnel': conversion_funnel,

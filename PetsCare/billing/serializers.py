@@ -1,4 +1,5 @@
 from rest_framework import serializers
+from decimal import Decimal
 from .models import (
     Payment, Invoice, Refund,
     Currency, ServicePrice, PaymentHistory, BillingManagerProvider, BillingManagerEvent,
@@ -72,12 +73,19 @@ class PaymentHistorySerializer(serializers.ModelSerializer):
         write_only=True,
         source='currency'
     )
+    outstanding_amount = serializers.DecimalField(
+        source='outstanding_amount',
+        max_digits=10,
+        decimal_places=2,
+        read_only=True
+    )
 
     class Meta:
         model = PaymentHistory
         fields = [
             'id', 'provider', 'invoice', 'offer_acceptance',
             'amount', 'currency', 'currency_id',
+            'paid_amount', 'refunded_amount', 'outstanding_amount',
             'due_date', 'payment_date', 'status', 'description',
             'created_at', 'updated_at'
         ]
@@ -104,8 +112,10 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = [
-            'id', 'booking', 'amount', 'status', 'payment_method',
-            'transaction_id', 'created_at', 'updated_at'
+            'id', 'provider', 'booking', 'invoice',
+            'amount', 'status', 'payment_method',
+            'transaction_id', 'notes', 'applied_at',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -114,13 +124,62 @@ class InvoiceSerializer(serializers.ModelSerializer):
     """
     Сериализатор для счетов.
     """
+    provider_name = serializers.ReadOnlyField(source='provider.name')
+    currency_code = serializers.ReadOnlyField(source='currency.code')
+    payment_status = serializers.SerializerMethodField()
+    payment_due_date = serializers.SerializerMethodField()
+    payment_date = serializers.SerializerMethodField()
+    paid_amount = serializers.SerializerMethodField()
+    refunded_amount = serializers.SerializerMethodField()
+    outstanding_amount = serializers.SerializerMethodField()
+    pdf_download_url = serializers.SerializerMethodField()
+
     class Meta:
         model = Invoice
         fields = [
-            'id', 'provider', 'number', 'start_date', 'end_date', 'amount', 'currency', 'status',
+            'id', 'provider', 'provider_name', 'number',
+            'start_date', 'end_date', 'amount', 'currency', 'currency_code', 'status',
+            'payment_status', 'payment_due_date', 'payment_date',
+            'paid_amount', 'refunded_amount', 'outstanding_amount',
+            'pdf_download_url',
             'issued_at', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'number', 'created_at', 'updated_at']
+
+    def _get_payment_record(self, obj):
+        """Возвращает связанную запись оплаты, если она существует."""
+        return obj.payment_record
+
+    def get_payment_status(self, obj):
+        payment_record = self._get_payment_record(obj)
+        return payment_record.status if payment_record else None
+
+    def get_payment_due_date(self, obj):
+        payment_record = self._get_payment_record(obj)
+        return payment_record.due_date if payment_record else None
+
+    def get_payment_date(self, obj):
+        payment_record = self._get_payment_record(obj)
+        return payment_record.payment_date if payment_record else None
+
+    def get_paid_amount(self, obj):
+        payment_record = self._get_payment_record(obj)
+        return payment_record.paid_amount if payment_record else Decimal('0.00')
+
+    def get_refunded_amount(self, obj):
+        payment_record = self._get_payment_record(obj)
+        return payment_record.refunded_amount if payment_record else Decimal('0.00')
+
+    def get_outstanding_amount(self, obj):
+        payment_record = self._get_payment_record(obj)
+        return payment_record.outstanding_amount if payment_record else obj.amount
+
+    def get_pdf_download_url(self, obj):
+        """Возвращает URL скачивания PDF-файла счета."""
+        request = self.context.get('request')
+        if request is None:
+            return None
+        return request.build_absolute_uri(f'/api/v1/invoices/{obj.pk}/download-pdf/')
 
 
 class RefundSerializer(serializers.ModelSerializer):
@@ -142,7 +201,7 @@ class PaymentCreateSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = Payment
-        fields = ['booking', 'amount', 'payment_method']
+        fields = ['provider', 'booking', 'invoice', 'amount', 'payment_method', 'status', 'notes']
 
 
 class RefundCreateSerializer(serializers.ModelSerializer):
@@ -184,7 +243,7 @@ class ProviderBlockingSerializer(serializers.ModelSerializer):
         model = ProviderBlocking
         fields = [
             'id', 'provider', 'provider_name', 'blocking_rule', 
-            'blocking_rule_name', 'status', 'debt_amount', 'overdue_days', 
+            'blocking_rule_name', 'status', 'blocking_level', 'debt_amount', 'overdue_days', 
             'currency', 'currency_code', 'blocked_at', 'resolved_at', 
             'resolved_by', 'resolved_by_username', 'notes'
         ]

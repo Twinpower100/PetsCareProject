@@ -9,6 +9,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase, APIRequestFactory
 
 from booking.constants import (
+    BOOKING_STATUS_ACTIVE,
     BOOKING_STATUS_CANCELLED,
     BOOKING_STATUS_COMPLETED,
     CANCELLED_BY_PROVIDER,
@@ -20,6 +21,7 @@ from booking.constants import (
     COMPLETION_REASON_AUTO_TIMEOUT,
 )
 from booking.models import (
+    Booking,
     BookingAutoCompleteSettings,
     BookingCancellationReason,
     BookingPayment,
@@ -28,7 +30,7 @@ from booking.models import (
 from booking.serializers import BookingSerializer
 from booking.services import BookingCompletionService
 from booking.test_booking_flow_logic import BookingFlowBaseMixin
-from pets.models import ChronicCondition, PetDocument, PetHealthNote, VisitRecord, VisitRecordAddendum
+from pets.models import ChronicCondition, DocumentType, PetDocument, PetHealthNote, VisitRecord, VisitRecordAddendum
 
 
 class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
@@ -138,7 +140,7 @@ class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         future_booking.refresh_from_db()
         self.assertEqual(future_booking.status.name, 'active')
-        self.assertIn('error', response.data)
+        self.assertIn('error', response.data)  # type: ignore[arg-type]
 
     def test_completion_can_create_pet_record_entry(self):
         booking = self._create_past_booking()
@@ -270,7 +272,7 @@ class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
         linked_record.refresh_from_db()
         self.assertEqual(linked_record.addenda.count(), 1)
         self.assertEqual(linked_record.addenda.first().content, 'Late clinical clarification')
-        self.assertEqual(response.data['author'], self.employee_a.user.id)
+        self.assertEqual(response.data['author'], self.employee_a.user.id)  # type: ignore[index]
 
     @patch('pets.models.VisitRecord.objects.create')
     def test_completion_visit_record_failure_returns_business_error(self, mocked_create):
@@ -289,7 +291,7 @@ class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertEqual(str(response.data['code']), 'visit_record_save_failed')
+        self.assertEqual(str(response.data['code']), 'visit_record_save_failed')  # type: ignore[index]
         booking.refresh_from_db()
         self.assertEqual(booking.status.name, 'active')
 
@@ -308,7 +310,7 @@ class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('reason_code', response.data)
+        self.assertIn('reason_code', response.data)  # type: ignore[arg-type]
 
     def test_detail_endpoint_returns_compact_but_complete_payload(self):
         booking = self._create_past_booking()
@@ -363,7 +365,7 @@ class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
         )
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        payload = response.data
+        payload: dict = response.data  # type: ignore[assignment]
         self.assertEqual(payload['service']['name_display'], 'Груминг')
         self.assertEqual(payload['pet']['pet_type_name'], 'Собака')
         self.assertEqual(payload['pet']['chronic_conditions'][0]['name_display'], 'Артрит')
@@ -390,11 +392,14 @@ class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
             diagnosis='Linked diagnosis',
             created_by=self.employee_a.user,
         )
+        lab_results_type = DocumentType.objects.get(code='lab_results')
         PetDocument.objects.create(
             file=SimpleUploadedFile('visit-summary.pdf', b'%PDF-1.4 summary', content_type='application/pdf'),
             name='Visit summary',
             pet=booking.pet,
+            document_type=lab_results_type,
             visit_record=linked_record,
+            issue_date=timezone.localdate(),
             uploaded_by=self.employee_a.user,
         )
         VisitRecordAddendum.objects.create(
@@ -410,10 +415,11 @@ class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
         response = self.client.get(f'/api/v1/bookings/{booking.id}/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['visit_record']['id'], linked_record.id)
-        self.assertEqual(response.data['pet_record']['id'], linked_record.id)
-        self.assertEqual(response.data['visit_record']['documents'][0]['name'], 'Visit summary')
-        self.assertEqual(response.data['visit_record']['addenda'][0]['content'], 'Late note')
+        data: dict = response.data  # type: ignore[assignment]
+        self.assertEqual(data['visit_record']['id'], linked_record.id)
+        self.assertEqual(data['pet_record']['id'], linked_record.id)
+        self.assertEqual(data['visit_record']['documents'][0]['name'], 'Visit summary')
+        self.assertEqual(data['visit_record']['addenda'][0]['content'], 'Late note')
 
     def test_detail_endpoint_exposes_legacy_pet_medical_card_aliases(self):
         booking = self._create_past_booking()
@@ -439,8 +445,9 @@ class BookingStatusReworkAPITests(BookingFlowBaseMixin, APITestCase):
         response = self.client.get(f'/api/v1/bookings/{booking.id}/')
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.data['pet']['medical_records'][0]['id'], health_note.id)
-        self.assertEqual(response.data['pet']['records'][0]['id'], visit_record.id)
+        data: dict = response.data  # type: ignore[assignment]
+        self.assertEqual(data['pet']['medical_records'][0]['id'], health_note.id)
+        self.assertEqual(data['pet']['records'][0]['id'], visit_record.id)
 
 
 class BookingStatusReworkDomainTests(BookingFlowBaseMixin, TestCase):
@@ -449,13 +456,14 @@ class BookingStatusReworkDomainTests(BookingFlowBaseMixin, TestCase):
         self.employee_a.user.add_role('employee')
         self.provider_unavailable = BookingCancellationReason.objects.get(code='provider_unavailable')
 
-    def _past_booking(self, *, days_ago=1):
+    def _past_booking(self, *, days_ago=1, **kwargs):
         start_time = timezone.now() - timedelta(days=days_ago, hours=2)
         return self._create_booking(
             pet=self.pet_one,
             location=self.location_a,
             employee=self.employee_a,
             start_time=start_time,
+            **kwargs,
         )
 
     def test_auto_completion_records_system_actor(self):
@@ -472,6 +480,27 @@ class BookingStatusReworkDomainTests(BookingFlowBaseMixin, TestCase):
         self.assertEqual(booking.completed_by_actor, COMPLETED_BY_SYSTEM)
         self.assertIsNone(booking.completed_by_user)
         self.assertEqual(booking.completion_reason_code, COMPLETION_REASON_AUTO_TIMEOUT)
+
+    def test_auto_completion_skips_manual_entry_bookings(self):
+        auto_booking = self._past_booking(days_ago=10)
+        manual_booking = self._past_booking(
+            days_ago=10,
+            source=Booking.BookingSource.MANUAL_ENTRY,
+        )
+        settings = BookingAutoCompleteSettings.get_settings()
+        settings.auto_complete_days = 3
+        settings.save(update_fields=['auto_complete_days', 'updated_at'])
+
+        completed_count = BookingCompletionService.auto_complete_bookings()
+
+        self.assertEqual(completed_count, 1)
+        auto_booking.refresh_from_db()
+        manual_booking.refresh_from_db()
+        self.assertEqual(auto_booking.status.name, BOOKING_STATUS_COMPLETED)
+        self.assertEqual(auto_booking.completed_by_actor, COMPLETED_BY_SYSTEM)
+        self.assertEqual(manual_booking.status.name, BOOKING_STATUS_ACTIVE)
+        self.assertIsNone(manual_booking.completed_at)
+        self.assertEqual(manual_booking.completed_by_actor, '')
 
     def test_serializer_exposes_ui_and_cancellation_metadata(self):
         booking = self._past_booking()

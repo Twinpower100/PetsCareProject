@@ -78,7 +78,7 @@ class GeospatialPerformanceMonitor:
 monitor = GeospatialPerformanceMonitor()
 
 
-def monitor_geospatial_query(metric_name: str = None):
+def monitor_geospatial_query(metric_name: str | None = None):
     """Декоратор для мониторинга геопоисковых запросов."""
     def decorator(func: Callable) -> Callable:
         @wraps(func)
@@ -168,8 +168,14 @@ class GeospatialQueryLogger:
     def __init__(self):
         self.logger = logging.getLogger('geospatial.queries')
     
-    def log_query(self, query_type: str, params: Dict[str, Any], execution_time: float, 
-                  result_count: int = None, error: str = None):
+    def log_query(
+        self,
+        query_type: str,
+        params: Dict[str, Any],
+        execution_time: float,
+        result_count: int | None = None,
+        error: str | None = None,
+    ):
         """Логирует геопоисковый запрос."""
         log_data = {
             'query_type': query_type,

@@ -48,10 +48,10 @@ class NotificationService:
         notification_type: str,
         title: str,
         message: str,
-        channels: List[str] = None,
+        channels: List[str] | None = None,
         priority: str = 'medium',
         pet=None,
-        data: Dict[str, Any] = None,
+        data: Dict[str, Any] | None = None,
         scheduled_for: Optional[timezone.datetime] = None
     ) -> "Notification":
         """
@@ -74,8 +74,9 @@ class NotificationService:
         try:
             with transaction.atomic():
                 # Определяем каналы доставки
-                if channels is None:
-                    channels = self._get_user_channels(user, notification_type)
+                channels_list: List[str] = (
+                    channels if channels is not None else self._get_user_channels(user, notification_type)
+                )
                 
                 # Создаем уведомление
                 notification = Notification.objects.create(
@@ -84,15 +85,15 @@ class NotificationService:
                     title=title,
                     message=message,
                     priority=priority,
-                    channel='all' if 'all' in channels else ','.join(channels),
+                    channel='all' if 'all' in channels_list else ','.join(channels_list),
                     pet=pet,
-                    data=data or {},
+                    data=data if data is not None else {},
                     scheduled_for=scheduled_for
                 )
                 
                 # Если уведомление не отложенное, отправляем сразу
                 if not scheduled_for or scheduled_for <= timezone.now():
-                    self._send_notification(notification, channels)
+                    self._send_notification(notification, channels_list)
                 
                 return notification
                 
@@ -106,9 +107,9 @@ class NotificationService:
         notification_type: str,
         title: str,
         message: str,
-        channels: List[str] = None,
+        channels: List[str] | None = None,
         priority: str = 'medium',
-        data: Dict[str, Any] = None
+        data: Dict[str, Any] | None = None
     ) -> List["Notification"]:
         """
         Отправляет уведомления группе пользователей.
@@ -441,10 +442,10 @@ class SchedulerService:
         title: str,
         message: str,
         scheduled_for: timezone.datetime,
-        channels: List[str] = None,
+        channels: List[str] | None = None,
         priority: str = 'medium',
         pet=None,
-        data: Dict[str, Any] = None
+        data: Dict[str, Any] | None = None
     ) -> "Notification":
         """
         Планирует отложенное уведомление.

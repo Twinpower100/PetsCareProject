@@ -32,6 +32,7 @@ router = DefaultRouter()
 urlpatterns = [
     # Маршруты ViewSets
     path('', include(router.urls)),
+    path('provider/dashboard/', api_views.ProviderDashboardAPIView.as_view(), name='provider-dashboard'),
     
     # CRUD endpoints согласно ФД
     path('providers/', api_views.ProviderListCreateAPIView.as_view(), name='provider-list-create'),
@@ -49,8 +50,13 @@ urlpatterns = [
     
     # Дополнительные функции провайдеров
     path('providers/<int:provider_id>/admins/', api_views.ProviderAdminListAPIView.as_view(), name='provider-admin-list'),
+    path('providers/<int:provider_id>/my-permissions/', api_views.ProviderMyPermissionsAPIView.as_view(), name='provider-my-permissions'),
     path('providers/<int:provider_id>/admins/assign-self/', api_views.ProviderAdminAssignSelfAPIView.as_view(), name='provider-admin-assign-self'),
     path('providers/<int:provider_id>/admins/revoke/', api_views.ProviderAdminRevokeAPIView.as_view(), name='provider-admin-revoke'),
+    path('providers/<int:provider_id>/reports/', api_views.ProviderReportsAPIView.as_view(), name='provider-reports'),
+    path('providers/<int:provider_id>/reports/exports/', api_views.ProviderReportExportListCreateAPIView.as_view(), name='provider-report-export-list-create'),
+    path('providers/<int:provider_id>/reports/exports/<int:job_id>/', api_views.ProviderReportExportRetrieveAPIView.as_view(), name='provider-report-export-detail'),
+    path('providers/<int:provider_id>/reports/exports/<int:job_id>/download/', api_views.ProviderReportExportDownloadAPIView.as_view(), name='provider-report-export-download'),
     path('providers/<int:provider_id>/availability/', api_views.check_provider_availability, name='check-provider-availability'),
     path('providers/<int:provider_id>/available-catalog-services/', api_views.ProviderAvailableCatalogServicesAPIView.as_view(), name='provider-available-catalog-services'),
     path('providers/<int:provider_id>/prices/', api_views.get_provider_prices, name='get-provider-prices'),
@@ -65,6 +71,7 @@ urlpatterns = [
     path('provider-locations/<int:pk>/manager-invite/', api_views.CancelLocationManagerInviteAPIView.as_view(), name='location-cancel-manager-invite'),
     # Персонал филиала: список (создание/отмена инвайтов — через POST/DELETE /api/v1/invites/)
     path('provider-locations/<int:pk>/staff/', api_views.LocationStaffListAPIView.as_view(), name='location-staff-list'),
+    path('provider-locations/<int:location_pk>/reports/', api_views.ProviderLocationReportsAPIView.as_view(), name='location-reports'),
     path('provider-locations/<int:location_pk>/staff/<int:employee_id>/deactivate/', api_views.LocationStaffDeactivateAPIView.as_view(), name='location-staff-deactivate'),
     path('provider-locations/<int:location_pk>/staff/<int:employee_id>/reactivate/', api_views.LocationStaffReactivateAPIView.as_view(), name='location-staff-reactivate'),
     path('provider-locations/<int:location_pk>/staff/<int:employee_id>/services/', api_views.LocationStaffServicesAPIView.as_view(), name='location-staff-services'),

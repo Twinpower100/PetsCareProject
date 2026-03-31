@@ -5,7 +5,11 @@
         "PetsCare"
     ],
     "pythonVersion": "3.13",
+    "stubPath": "",
     "typeCheckingMode": "basic",
+    "exclude": [
+        "**/migrations/**"
+    ],
     "reportAttributeAccessIssue": false,
     "reportOptionalMemberAccess": false,
     "reportGeneralTypeIssues": false,

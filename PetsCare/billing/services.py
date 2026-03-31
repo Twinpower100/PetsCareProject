@@ -1,356 +1,448 @@
 """
-Сервисы для работы с биллингом и блокировкой учреждений.
-
-Этот модуль содержит сервисы для:
-1. Многоуровневой блокировки учреждений по задолженности
-2. Управления уведомлениями о блокировке
-3. Интеграции с договорами и правилами блокировки
+Сервисы для расчета задолженности и уровней блокировки провайдеров.
 """
 
 import logging
 from decimal import Decimal
+from typing import Any, Dict, List, Optional
+
+from django.db import transaction
 from django.utils import timezone
 from django.utils.translation import gettext as _
-from django.db import transaction
-from django.core.mail import send_mail
-from django.conf import settings
-import requests
-from typing import Dict, Optional, Any
+
+from providers.models import EmployeeProvider, Provider
+
 from .models import (
-    BlockingRule, ProviderBlocking, BlockingNotification,
-    BillingManagerProvider, BlockingSystemSettings
+    BlockingNotification,
+    BlockingRule,
+    BlockingSystemSettings,
+    ProviderBlocking,
 )
-from providers.models import Provider
 
 logger = logging.getLogger(__name__)
 
 
 class MultiLevelBlockingService:
     """
-    Сервис для многоуровневой блокировки учреждений.
-    
-    Особенности:
-    - Проверка задолженности по договорам
-    - Применение различных уровней блокировки
-    - Учет настроек системы блокировки
-    - Поддержка исключений из автоматических проверок
-    - Интеграция с уведомлениями
+    Единый источник истины для расчета и применения блокировок.
+
+    Сервис:
+    - рассчитывает уровень блокировки из фактической задолженности,
+    - создает или обновляет активную запись ProviderBlocking,
+    - снимает блокировку, когда оснований больше нет,
+    - формирует уведомления для администраторов провайдера.
     """
-    
+
     def __init__(self):
         self.settings = BlockingSystemSettings.get_settings()
-    
-    def check_provider_blocking(self, provider):
+
+    def check_provider_blocking(self, provider: Provider) -> Dict[str, Any]:
         """
-        Проверяет необходимость блокировки учреждения.
-        
-        Args:
-            provider: Объект Provider
-            
-        Returns:
-            dict: Результат проверки
+        Возвращает нормализованный результат проверки блокировки провайдера.
         """
-        # Проверяем, исключено ли учреждение из автоматических проверок
         if provider.exclude_from_blocking_checks:
             return {
+                'provider': provider,
                 'should_block': False,
+                'blocking_level': 0,
+                'reasons': [],
                 'reason': 'Provider excluded from automatic blocking checks',
-                'exclusion_reason': provider.blocking_exclusion_reason
             }
-        
-        # Проверяем наличие активной оферты
+
         if not provider.has_active_offer_acceptance():
             return {
+                'provider': provider,
                 'should_block': False,
-                'reason': 'No active offer acceptance found'
+                'blocking_level': 0,
+                'reasons': [],
+                'reason': 'Provider has no active offer acceptance',
             }
-        
-        # Проверяем провайдера на блокировку
-        result = self._check_provider_offer_blocking(provider)
-        
-        return {
-            'should_block': result['should_block'],
-            'blocking_level': result['blocking_level'],
-            'reasons': [result['reason']] if result['reason'] else [],
-            'provider': provider
-        }
-    
-    def _check_provider_offer_blocking(self, provider):
-        """
-        Проверяет необходимость блокировки провайдера на основе оферты и Invoice.
-        
-        Args:
-            provider: Объект Provider
-            
-        Returns:
-            dict: Результат проверки
-        """
-        # Рассчитываем задолженность через Invoice
+
         debt_info = provider.calculate_debt()
-        total_debt = debt_info['total_debt']
-        overdue_debt = debt_info['overdue_debt']
-        
-        # Получаем максимальное количество дней просрочки
-        max_overdue_days = provider.get_max_overdue_days()
-        
-        # Получаем пороги блокировки
+        overdue_days = provider.get_max_overdue_days()
         thresholds = provider.get_blocking_thresholds()
-        
-        # Проверяем пороги блокировки
-        blocking_level = 0
-        reason = None
-        
-        # Проверка по сумме задолженности
-        if thresholds['debt_threshold'] and total_debt > thresholds['debt_threshold']:
-            blocking_level = max(blocking_level, 3)
-            reason = _("Debt threshold exceeded: %(debt)s > %(threshold)s") % {
-                'debt': total_debt,
-                'threshold': thresholds['debt_threshold']
-            }
-        
-        # Проверка по дням просрочки
-        if thresholds['overdue_threshold_3'] and max_overdue_days >= thresholds['overdue_threshold_3']:
-            blocking_level = max(blocking_level, 3)
-            reason = _("Critical overdue: %(days)s days >= %(threshold)s") % {
-                'days': max_overdue_days,
-                'threshold': thresholds['overdue_threshold_3']
-            }
-        elif thresholds['overdue_threshold_2'] and max_overdue_days >= thresholds['overdue_threshold_2']:
-            blocking_level = max(blocking_level, 2)
-            reason = _("High overdue: %(days)s days >= %(threshold)s") % {
-                'days': max_overdue_days,
-                'threshold': thresholds['overdue_threshold_2']
-            }
-        elif thresholds['overdue_threshold_1'] and max_overdue_days >= thresholds['overdue_threshold_1']:
-            blocking_level = max(blocking_level, 1)
-            reason = _("Information overdue: %(days)s days >= %(threshold)s") % {
-                'days': max_overdue_days,
-                'threshold': thresholds['overdue_threshold_1']
-            }
-        
+
+        blocking_level = self._resolve_blocking_level(
+            total_debt=debt_info['total_debt'],
+            overdue_days=overdue_days,
+            thresholds=thresholds,
+        )
+        reasons = self._build_reasons(
+            total_debt=debt_info['total_debt'],
+            overdue_debt=debt_info['overdue_debt'],
+            overdue_days=overdue_days,
+            thresholds=thresholds,
+            blocking_level=blocking_level,
+        )
+
+        active_blocking = ProviderBlocking.objects.filter(
+            provider=provider,
+            status='active',
+        ).order_by('-blocked_at').first()
+
         return {
+            'provider': provider,
             'should_block': blocking_level > 0,
             'blocking_level': blocking_level,
-            'reason': reason,
-            'total_debt': total_debt,
-            'overdue_days': max_overdue_days,
-            'provider': provider
+            'reasons': reasons,
+            'reason': reasons[0] if reasons else None,
+            'debt_info': debt_info,
+            'overdue_days': overdue_days,
+            'thresholds': thresholds,
+            'active_blocking': active_blocking,
         }
-    
-    def apply_blocking(self, provider, blocking_level, reasons):
+
+    def _resolve_blocking_level(
+        self,
+        *,
+        total_debt: Decimal,
+        overdue_days: int,
+        thresholds: Dict[str, Any],
+    ) -> int:
         """
-        Применяет блокировку к учреждению.
-        
-        Args:
-            provider: Объект Provider
-            blocking_level: Уровень блокировки (1-3)
-            reasons: Список причин блокировки
-            
-        Returns:
-            ProviderBlocking: Созданная запись блокировки
+        Рассчитывает уровень блокировки по общей задолженности и просрочке.
         """
-        # Рассчитываем задолженность для блокировки
-        debt_info = provider.calculate_debt()
-        
-        # Создаем запись блокировки
-        blocking = ProviderBlocking.objects.create(
-            provider=provider,
-            blocking_rule=None,  # Будет создано автоматически
-            status='active',
-            debt_amount=debt_info['total_debt'],
-            overdue_days=provider.get_max_overdue_days(),
-            currency=debt_info['currency'],
-            notes=_("Automatic blocking level %(level)s: %(reasons)s") % {
-                'level': blocking_level,
-                'reasons': '; '.join(reasons)
-            }
-        )
-        
-        # Создаем уведомления
-        self._create_notifications(blocking, blocking_level)
-        
-        # Логируем действие
-        if self.settings.log_all_checks:
-            self._log_blocking_action(blocking, blocking_level, reasons)
-        
-        return blocking
-    
-    def _create_notifications(self, blocking, blocking_level):
+        debt_threshold = thresholds.get('debt_threshold')
+        threshold_1 = int(thresholds.get('overdue_threshold_1') or 0)
+        threshold_2 = int(thresholds.get('overdue_threshold_2') or 0)
+        threshold_3 = int(thresholds.get('overdue_threshold_3') or 0)
+
+        if debt_threshold is not None and Decimal(total_debt) > Decimal(str(debt_threshold)):
+            return 3
+        if threshold_3 and overdue_days >= threshold_3:
+            return 3
+        if threshold_2 and overdue_days >= threshold_2:
+            return 2
+        if threshold_1 and overdue_days >= threshold_1:
+            return 1
+        return 0
+
+    def _build_reasons(
+        self,
+        *,
+        total_debt: Decimal,
+        overdue_debt: Decimal,
+        overdue_days: int,
+        thresholds: Dict[str, Any],
+        blocking_level: int,
+    ) -> List[str]:
         """
-        Создает уведомления о блокировке.
-        
-        Args:
-            blocking: Объект ProviderBlocking
-            blocking_level: Уровень блокировки
+        Формирует список причин для UI, логов и уведомлений.
         """
-        # Получаем получателей уведомлений
-        recipients = blocking.provider.get_notification_recipients()
-        
-        # Создаем уведомления с задержкой
-        for recipient in recipients:
-            notification = BlockingNotification.objects.create(
-                provider_blocking=blocking,
-                notification_type='blocking_activated',
-                status='pending',
-                recipient_email=recipient.get('email'),
-                recipient_phone=recipient.get('phone'),
-                subject=_("Provider Blocking — Level %(level)s") % {'level': blocking_level},
-                message=self._generate_notification_message(blocking, blocking_level)
-            )
-    
-    def _generate_notification_message(self, blocking, blocking_level):
-        """
-        Генерирует текст уведомления о блокировке.
-        
-        Args:
-            blocking: Объект ProviderBlocking
-            blocking_level: Уровень блокировки
-            
-        Returns:
-            str: Текст уведомления
-        """
-        level_descriptions = {
-            1: "Information notification",
-            2: "Exclusion from search",
-            3: "Full blocking"
-        }
-        
-        return f"""
-Provider: {blocking.provider.name}
-Blocking Level: {blocking_level} ({level_descriptions.get(blocking_level, 'Unknown')})
-Debt Amount: {blocking.debt_amount} {blocking.currency.code}
-Overdue Days: {blocking.overdue_days}
-Blocked At: {blocking.blocked_at}
-Notes: {blocking.notes}
-        """.strip()
-    
-    def _log_blocking_action(self, blocking, blocking_level, reasons):
-        """
-        Логирует действие блокировки.
-        
-        Args:
-            blocking: Объект ProviderBlocking
-            blocking_level: Уровень блокировки
-            reasons: Список причин
-        """
-        import logging
-        logger = logging.getLogger('blocking')
-        
-        logger.info(
-            f"Provider {blocking.provider.name} blocked at level {blocking_level}. "
-            f"Reasons: {'; '.join(reasons)}. "
-            f"Debt: {blocking.debt_amount} {blocking.currency.code}, "
-            f"Overdue: {blocking.overdue_days} days"
-        )
-    
-    def resolve_blocking(self, blocking, resolved_by=None, notes=''):
-        """
-        Снимает блокировку с учреждения.
-        
-        Args:
-            blocking: Объект ProviderBlocking
-            resolved_by: Пользователь, снявший блокировку
-            notes: Примечания
-            
-        Returns:
-            ProviderBlocking: Обновленная запись блокировки
-        """
-        blocking.resolve(resolved_by, notes)
-        
-        # Создаем уведомление о снятии блокировки
-        self._create_resolution_notification(blocking)
-        
-        # Логируем действие
-        if self.settings.log_resolutions:
-            self._log_resolution_action(blocking, resolved_by)
-        
-        return blocking
-    
-    def _create_resolution_notification(self, blocking):
-        """
-        Создает уведомление о снятии блокировки.
-        
-        Args:
-            blocking: Объект ProviderBlocking
-        """
-        recipients = blocking.provider.get_notification_recipients()
-        
-        for recipient in recipients:
-            notification = BlockingNotification.objects.create(
-                provider_blocking=blocking,
-                notification_type='blocking_resolved',
-                status='pending',
-                recipient_email=recipient.get('email'),
-                recipient_phone=recipient.get('phone'),
-                subject=_("Provider Blocking Resolved"),
-                message=_("Blocking for provider %(provider)s has been resolved.") % {
-                    'provider': blocking.provider.name
+        if blocking_level == 0:
+            return []
+
+        reasons: List[str] = []
+        debt_threshold = thresholds.get('debt_threshold')
+        threshold_1 = thresholds.get('overdue_threshold_1')
+        threshold_2 = thresholds.get('overdue_threshold_2')
+        threshold_3 = thresholds.get('overdue_threshold_3')
+
+        if debt_threshold is not None and Decimal(total_debt) > Decimal(str(debt_threshold)):
+            reasons.append(
+                _("Debt threshold exceeded: %(debt)s > %(threshold)s") % {
+                    'debt': total_debt,
+                    'threshold': debt_threshold,
                 }
             )
-    
-    def _log_resolution_action(self, blocking, resolved_by):
+
+        if blocking_level == 3 and threshold_3:
+            reasons.append(
+                _("Critical overdue: %(days)s days >= %(threshold)s") % {
+                    'days': overdue_days,
+                    'threshold': threshold_3,
+                }
+            )
+        elif blocking_level == 2 and threshold_2:
+            reasons.append(
+                _("Search visibility disabled: %(days)s days >= %(threshold)s") % {
+                    'days': overdue_days,
+                    'threshold': threshold_2,
+                }
+            )
+        elif blocking_level == 1 and threshold_1:
+            reasons.append(
+                _("Payment warning: %(days)s days >= %(threshold)s") % {
+                    'days': overdue_days,
+                    'threshold': threshold_1,
+                }
+            )
+
+        if overdue_debt > Decimal('0.00'):
+            reasons.append(
+                _("Overdue amount: %(amount)s") % {
+                    'amount': overdue_debt,
+                }
+            )
+
+        return reasons
+
+    @transaction.atomic
+    def apply_blocking(
+        self,
+        provider: Provider,
+        blocking_level: int,
+        reasons: List[str],
+        *,
+        debt_info: Optional[Dict[str, Any]] = None,
+        overdue_days: Optional[int] = None,
+        thresholds: Optional[Dict[str, Any]] = None,
+    ) -> ProviderBlocking:
         """
-        Логирует снятие блокировки.
-        
-        Args:
-            blocking: Объект ProviderBlocking
-            resolved_by: Пользователь, снявший блокировку
+        Создает или обновляет активную блокировку нужного уровня.
         """
-        import logging
-        logger = logging.getLogger('blocking')
-        
-        resolved_by_name = resolved_by.get_full_name() if resolved_by else 'System'
-        
-        logger.info(
-            f"Provider {blocking.provider.name} blocking resolved by {resolved_by_name}. "
-            f"Resolution date: {blocking.resolved_at}"
+        debt_info = debt_info or provider.calculate_debt()
+        overdue_days = overdue_days if overdue_days is not None else provider.get_max_overdue_days()
+        thresholds = thresholds or provider.get_blocking_thresholds()
+
+        active_blockings = list(
+            ProviderBlocking.objects.select_for_update().filter(
+                provider=provider,
+                status='active',
+            )
         )
-    
-    def check_all_providers(self):
-        """
-        Проверяет все учреждения на необходимость блокировки.
-        
-        Returns:
-            dict: Статистика проверки
-        """
-        from providers.models import Provider
-        
-        # Получаем все активные учреждения
-        providers = Provider.objects.filter(
-            is_active=True,
-            exclude_from_blocking_checks=False
+
+        current_blocking = next(
+            (blocking for blocking in active_blockings if blocking.blocking_level == blocking_level),
+            None,
         )
-        
+
+        for blocking in active_blockings:
+            if current_blocking is None or blocking.id != current_blocking.id:
+                blocking.resolve(notes='Superseded by a new billing blocking evaluation')
+
+        blocking_rule = self._get_or_create_rule(blocking_level, thresholds)
+        notes = '; '.join(reasons)
+
+        if current_blocking:
+            current_blocking.blocking_rule = blocking_rule
+            current_blocking.debt_amount = debt_info['total_debt']
+            current_blocking.overdue_days = overdue_days
+            current_blocking.currency = debt_info['currency']
+            current_blocking.notes = notes
+            current_blocking.save(
+                update_fields=[
+                    'blocking_rule',
+                    'debt_amount',
+                    'overdue_days',
+                    'currency',
+                    'notes',
+                ]
+            )
+            blocking = current_blocking
+            blocking_changed = False
+        else:
+            blocking = ProviderBlocking.objects.create(
+                provider=provider,
+                blocking_rule=blocking_rule,
+                blocking_level=blocking_level,
+                status='active',
+                debt_amount=debt_info['total_debt'],
+                overdue_days=overdue_days,
+                currency=debt_info['currency'],
+                notes=notes,
+            )
+            blocking_changed = True
+
+        if blocking_level == 1:
+            self._ensure_warning_notification(blocking)
+        elif blocking_changed:
+            self._create_notifications(blocking)
+
+        if self.settings.log_all_checks:
+            logger.info(
+                "Provider %s evaluated to blocking level %s (debt=%s, overdue_days=%s)",
+                provider.id,
+                blocking_level,
+                debt_info['total_debt'],
+                overdue_days,
+            )
+
+        return blocking
+
+    @transaction.atomic
+    def resolve_provider_blocking(self, provider: Provider, notes: str = '') -> int:
+        """
+        Снимает все активные блокировки провайдера.
+        """
+        active_blockings = ProviderBlocking.objects.select_for_update().filter(
+            provider=provider,
+            status='active',
+        )
+        resolved_count = 0
+        for blocking in active_blockings:
+            blocking.resolve(notes=notes or 'Billing debt resolved')
+            self._create_resolution_notification(blocking)
+            resolved_count += 1
+        return resolved_count
+
+    def check_all_providers(self) -> Dict[str, Any]:
+        """
+        Выполняет полную проверку всех активных провайдеров.
+        """
+        providers = Provider.objects.filter(is_active=True)
         stats = {
             'total_providers': providers.count(),
             'checked_providers': 0,
             'blocked_providers': 0,
+            'resolved_blockings': 0,
             'warnings': 0,
-            'errors': []
+            'errors': [],
         }
-        
-        for provider in providers:
+
+        for provider in providers.iterator():
             try:
                 result = self.check_provider_blocking(provider)
                 stats['checked_providers'] += 1
-                
+
                 if result['should_block']:
-                    # Применяем блокировку
-                    blocking = self.apply_blocking(
+                    self.apply_blocking(
                         provider,
                         result['blocking_level'],
-                        result['reasons']
+                        result['reasons'],
+                        debt_info=result['debt_info'],
+                        overdue_days=result['overdue_days'],
+                        thresholds=result['thresholds'],
                     )
                     stats['blocked_providers'] += 1
-                    
-                    # Если уровень блокировки 1, считаем как предупреждение
                     if result['blocking_level'] == 1:
                         stats['warnings'] += 1
-                        
-            except Exception as e:
-                stats['errors'].append(f"Error checking provider {provider.name}: {str(e)}")
-        
-        return stats 
+                else:
+                    stats['resolved_blockings'] += self.resolve_provider_blocking(
+                        provider,
+                        notes='Billing blocking automatically removed after reevaluation',
+                    )
+            except Exception as exc:
+                logger.exception("Error while checking provider %s for billing blocking", provider.id)
+                stats['errors'].append(f"Provider {provider.id}: {exc}")
 
+        return stats
 
-# Функции уведомлений для workflow согласования контрактов удалены - используется LegalDocument и DocumentAcceptance 
+    def _get_or_create_rule(self, blocking_level: int, thresholds: Dict[str, Any]) -> BlockingRule:
+        """
+        Возвращает служебное правило блокировки для указанного уровня.
+        """
+        overdue_threshold_map = {
+            1: int(thresholds.get('overdue_threshold_1') or 0),
+            2: int(thresholds.get('overdue_threshold_2') or 0),
+            3: int(thresholds.get('overdue_threshold_3') or 0),
+        }
+        debt_threshold = Decimal(str(thresholds.get('debt_threshold') or '0.00'))
+
+        rule, _ = BlockingRule.objects.get_or_create(
+            name=f'Automatic billing blocking L{blocking_level}',
+            defaults={
+                'description': 'Automatically maintained by MultiLevelBlockingService',
+                'debt_amount_threshold': debt_threshold,
+                'overdue_days_threshold': overdue_threshold_map[blocking_level],
+                'priority': blocking_level,
+                'is_active': True,
+            },
+        )
+
+        fields_to_update: List[str] = []
+        if rule.debt_amount_threshold != debt_threshold:
+            rule.debt_amount_threshold = debt_threshold
+            fields_to_update.append('debt_amount_threshold')
+        if rule.overdue_days_threshold != overdue_threshold_map[blocking_level]:
+            rule.overdue_days_threshold = overdue_threshold_map[blocking_level]
+            fields_to_update.append('overdue_days_threshold')
+        if not rule.is_active:
+            rule.is_active = True
+            fields_to_update.append('is_active')
+        if fields_to_update:
+            rule.save(update_fields=fields_to_update)
+
+        return rule
+
+    def _create_notifications(self, blocking: ProviderBlocking) -> None:
+        """
+        Создает уведомления о включении блокировки.
+        """
+        recipients = self._get_notification_recipients(blocking.provider)
+        for recipient in recipients:
+            BlockingNotification.objects.create(
+                provider_blocking=blocking,
+                notification_type='blocking_activated',
+                status='pending',
+                recipient_email=recipient.get('email', ''),
+                recipient_phone=recipient.get('phone', ''),
+                subject=_("Provider billing blocking level %(level)s") % {
+                    'level': blocking.blocking_level,
+                },
+                message=self._build_notification_message(blocking),
+            )
+
+    def _ensure_warning_notification(self, blocking: ProviderBlocking) -> None:
+        """
+        Создает warning-уведомление для уровня 1 только один раз на активную блокировку.
+        """
+        if blocking.notifications.filter(notification_type='blocking_warning').exists():
+            return
+
+        recipients = self._get_notification_recipients(blocking.provider)
+        for recipient in recipients:
+            BlockingNotification.objects.create(
+                provider_blocking=blocking,
+                notification_type='blocking_warning',
+                status='pending',
+                recipient_email=recipient.get('email', ''),
+                recipient_phone=recipient.get('phone', ''),
+                subject=_("Provider payment warning"),
+                message=self._build_notification_message(blocking),
+            )
+
+    def _create_resolution_notification(self, blocking: ProviderBlocking) -> None:
+        """
+        Создает уведомление о снятии блокировки.
+        """
+        recipients = self._get_notification_recipients(blocking.provider)
+        for recipient in recipients:
+            BlockingNotification.objects.create(
+                provider_blocking=blocking,
+                notification_type='blocking_resolved',
+                status='pending',
+                recipient_email=recipient.get('email', ''),
+                recipient_phone=recipient.get('phone', ''),
+                subject=_("Provider billing blocking resolved"),
+                message=_("Provider %(provider)s is no longer blocked for billing reasons.") % {
+                    'provider': blocking.provider.name,
+                },
+            )
+
+    def _get_notification_recipients(self, provider: Provider) -> List[Dict[str, str]]:
+        """
+        Возвращает получателей уведомлений для организации.
+        """
+        recipients: List[Dict[str, str]] = []
+        admin_links = EmployeeProvider.get_active_admin_links(provider)
+        for admin_link in admin_links:
+            user = admin_link.employee.user
+            if user.email:
+                recipients.append({
+                    'email': user.email,
+                    'phone': getattr(user, 'phone_number', '') or '',
+                })
+
+        if not recipients and provider.email:
+            recipients.append({
+                'email': provider.email,
+                'phone': provider.phone_number or '',
+            })
+
+        return recipients
+
+    def _build_notification_message(self, blocking: ProviderBlocking) -> str:
+        """
+        Формирует стандартное тело уведомления по блокировке.
+        """
+        return _(
+            "Provider %(provider)s has billing blocking level %(level)s. "
+            "Debt: %(debt)s %(currency)s. Overdue days: %(days)s."
+        ) % {
+            'provider': blocking.provider.name,
+            'level': blocking.blocking_level,
+            'debt': blocking.debt_amount,
+            'currency': blocking.currency.code,
+            'days': blocking.overdue_days,
+        }

@@ -1,0 +1,61 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block extrastyle %}
+  {{ block.super }}
+  <link rel="stylesheet" type="text/css" href="{% static "admin/css/dashboard.css" %}">
+{% endblock %}
+
+{% block coltype %}colMS{% endblock %}
+
+{% block bodyclass %}{{ block.super }} dashboard{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+<a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+&rsaquo; <a href="{% url 'admin:app_list' app_label='billing' %}">Billing</a>
+&rsaquo; {% translate 'Billing Reports Dashboard' %}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+    <div class="app-billing module">
+        <table style="width: 100%;">
+            <caption>
+                <a href="#" class="section" title="{% translate 'Reports' %}">{% translate 'Billing Reports' %}</a>
+            </caption>
+            <tbody>
+                <tr class="model-billingreport">
+                    <th scope="row"><a href="{{ provider_debt_url }}">{% translate 'Provider Debt Report' %}</a></th>
+                    <td><a href="{{ provider_debt_url }}" class="viewlink">{% translate 'Open report' %}</a></td>
+                </tr>
+                <tr class="model-billingreport">
+                    <th scope="row"><a href="{{ blocked_providers_url }}">{% translate 'Blocked Providers' %}</a></th>
+                    <td><a href="{{ blocked_providers_url }}" class="viewlink">{% translate 'Open report' %}</a></td>
+                </tr>
+                <tr class="model-billingreport">
+                    <th scope="row"><a href="{{ revenue_report_url }}">{% translate 'Revenue Report' %}</a></th>
+                    <td><a href="{{ revenue_report_url }}" class="viewlink">{% translate 'Open report' %}</a></td>
+                </tr>
+                <tr class="model-billingreport">
+                    <th scope="row"><a href="{{ aging_report_url }}">{% translate 'Aging Report' %}</a></th>
+                    <td><a href="{{ aging_report_url }}" class="viewlink">{% translate 'Open report' %}</a></td>
+                </tr>
+                <tr class="model-billingreport">
+                    <th scope="row"><a href="{{ payment_history_url }}">{% translate 'Payment History' %}</a></th>
+                    <td><a href="{{ payment_history_url }}" class="viewlink">{% translate 'Open register' %}</a></td>
+                </tr>
+                <tr class="model-billingreport">
+                    <th scope="row"><a href="{{ invoice_list_url }}">{% translate 'Invoices' %}</a></th>
+                    <td><a href="{{ invoice_list_url }}" class="viewlink">{% translate 'Open list' %}</a></td>
+                </tr>
+                <tr class="model-billingreport">
+                    <th scope="row"><a href="{{ invoice_export_url }}">{% translate 'Invoices Export' %}</a></th>
+                    <td><a href="{{ invoice_export_url }}" class="addlink">{% translate 'Export to Excel' %}</a></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

@@ -1,3 +1,4 @@
+# pyright: reportInvalidTypeForm=false
 import re
 import logging
 from typing import Dict, List, Optional, Tuple
@@ -415,7 +416,7 @@ class PolicyEnforcementService:
             cache.set('security_policies', policies, 300)  # Кэш на 5 минут
         return policies
     
-    def check_user_compliance(self, user: User, request: HttpRequest = None) -> List[PolicyViolation]:
+    def check_user_compliance(self, user: User, request: HttpRequest | None = None) -> List[PolicyViolation]:
         """Проверить соблюдение политик пользователем"""
         violations = []
         
@@ -427,7 +428,7 @@ class PolicyEnforcementService:
         
         return violations
     
-    def _check_policy_compliance(self, policy: SecurityPolicy, user: User, request: HttpRequest = None) -> Optional[PolicyViolation]:
+    def _check_policy_compliance(self, policy: SecurityPolicy, user: User, request: HttpRequest | None = None) -> Optional[PolicyViolation]:
         """Проверить соблюдение конкретной политики"""
         if policy.policy_type == 'password':
             return self._check_password_policy(policy, user)
@@ -463,7 +464,7 @@ class PolicyEnforcementService:
         
         return None
     
-    def _check_session_policy(self, policy: SecurityPolicy, user: User, request: HttpRequest) -> Optional[PolicyViolation]:
+    def _check_session_policy(self, policy: SecurityPolicy, user: User, request: HttpRequest | None) -> Optional[PolicyViolation]:
         """Проверить политику сессий"""
         params = policy.get_parameters()
         
@@ -487,7 +488,7 @@ class PolicyEnforcementService:
         
         return None
     
-    def _check_access_policy(self, policy: SecurityPolicy, user: User, request: HttpRequest) -> Optional[PolicyViolation]:
+    def _check_access_policy(self, policy: SecurityPolicy, user: User, request: HttpRequest | None) -> Optional[PolicyViolation]:
         """Проверить политику доступа"""
         if not request:
             return None
@@ -528,7 +529,7 @@ class PolicyEnforcementService:
         
         return None
     
-    def _check_data_policy(self, policy: SecurityPolicy, user: User, request: HttpRequest) -> Optional[PolicyViolation]:
+    def _check_data_policy(self, policy: SecurityPolicy, user: User, request: HttpRequest | None) -> Optional[PolicyViolation]:
         """Проверить политику данных"""
         if not request:
             return None
@@ -655,7 +656,7 @@ class SessionMonitoringService:
         
         return violations
     
-    def _check_session_policy(self, policy: SessionPolicy, user: User, request: HttpRequest) -> Optional[PolicyViolation]:
+    def _check_session_policy(self, policy: SessionPolicy, user: User, request: HttpRequest | None) -> Optional[PolicyViolation]:
         """Проверить политику сессии"""
         # Проверить время неактивности
         if hasattr(user, 'last_activity'):
@@ -716,8 +717,10 @@ class AccessControlService:
         
         return violations
     
-    def _check_access_policy(self, policy: AccessPolicy, user: User, request: HttpRequest) -> Optional[PolicyViolation]:
+    def _check_access_policy(self, policy: AccessPolicy, user: User, request: HttpRequest | None) -> Optional[PolicyViolation]:
         """Проверить политику доступа"""
+        if request is None:
+            return None
         client_ip = self._get_client_ip(request)
         
         # Проверить IP-ограничения

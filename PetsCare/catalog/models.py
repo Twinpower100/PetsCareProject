@@ -159,6 +159,35 @@ class Service(models.Model):
         default=True,
         help_text=_('If False, this is a technical/internal service (e.g. cleaning) not bookable by clients.')
     )
+
+    class EmergencyCapabilityMode(models.TextChoices):
+        """Режим разрешения emergency-capability по дереву услуг."""
+
+        INHERIT = 'inherit', _('Inherit')
+        ENABLED = 'enabled', _('Enabled')
+        DISABLED = 'disabled', _('Disabled')
+
+    class ProtocolFamilyMode(models.TextChoices):
+        """Семейство протокола визита с наследованием по дереву услуг."""
+
+        INHERIT = 'inherit', _('Inherit')
+        NONE = 'none', _('None')
+        VETERINARY = 'veterinary', _('Veterinary')
+
+    emergency_capability_mode = models.CharField(
+        _('Emergency Capability Mode'),
+        max_length=16,
+        choices=EmergencyCapabilityMode.choices,
+        default=EmergencyCapabilityMode.INHERIT,
+        help_text=_('Emergency capability is modeled on hierarchy nodes and inherited by descendants by default.'),
+    )
+    protocol_family_mode = models.CharField(
+        _('Protocol Family Mode'),
+        max_length=32,
+        choices=ProtocolFamilyMode.choices,
+        default=ProtocolFamilyMode.INHERIT,
+        help_text=_('Protocol family is modeled on hierarchy nodes and inherited by descendants by default.'),
+    )
     
     # Связь с типами животных
     allowed_pet_types = models.ManyToManyField(
@@ -428,4 +457,28 @@ class Service(models.Model):
             'send_reminders': self.send_reminders,
             'reminder_days_before': self.reminder_days_before
         }
+
+    def resolve_emergency_capable(self) -> bool:
+        """
+        Разрешает emergency capability по цепочке предков.
+
+        Leaf override разрешён, но основная модель остаётся иерархической.
+        """
+        current = self
+        while current is not None:
+            if current.emergency_capability_mode == self.EmergencyCapabilityMode.ENABLED:
+                return True
+            if current.emergency_capability_mode == self.EmergencyCapabilityMode.DISABLED:
+                return False
+            current = current.parent
+        return False
+
+    def resolve_protocol_family(self) -> str:
+        """Разрешает protocol family по цепочке предков."""
+        current = self
+        while current is not None:
+            if current.protocol_family_mode != self.ProtocolFamilyMode.INHERIT:
+                return current.protocol_family_mode
+            current = current.parent
+        return self.ProtocolFamilyMode.NONE
 

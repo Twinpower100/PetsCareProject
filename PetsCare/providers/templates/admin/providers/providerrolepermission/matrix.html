@@ -1,0 +1,33 @@
+{% extends "admin/base_site.html" %}
+
+{% block content %}
+  <div id="content-main">
+    <p>Resource names are shown with codes to keep the matrix readable in the custom admin.</p>
+    <div style="overflow:auto;">
+      <table class="adminlist" style="min-width: 960px; width: 100%;">
+        <thead>
+          <tr>
+            <th>Resource</th>
+            {% for role in roles %}
+              <th>{{ role.name }}<br><small>{{ role.code }}</small></th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in matrix_rows %}
+            <tr>
+              <th style="text-align:left;">
+                {{ row.resource.name }}<br><small>{{ row.resource.code }}</small>
+              </th>
+              {% for cell in row.cells %}
+                <td style="text-align:center;">
+                  {{ cell }}
+                </td>
+              {% endfor %}
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
