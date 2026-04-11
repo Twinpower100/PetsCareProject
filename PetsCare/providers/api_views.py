@@ -47,20 +47,38 @@ from .serializers import (
     EmployeeRegistrationSerializer,
     EmployeeProviderUpdateSerializer,
     EmployeeWorkSlotSerializer,
+    BulkLocationReactivateSerializer,
+    LifecycleTransitionSerializer,
     ProviderBriefSerializer, ProviderDetailLiteSerializer,
     ProviderLocationSerializer, ProviderLocationListSerializer, ProviderLocationServiceSerializer,
     LocationScheduleSerializer, HolidayShiftSerializer,
     LocationServicePricesUpdateSerializer,
+    ProviderPricingModeSerializer,
+    ProviderServedPetTypesSerializer,
     ProviderAdminListSerializer,
 )
 from .dashboard_serializers import ProviderDashboardQuerySerializer, ProviderDashboardSerializer
 from .dashboard_services import ProviderDashboardService
+from .lifecycle_services import ProviderLifecycleService
 from .permission_service import ProviderPermissionService, build_provider_permissions_payload
+from .pricing_services import ProviderPricingService
 from .reporting_services import ProviderLocationReportError, ProviderLocationReportingService
 from .tasks import generate_provider_report_export_task
 # from users.permissions import IsProviderAdmin  # Класс определен ниже в этом файле
 from users.models import User
 
+
+def _raise_drf_validation_error(error: ValidationError):
+    """
+    Преобразует django ValidationError в DRF ValidationError.
+    """
+    from rest_framework.exceptions import ValidationError as DRFValidationError
+
+    if hasattr(error, 'message_dict'):
+        raise DRFValidationError(error.message_dict)
+    if hasattr(error, 'messages'):
+        raise DRFValidationError(error.messages)
+    raise DRFValidationError(str(error))
 
 
 def _user_has_role(user, role_name):
@@ -522,6 +540,19 @@ def _user_is_owner_for_provider(user, provider):
     ).filter(_active_employee_provider_q()).exists()
 
 
+def _require_owner_lifecycle_access(user, provider):
+    """
+    Проверяет, что пользователь может выполнять owner-only lifecycle действия.
+    """
+    if ProviderPermissionService._is_system_like(user):
+        return
+    if _user_is_owner_for_provider(user, provider):
+        return
+    if ProviderPermissionService._is_owner_read_only_window(user, provider):
+        return
+    raise PermissionDenied(_('Only the owner can manage organization lifecycle.'))
+
+
 class IsProviderAdmin(permissions.BasePermission):
     """
     Проверка доступа в приложение «Админка провайдеров».
@@ -648,7 +679,7 @@ class ProviderListCreateAPIView(generics.ListCreateAPIView):
     Права доступа:
     - Требуется аутентификация
     """
-    queryset = Provider.objects.filter(is_active=True)
+    queryset = Provider.objects.all()
     serializer_class = ProviderSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
@@ -667,7 +698,7 @@ class ProviderListCreateAPIView(generics.ListCreateAPIView):
             return Provider.objects.none()
         queryset = self.queryset
         if self.request.method == 'GET' and _is_brief_mode(self.request):
-            queryset = queryset.select_related('structured_address')
+            queryset = queryset.select_related('structured_address', 'invoice_currency').prefetch_related('served_pet_types')
         resource_code = 'dashboard' if self.request.method == 'GET' else 'org.profile'
         return _filter_providers_by_permission(queryset, self.request.user, resource_code, 'read')
 
@@ -700,7 +731,7 @@ class ProviderRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView
             return Provider.objects.none()
         queryset = self.queryset
         if self.request.method == 'GET' and _is_brief_mode(self.request):
-            queryset = queryset.select_related('structured_address')
+            queryset = queryset.select_related('structured_address', 'invoice_currency').prefetch_related('served_pet_types')
         action = 'read'
         resource_code = 'org.profile'
         if self.request.method in {'PUT', 'PATCH'}:
@@ -743,6 +774,161 @@ class ProviderMyPermissionsAPIView(APIView):
         if not ProviderPermissionService.get_user_roles_for_provider(request.user, provider):
             raise PermissionDenied(_('You do not have access to this provider.'))
         return Response(build_provider_permissions_payload(request.user, provider))
+
+
+class ProviderPartnershipPauseAPIView(APIView):
+    """Пауза сотрудничества организации."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, provider_id):
+        provider = _get_provider_or_403(request.user, provider_id, 'org.deactivation', 'delete')
+        _require_owner_lifecycle_access(request.user, provider)
+        serializer = LifecycleTransitionSerializer(data=request.data, context={'action': 'pause'})
+        serializer.is_valid(raise_exception=True)
+        result = ProviderLifecycleService.transition_provider(
+            provider_id=provider.id,
+            action='pause',
+            effective_date=serializer.validated_data['effective_date'],
+            resume_date=serializer.validated_data.get('resume_date'),
+            reason=serializer.validated_data.get('reason') or '',
+            initiated_by=request.user,
+            is_staff_override=ProviderPermissionService._is_system_like(request.user),
+        )
+        return Response(result)
+
+
+class ProviderPartnershipTerminateAPIView(APIView):
+    """Прекращение сотрудничества организации."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, provider_id):
+        provider = _get_provider_or_403(request.user, provider_id, 'org.deactivation', 'delete')
+        _require_owner_lifecycle_access(request.user, provider)
+        serializer = LifecycleTransitionSerializer(data=request.data, context={'action': 'terminate'})
+        serializer.is_valid(raise_exception=True)
+        result = ProviderLifecycleService.transition_provider(
+            provider_id=provider.id,
+            action='terminate',
+            effective_date=serializer.validated_data['effective_date'],
+            reason=serializer.validated_data.get('reason') or '',
+            initiated_by=request.user,
+            is_staff_override=ProviderPermissionService._is_system_like(request.user),
+        )
+        return Response(result)
+
+
+class ProviderPartnershipReactivateAPIView(APIView):
+    """Реактивация сотрудничества организации."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, provider_id):
+        provider = get_object_or_404(Provider, pk=provider_id)
+        _require_owner_lifecycle_access(request.user, provider)
+        serializer = LifecycleTransitionSerializer(data=request.data, context={'action': 'reactivate'})
+        serializer.is_valid(raise_exception=True)
+        result = ProviderLifecycleService.transition_provider(
+            provider_id=provider.id,
+            action='reactivate',
+            effective_date=serializer.validated_data['effective_date'],
+            reason=serializer.validated_data.get('reason') or '',
+            initiated_by=request.user,
+            restore_provider_team=True,
+            is_staff_override=ProviderPermissionService._is_system_like(request.user),
+        )
+        return Response(result)
+
+
+class ProviderLocationTemporaryCloseAPIView(APIView):
+    """Временное закрытие филиала."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, provider_id, location_id):
+        location = _get_location_or_403(request, location_id, 'locations.deactivation', 'delete')
+        if location.provider_id != provider_id:
+            raise PermissionDenied(_('Location does not belong to this provider.'))
+        serializer = LifecycleTransitionSerializer(data=request.data, context={'action': 'temporary_close'})
+        serializer.is_valid(raise_exception=True)
+        result = ProviderLifecycleService.transition_location(
+            location_id=location.id,
+            action='temporary_close',
+            effective_date=serializer.validated_data['effective_date'],
+            resume_date=serializer.validated_data.get('resume_date'),
+            reason=serializer.validated_data.get('reason') or '',
+            initiated_by=request.user,
+            is_staff_override=ProviderPermissionService._is_system_like(request.user),
+        )
+        return Response(result)
+
+
+class ProviderLocationDeactivateAPIView(APIView):
+    """Окончательная деактивация филиала."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, provider_id, location_id):
+        location = _get_location_or_403(request, location_id, 'locations.deactivation', 'delete')
+        if location.provider_id != provider_id:
+            raise PermissionDenied(_('Location does not belong to this provider.'))
+        serializer = LifecycleTransitionSerializer(data=request.data, context={'action': 'deactivate'})
+        serializer.is_valid(raise_exception=True)
+        result = ProviderLifecycleService.transition_location(
+            location_id=location.id,
+            action='deactivate',
+            effective_date=serializer.validated_data['effective_date'],
+            reason=serializer.validated_data.get('reason') or '',
+            initiated_by=request.user,
+            is_staff_override=ProviderPermissionService._is_system_like(request.user),
+        )
+        return Response(result)
+
+
+class ProviderLocationReactivateAPIView(APIView):
+    """Реактивация филиала."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, provider_id, location_id):
+        location = _get_location_or_403(request, location_id, 'locations.deactivation', 'delete')
+        if location.provider_id != provider_id:
+            raise PermissionDenied(_('Location does not belong to this provider.'))
+        serializer = LifecycleTransitionSerializer(data=request.data, context={'action': 'reactivate'})
+        serializer.is_valid(raise_exception=True)
+        result = ProviderLifecycleService.transition_location(
+            location_id=location.id,
+            action='reactivate',
+            effective_date=serializer.validated_data['effective_date'],
+            reason=serializer.validated_data.get('reason') or '',
+            initiated_by=request.user,
+            restore_staffing=True,
+            is_staff_override=ProviderPermissionService._is_system_like(request.user),
+        )
+        return Response(result)
+
+
+class ProviderLocationBulkReactivateAPIView(APIView):
+    """Пакетная реактивация филиалов организации."""
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, provider_id):
+        provider = get_object_or_404(Provider, pk=provider_id)
+        _require_owner_lifecycle_access(request.user, provider)
+        serializer = BulkLocationReactivateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        result = ProviderLifecycleService.bulk_reactivate_locations(
+            provider_id=provider.id,
+            location_ids=serializer.validated_data['location_ids'],
+            effective_date=serializer.validated_data['effective_date'],
+            reason=serializer.validated_data.get('reason') or '',
+            restore_staffing=serializer.validated_data.get('restore_staffing', True),
+            initiated_by=request.user,
+            is_staff_override=ProviderPermissionService._is_system_like(request.user),
+        )
+        return Response(result)
 
 
 class ProviderAdminAssignSelfAPIView(APIView):
@@ -3818,6 +4004,10 @@ class ProviderLocationServiceListCreateAPIView(generics.ListCreateAPIView):
             'create',
             target_location=location,
         )
+        try:
+            ProviderPricingService.validate_branch_price_mutation_allowed(provider=location.provider)
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
         service = serializer.validated_data.get('service')
         if service and not service.is_client_facing:
             from rest_framework.exceptions import ValidationError
@@ -3896,8 +4086,12 @@ class ProviderLocationServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdat
             'update',
             target_location=location,
         )
+        try:
+            ProviderPricingService.validate_branch_price_mutation_allowed(provider=location.provider)
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
         serializer.save()
-    
+
     def perform_destroy(self, instance):
         """
         Удаляет одну запись услуги локации (одна комбинация тип+размер) с проверкой прав.
@@ -3909,7 +4103,131 @@ class ProviderLocationServiceRetrieveUpdateDestroyAPIView(generics.RetrieveUpdat
             'delete',
             target_location=instance.location,
         )
+        try:
+            ProviderPricingService.validate_branch_price_mutation_allowed(provider=instance.location.provider)
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
         instance.delete()
+
+
+class ProviderPriceMatrixAPIView(APIView):
+    """
+    GET: org-level матрица цен по услугам организации.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, provider_id):
+        provider = _get_provider_or_403(request.user, provider_id, 'org.services', 'read')
+        return Response(
+            {
+                'use_unified_service_pricing': provider.use_unified_service_pricing,
+                'provider_currency_code': getattr(getattr(provider, 'invoice_currency', None), 'code', None),
+                'served_pet_types': [
+                    {
+                        'id': pet_type.id,
+                        'code': pet_type.code,
+                        'name': getattr(pet_type, 'name', None) or pet_type.code,
+                    }
+                    for pet_type in ProviderPricingService.get_provider_served_pet_types(provider)
+                ],
+                'items': ProviderPricingService.build_provider_price_matrix(provider),
+            }
+        )
+
+    def patch(self, request, provider_id):
+        provider = _get_provider_or_403(request.user, provider_id, 'org.services', 'update')
+        serializer = ProviderServedPetTypesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            ProviderPricingService.update_provider_served_pet_types(
+                provider_id=provider.id,
+                pet_type_ids=[pet_type.id for pet_type in serializer.validated_data['served_pet_types']],
+            )
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
+        provider.refresh_from_db()
+        return self.get(request, provider.id)
+
+
+class ProviderPricingSettingsAPIView(APIView):
+    """
+    PATCH: переключатель режима единых цен организации.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, provider_id):
+        provider = _get_provider_or_403(request.user, provider_id, 'org.services', 'update')
+        serializer = ProviderPricingModeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            result = ProviderPricingService.set_unified_pricing_mode(
+                provider_id=provider.id,
+                enabled=serializer.validated_data['use_unified_service_pricing'],
+            )
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
+        return Response(result)
+
+
+class ProviderServicePricesUpdateAPIView(APIView):
+    """
+    PUT: полная замена org-level матрицы цен по одной услуге организации.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request, provider_id, service_id):
+        provider = _get_provider_or_403(request.user, provider_id, 'org.services', 'update')
+        serializer = LocationServicePricesUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            result = ProviderPricingService.replace_provider_service_prices(
+                provider_id=provider.id,
+                service_id=service_id,
+                prices=serializer.validated_data['prices'],
+            )
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class ProviderCatalogServicePricesUpdateAPIView(APIView):
+    """
+    POST/PUT: создание или замена org-level матрицы цен по услуге каталога.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, provider_id, service_id):
+        return self._update(request, provider_id, service_id)
+
+    def put(self, request, provider_id, service_id):
+        return self._update(request, provider_id, service_id)
+
+    def _update(self, request, provider_id, service_id):
+        provider = _get_provider_or_403(request.user, provider_id, 'org.services', 'update')
+        serializer = LocationServicePricesUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if not serializer.validated_data['prices']:
+            return Response(
+                {'prices': [_('At least one price row (pet type and size) is required.')]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = ProviderPricingService.replace_provider_service_prices(
+                provider_id=provider.id,
+                service_id=service_id,
+                prices=serializer.validated_data['prices'],
+            )
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
+        return Response(result, status=status.HTTP_200_OK)
 
 
 class LocationPriceMatrixAPIView(APIView):
@@ -3985,6 +4303,10 @@ class LocationServicePricesUpdateAPIView(APIView):
             pk=location_pk
         )
         _require_provider_permission(request.user, location.provider, 'locations.services', 'update', target_location=location)
+        try:
+            ProviderPricingService.validate_branch_price_mutation_allowed(provider=location.provider)
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
         location_service = get_object_or_404(
             ProviderLocationService.objects.select_related('service'),
             pk=location_service_id,
@@ -4047,6 +4369,10 @@ class LocationCatalogServicePricesUpdateAPIView(APIView):
             pk=location_pk
         )
         _require_provider_permission(request.user, location.provider, 'locations.services', 'update', target_location=location)
+        try:
+            ProviderPricingService.validate_branch_price_mutation_allowed(provider=location.provider)
+        except ValidationError as error:
+            _raise_drf_validation_error(error)
         service = get_object_or_404(Service, pk=service_id)
         if not service.is_client_facing:
             return Response(
@@ -4105,7 +4431,13 @@ class ProviderAvailableCatalogServicesAPIView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, provider_id):
-        provider = _get_provider_or_403(request.user, provider_id, 'locations.services', 'read')
+        provider_scope_only = request.query_params.get('provider_pet_types') in ('1', 'true')
+        provider = _get_provider_or_403(
+            request.user,
+            provider_id,
+            'org.services' if provider_scope_only else 'locations.services',
+            'read',
+        )
         root_ids = list(
             provider.available_category_levels.filter(level=0, parent__isnull=True)
             .values_list('id', flat=True)
@@ -4172,6 +4504,13 @@ class ProviderAvailableCatalogServicesAPIView(APIView):
                 qs = qs.annotate(_n_apt=Count('allowed_pet_types')).filter(
                     Q(_n_apt=0) | Q(allowed_pet_types__in=served_ids)
                 ).distinct().order_by('hierarchy_order', 'name')
+        elif provider_scope_only:
+            provider_served_ids = list(provider.served_pet_types.values_list('id', flat=True))
+            if not provider_served_ids:
+                return Response([])
+            qs = qs.annotate(_n_apt=Count('allowed_pet_types')).filter(
+                Q(_n_apt=0) | Q(allowed_pet_types__in=provider_served_ids)
+            ).distinct().order_by('hierarchy_order', 'name')
         q = (request.query_params.get('q') or '').strip()
         if q:
             qs = qs.filter(

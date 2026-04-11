@@ -2,21 +2,12 @@
 Сигналы для автоматизации процессов биллинга.
 
 Содержит:
-- Обработка блокировки организации (деактивация всех локаций)
-- Отмена бронирований при блокировке организации
+- Логирование изменений блокировки организации
 """
 
 from django.db.models.signals import post_save
 from django.dispatch import receiver
-from django.utils.translation import gettext_lazy as _
-from django.utils import timezone
-from django.db import transaction
 import logging
-from booking.constants import (
-    ACTIVE_BOOKING_STATUS_NAMES,
-    CANCELLED_BY_PROVIDER,
-    CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -25,102 +16,32 @@ logger = logging.getLogger(__name__)
 def handle_provider_blocking(sender, instance, created, **kwargs):
     """
     Обрабатывает блокировку организации провайдера.
-    
-    При создании активной блокировки:
-    - Деактивирует все локации организации
-    - Отменяет все активные и будущие бронирования во всех локациях
-    - Отправляет уведомления пользователям
-    
-    При снятии блокировки:
-    - Локации остаются деактивированными (требуется ручная активация)
+
+    Владелец и публичный поиск ограничиваются через billing middleware и
+    booking search policy. Здесь не меняем lifecycle филиалов и не отменяем
+    существующие записи автоматически, чтобы уровни L1/L2/L3 не схлопывались
+    в одинаковую полную блокировку.
     """
-    # Импортируем модели здесь, чтобы избежать циклических импортов
     from .models import ProviderBlocking
-    from providers.models import ProviderLocation
-    from booking.models import Booking, BookingCancellationReason
-    
-    # Проверяем, что это действительно ProviderBlocking
+
     if not isinstance(instance, ProviderBlocking):
         return
-    
-    # Обрабатываем только активные блокировки
+
     if instance.status == 'active':
         provider = instance.provider
-        logger.info(f"Provider {provider.id} ({provider.name}) is blocked. Deactivating all locations...")
-        
-        with transaction.atomic():
-            # Деактивируем все локации организации
-            locations = ProviderLocation.objects.filter(
-                provider=provider,
-                is_active=True
-            )
-            
-            deactivated_count = 0
-            cancelled_bookings_count = 0
-            
-            reason = BookingCancellationReason.objects.filter(
-                code=CANCELLATION_REASON_PROVIDER_UNAVAILABLE,
-                is_active=True,
-            ).first() or BookingCancellationReason.get_default_reason(CANCELLED_BY_PROVIDER)
-            
-            now = timezone.now()
-            
-            for location in locations:
-                # Деактивируем локацию
-                location.is_active = False
-                location.save(update_fields=['is_active'])
-                deactivated_count += 1
-                logger.info(f"Location {location.id} ({location.name}) deactivated due to provider blocking")
-                
-                # Отменяем все активные и будущие бронирования для этой локации
-                active_bookings = Booking.objects.filter(
-                    provider_location=location,
-                    status__name__in=ACTIVE_BOOKING_STATUS_NAMES
-                ).exclude(
-                    start_time__lt=now  # Исключаем прошедшие бронирования
-                )
-                
-                for booking in active_bookings:
-                    if reason is None:
-                        continue
-                    booking.cancel_booking(
-                        cancelled_by=CANCELLED_BY_PROVIDER,
-                        cancelled_by_user=None,
-                        cancellation_reason=reason,
-                        cancellation_reason_text=str(_('Cancelled due to provider organization blocking.')),
-                    )
-                    if booking.notes:
-                        booking.notes += f"\n{_('Cancelled due to provider organization blocking.')}"
-                    else:
-                        booking.notes = _('Cancelled due to provider organization blocking.')
-                    booking.save(update_fields=['notes', 'updated_at'])
-                    cancelled_bookings_count += 1
-                    
-                    # TODO: Отправить уведомление пользователю
-                    # from notifications.models import Notification
-                    # Notification.objects.create(
-                    #     user=booking.user,
-                    #     title=_('Booking Cancelled'),
-                    #     message=_('Your booking at {location} has been cancelled due to provider organization blocking.').format(
-                    #         location=location.name
-                    #     ),
-                    #     type='booking_cancelled'
-                    # )
-                    logger.info(f"Booking {booking.id} cancelled for location {location.id} due to provider blocking")
-            
-            logger.info(
-                f"Provider {provider.id} blocked. "
-                f"{deactivated_count} locations deactivated, "
-                f"{cancelled_bookings_count} bookings cancelled."
-            )
-    
-    # При снятии блокировки локации остаются деактивированными
-    # (требуется ручная активация администратором)
+        logger.info(
+            "Provider %s (%s) blocking is active at level %s. "
+            "Access restrictions are enforced without changing location lifecycle.",
+            provider.id,
+            provider.name,
+            instance.blocking_level,
+        )
     elif instance.status == 'resolved':
         provider = instance.provider
         logger.info(
-            f"Provider {provider.id} ({provider.name}) blocking resolved. "
-            f"Locations remain deactivated and require manual activation."
+            "Provider %s (%s) blocking resolved.",
+            provider.id,
+            provider.name,
         )
 
 

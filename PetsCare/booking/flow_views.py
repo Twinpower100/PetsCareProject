@@ -10,10 +10,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from billing.models import ProviderBlocking
 from catalog.models import Service
 from pets.models import Pet
 from providers.models import Employee, ProviderLocation, ProviderLocationService
 from users.models import User
+from users.email_verification_permissions import IsVerifiedForOwnerWriteActions
 
 from .location_search import LocationSearchPayload, filter_locations_by_payload
 from .routing import RoutingUnavailableError
@@ -123,6 +125,11 @@ class ProviderSearchAPIView(APIView):
             service_query=service_query,
             category_id=category_id,
         )
+        active_search_blockings = ProviderBlocking.objects.filter(
+            provider_id=OuterRef('provider_id'),
+            status='active',
+            blocking_level__gte=2,
+        )
 
         locations = ProviderLocation.objects.filter(is_active=True).select_related(
             'provider__invoice_currency',
@@ -130,9 +137,11 @@ class ProviderSearchAPIView(APIView):
         ).annotate(
             has_matching_service=Exists(
                 matching_services.filter(location_id=OuterRef('pk'))
-            )
+            ),
+            provider_has_search_blocking=Exists(active_search_blockings),
         ).filter(
-            has_matching_service=True
+            has_matching_service=True,
+            provider_has_search_blocking=False,
         ).distinct()
 
         try:
@@ -278,7 +287,7 @@ class LocationSlotsAPIView(APIView):
 
 
 class BookingDraftValidationAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsVerifiedForOwnerWriteActions]
 
     def post(self, request):
         location_id = request.data.get('provider_location_id')
@@ -360,7 +369,7 @@ class BookingDraftValidationAPIView(APIView):
 
 
 class CreateAppointmentAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsVerifiedForOwnerWriteActions]
 
     def post(self, request):
         location_id = request.data.get('provider_location_id')

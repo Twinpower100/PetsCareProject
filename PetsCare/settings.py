@@ -3,6 +3,7 @@
 """
 from pathlib import Path
 from decouple import config
+from corsheaders.defaults import default_headers
 
 # Базовые пути проекта
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -81,7 +82,10 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'users.middleware.PreferredLanguageMiddleware',
     'allauth.account.middleware.AccountMiddleware',
+    'billing.middleware.ProviderBlockingMiddleware',
+    'billing.middleware.BlockingLoggingMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'legal.middleware.LegalAPILoggingMiddleware',  # Включено - фильтр убирает длинные сообщения
@@ -203,6 +207,15 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
+]
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'api-version',
+]
+CORS_EXPOSE_HEADERS = [
+    'X-Provider-Blocking-Warning',
+    'X-Provider-Blocking-Detail',
 ]
 
 # CSRF настройки
@@ -300,9 +313,11 @@ GMAIL_TOKEN_FILE = config('GMAIL_TOKEN_FILE', default=str(BASE_DIR / 'token.json
 
 # Email backend (автоматический выбор между Gmail API и SMTP)
 if USE_GMAIL_API:
-    EMAIL_BACKEND = 'notifications.gmail_api_backend.GmailAPIBackend'
+    ACTUAL_EMAIL_BACKEND = 'notifications.gmail_api_backend.GmailAPIBackend'
 else:
-    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    ACTUAL_EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+EMAIL_BACKEND = 'notifications.safe_email_backend.SafeEmailBackend'
 
 # SMTP настройки (для fallback или основного использования)
 EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')

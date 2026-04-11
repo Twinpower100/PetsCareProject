@@ -135,13 +135,29 @@ def log_booking_changes(sender, instance, created, **kwargs):
                 )
 
 
+def _payment_audit_user(instance):
+    """Пользователь для аудита: владелец организации, если известен."""
+    if not getattr(instance, 'provider_id', None):
+        return None
+    from providers.models import EmployeeProvider
+
+    ep = (
+        EmployeeProvider.objects.filter(provider_id=instance.provider_id, is_owner=True)
+        .select_related('employee__user')
+        .first()
+    )
+    if ep and ep.employee_id:
+        return ep.employee.user
+    return None
+
+
 @receiver(post_save, sender='billing.Payment')
 def log_payment_operations(sender, instance, created, **kwargs):
     """Логирует платежные операции"""
     if created:
-        booking_user = instance.booking.user if instance.booking else None
+        audit_user = _payment_audit_user(instance)
         get_audit_service().audit_financial_operation(
-            user=booking_user,
+            user=audit_user,
             operation='payment_created',
             amount=float(instance.amount),
             currency='unknown',
@@ -149,7 +165,8 @@ def log_payment_operations(sender, instance, created, **kwargs):
             details={
                 'payment_method': instance.payment_method,
                 'status': instance.status,
-                'booking_id': instance.booking.id if instance.booking else None,
+                'invoice_id': instance.invoice_id,
+                'provider_id': instance.provider_id,
             }
         )
     else:
@@ -157,9 +174,9 @@ def log_payment_operations(sender, instance, created, **kwargs):
         if hasattr(instance, '_state') and hasattr(instance._state, 'fields_cache'):
             old_status = instance._state.fields_cache.get('status')
             if old_status and old_status != instance.status:
-                booking_user = instance.booking.user if instance.booking else None
+                audit_user = _payment_audit_user(instance)
                 get_audit_service().audit_financial_operation(
-                    user=booking_user,
+                    user=audit_user,
                     operation='payment_status_changed',
                     amount=float(instance.amount),
                     currency='unknown',

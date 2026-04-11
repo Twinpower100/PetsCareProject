@@ -312,3 +312,27 @@ class DeviceLocationServiceTestCase(TestCase):
         location = UserLocation.objects.get(user=user)
         self.assertEqual(location.point.coords, (37.6173, 55.7558))
         self.assertEqual(location.source, 'device')
+
+    def test_get_user_location_falls_back_to_database_when_cache_is_empty(self):
+        user = User.objects.create_user(
+            username='geo_cache_miss_user',
+            email='geo-cache-miss@example.com',
+            phone_number='+10000000003',
+            password='testpass123',
+        )
+        UserLocation.objects.create(
+            user=user,
+            point=Point(13.404954, 52.5200066, srid=4326),
+            accuracy=100,
+            source='map',
+        )
+        cache.delete(f'user_location_{user.id}')
+
+        service = DeviceLocationService()
+        location = service.get_user_location(user)
+
+        self.assertIsNotNone(location)
+        self.assertEqual(location['source'], 'map')
+        self.assertEqual(float(location['latitude']), 52.5200066)
+        self.assertEqual(float(location['longitude']), 13.404954)
+        self.assertIsNotNone(cache.get(f'user_location_{user.id}'))

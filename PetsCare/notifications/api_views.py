@@ -29,6 +29,10 @@ from .serializers import (
     NotificationRuleSerializer
 )
 from .services import NotificationService, PreferenceService, NotificationRuleService
+from .upcoming_booking_reminders import (
+    get_or_create_upcoming_booking_reminder_settings,
+    get_upcoming_booking_reminder_defaults,
+)
 from django.utils import timezone
 from django.core.paginator import Paginator
 from django.db.models import Count
@@ -1133,18 +1137,7 @@ class ReminderSettingsViewSet(viewsets.ModelViewSet):
         Returns:
             Response: Текущие настройки напоминаний
         """
-        from django.conf import settings
-        
-        reminder_settings, created = ReminderSettings.objects.get_or_create(
-            user=request.user,
-            defaults={
-                'reminder_time_before_booking': settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_TIME_MINUTES', 120),
-                'multiple_reminders': settings.NOTIFICATION_SETTINGS.get('MULTIPLE_REMINDERS_ENABLED', False),
-                'reminder_intervals': settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_INTERVALS', [1440, 120]),
-                'is_active': True
-            }
-        )
-        
+        reminder_settings = get_or_create_upcoming_booking_reminder_settings(request.user)
         serializer = self.get_serializer(reminder_settings)
         return Response(serializer.data)
     
@@ -1156,23 +1149,17 @@ class ReminderSettingsViewSet(viewsets.ModelViewSet):
         Returns:
             Response: Обновленные настройки
         """
-        from django.conf import settings
-        
+        defaults = get_upcoming_booking_reminder_defaults()
         reminder_settings, created = ReminderSettings.objects.get_or_create(
             user=request.user,
-            defaults={
-                'reminder_time_before_booking': settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_TIME_MINUTES', 120),
-                'multiple_reminders': settings.NOTIFICATION_SETTINGS.get('MULTIPLE_REMINDERS_ENABLED', False),
-                'reminder_intervals': settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_INTERVALS', [1440, 120]),
-                'is_active': True
-            }
+            defaults=defaults,
         )
-        
+
         if not created:
-            reminder_settings.reminder_time_before_booking = settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_TIME_MINUTES', 120)
-            reminder_settings.multiple_reminders = settings.NOTIFICATION_SETTINGS.get('MULTIPLE_REMINDERS_ENABLED', False)
-            reminder_settings.reminder_intervals = settings.NOTIFICATION_SETTINGS.get('DEFAULT_REMINDER_INTERVALS', [1440, 120])
-            reminder_settings.is_active = True
+            reminder_settings.reminder_time_before_booking = defaults['reminder_time_before_booking']
+            reminder_settings.multiple_reminders = defaults['multiple_reminders']
+            reminder_settings.reminder_intervals = defaults['reminder_intervals']
+            reminder_settings.is_active = defaults['is_active']
             reminder_settings.save()
         
         serializer = self.get_serializer(reminder_settings)
@@ -1210,7 +1197,7 @@ class ReminderSettingsViewSet(viewsets.ModelViewSet):
                 notification_type='reminder',
                 title=_('Test Booking Reminder'),
                 message=_('This is a test reminder for your upcoming booking'),
-                channels=['email', 'push', 'in_app'],
+                channels=['email'],
                 priority='medium',
                 data={
                     'test': True,

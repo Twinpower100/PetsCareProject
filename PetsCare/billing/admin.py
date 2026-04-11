@@ -10,15 +10,16 @@ Admin views for the billing module.
 """
 
 from decimal import Decimal
+from django import forms
 from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import PermissionDenied
-from django.http import Http404
+from django.http import Http404, JsonResponse
 from modeltranslation.admin import TranslationAdmin
 from .models import (
     Currency, VATRate,
     Invoice, InvoiceLine, PaymentHistory, Payment, Refund, BillingManagerProvider, BillingManagerEvent,
-    BlockingRule, ProviderBlocking, BlockingNotification, BlockingTemplate, BlockingTemplateHistory, BlockingSystemSettings, BlockingSchedule,
+    RegionalBlockingPolicy, ProviderBlocking, BlockingNotification, BlockingTemplate, BlockingTemplateHistory, BlockingSystemSettings, BlockingSchedule,
     BillingConfig, BillingReport, PlatformCompany
 )
 # УДАЛЕНО: ProviderSpecialTerms, SideLetter - используйте LegalDocument с типом side_letter в приложении legal
@@ -28,6 +29,7 @@ from django.http import HttpResponseRedirect
 from django.utils.html import format_html
 from .export_utils import build_excel_response
 from .invoice_services import build_invoice_breakdown_rows, summarize_invoice_breakdown
+from .blocking_region_choices import get_region_code_choice_tuples
 
 def user_has_role(user, role_name):
     """Безопасная проверка роли пользователя"""
@@ -340,7 +342,6 @@ class PaymentAdmin(admin.ModelAdmin):
     list_display = (
         'provider',
         'invoice',
-        'booking',
         'amount',
         'status',
         'payment_method',
@@ -348,12 +349,12 @@ class PaymentAdmin(admin.ModelAdmin):
         'created_at',
     )
     list_filter = ('status', 'payment_method', 'created_at', 'provider')
-    search_fields = ('provider__name', 'invoice__number', 'booking__pet__name', 'transaction_id')
+    search_fields = ('provider__name', 'invoice__number', 'transaction_id')
     date_hierarchy = 'created_at'
     actions = ['export_as_excel']
     fieldsets = (
         (_('Basic Information'), {
-            'fields': ('provider', 'invoice', 'booking', 'amount', 'status', 'payment_method')
+            'fields': ('provider', 'invoice', 'amount', 'status', 'payment_method')
         }),
         (_('Transaction Details'), {
             'fields': ('transaction_id', 'notes')
@@ -364,6 +365,70 @@ class PaymentAdmin(admin.ModelAdmin):
         })
     )
     readonly_fields = ('applied_at', 'created_at', 'updated_at')
+
+    class Media:
+        js = ('billing/admin/payment_invoice_filter.js',)
+
+    def get_urls(self):
+        urls = super().get_urls()
+        custom = [
+            path(
+                'unpaid-invoices/',
+                self.admin_site.admin_view(self.unpaid_invoices_json),
+                name='billing_payment_unpaid_invoices',
+            ),
+        ]
+        return custom + urls
+
+    def unpaid_invoices_json(self, request):
+        """Список неоплаченных счетов выбранного провайдера (для динамического select)."""
+        provider_id = request.GET.get('provider_id')
+        if not provider_id or not str(provider_id).isdigit():
+            return JsonResponse({'invoices': []})
+        qs = (
+            Invoice.objects.filter(provider_id=int(provider_id))
+            .exclude(status__in=['paid', 'cancelled'])
+            .select_related('currency')
+            .order_by('-issued_at', '-id')[:500]
+        )
+        invoices = []
+        for inv in qs:
+            label = str(inv)
+            try:
+                outstanding = inv.outstanding_amount
+                cur = inv.currency.code if inv.currency_id else ''
+                label = f"{inv.number} — {outstanding} {cur}".strip()
+            except Exception:
+                pass
+            invoices.append({'id': inv.pk, 'label': label})
+        return JsonResponse({'invoices': invoices})
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == 'invoice':
+            provider_id = None
+            if request.resolver_match:
+                oid = request.resolver_match.kwargs.get('object_id')
+                if oid:
+                    existing = Payment.objects.filter(pk=oid).select_related('provider').first()
+                    if existing and existing.provider_id:
+                        provider_id = existing.provider_id
+            if provider_id is None and request.method == 'POST':
+                raw = request.POST.get('provider')
+                if raw and str(raw).isdigit():
+                    provider_id = int(raw)
+            kwargs['queryset'] = self._unpaid_invoices_queryset(provider_id)
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+
+    @staticmethod
+    def _unpaid_invoices_queryset(provider_id):
+        if not provider_id:
+            return Invoice.objects.none()
+        return (
+            Invoice.objects.filter(provider_id=provider_id)
+            .exclude(status__in=['paid', 'cancelled'])
+            .select_related('currency')
+            .order_by('-issued_at', '-id')
+        )
 
     def get_changeform_initial_data(self, request):
         """
@@ -378,11 +443,8 @@ class PaymentAdmin(admin.ModelAdmin):
         """
         Сохраняет платеж через модельный сервис проводки.
         """
-        if obj.provider_id is None:
-            if obj.invoice_id:
-                obj.provider = obj.invoice.provider
-            elif obj.booking_id:
-                obj.provider = obj.booking.provider or getattr(obj.booking.provider_location, 'provider', None)
+        if obj.provider_id is None and obj.invoice_id:
+            obj.provider = obj.invoice.provider
         super().save_model(request, obj, form, change)
 
     def export_as_excel(self, request, queryset):
@@ -792,25 +854,39 @@ class BillingManagerEventAdmin(admin.ModelAdmin):
         return self.has_module_permission(request)
 
 
-class BlockingRuleAdmin(admin.ModelAdmin):
-    list_display = ('name', 'debt_amount_threshold', 'overdue_days_threshold', 'is_mass_rule', 'priority', 'is_active')
-    list_filter = ('is_active', 'is_mass_rule', 'priority')
-    search_fields = ('name', 'description')
-    actions = ['activate_rules', 'deactivate_rules']
+class RegionalBlockingPolicyAdminForm(forms.ModelForm):
+    """Регион — выпадающий список (DEFAULT, EU, ISO-страны), не свободный текст."""
 
-    def activate_rules(self, request, queryset):
-        queryset.update(is_active=True)
-    activate_rules.short_description = 'Активировать выбранные правила'
+    class Meta:
+        model = RegionalBlockingPolicy
+        fields = '__all__'
 
-    def deactivate_rules(self, request, queryset):
-        queryset.update(is_active=False)
-    deactivate_rules.short_description = 'Деактивировать выбранные правила'
-    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['region_code'].widget = forms.Select(choices=get_region_code_choice_tuples())
+        self.fields['region_code'].help_text = _(
+            'DEFAULT: fallback if no row exists for the provider’s resolved code. '
+            'EU: all EU member states. Otherwise pick a country (ISO code). '
+            'Provider’s effective code comes from country or «Blocking region override» on the provider.'
+        )
+
+
+class RegionalBlockingPolicyAdmin(admin.ModelAdmin):
+    form = RegionalBlockingPolicyAdminForm
+    list_display = (
+        'region_code',
+        'currency',
+        'tolerance_amount',
+        'overdue_days_l2_from',
+        'overdue_days_l3_from',
+        'is_active',
+    )
+    list_filter = ('is_active', 'currency')
+    search_fields = ('region_code', 'notes')
+    ordering = ('region_code',)
+    readonly_fields = ('created_at', 'updated_at')
+
     def has_module_permission(self, request):
-        """
-        Проверяет, имеет ли пользователь доступ к правилам блокировки.
-        Биллинг-менеджер имеет доступ только для просмотра.
-        """
         user = request.user
         if not user.is_authenticated:
             return False
@@ -819,21 +895,17 @@ class BlockingRuleAdmin(admin.ModelAdmin):
             _is_system_admin(user) or
             user.is_billing_manager()
         )
-    
+
     def has_view_permission(self, request, obj=None):
-        """Биллинг-менеджер может просматривать правила блокировки"""
         return self.has_module_permission(request)
-    
+
     def has_add_permission(self, request):
-        """Только системный админ может добавлять правила"""
         return request.user.is_superuser or user_has_role(request.user, 'system_admin')
-    
+
     def has_change_permission(self, request, obj=None):
-        """Только системный админ может изменять правила"""
         return request.user.is_superuser or user_has_role(request.user, 'system_admin')
-    
+
     def has_delete_permission(self, request, obj=None):
-        """Только системный админ может удалять правила"""
         return request.user.is_superuser or user_has_role(request.user, 'system_admin')
 
 
@@ -841,14 +913,13 @@ class ProviderBlockingAdmin(admin.ModelAdmin):
     list_display = (
         'provider',
         'blocking_level',
-        'blocking_rule',
         'status',
         'debt_amount',
         'overdue_days',
         'blocked_at',
         'resolved_at',
     )
-    list_filter = ('blocking_level', 'status', 'blocking_rule', 'blocked_at')
+    list_filter = ('blocking_level', 'status', 'blocked_at')
     search_fields = ('provider__name', 'notes')
     actions = ['resolve_blockings', 'export_as_excel']
 
@@ -864,13 +935,12 @@ class ProviderBlockingAdmin(admin.ModelAdmin):
             [
                 blocking.provider.name if blocking.provider else '',
                 blocking.blocking_level,
-                blocking.blocking_rule.name if blocking.blocking_rule else '',
                 blocking.debt_amount,
                 blocking.overdue_days,
                 blocking.blocked_at.strftime('%Y-%m-%d %H:%M') if blocking.blocked_at else '',
                 blocking.get_status_display(),
             ]
-            for blocking in queryset.select_related('provider', 'blocking_rule')
+            for blocking in queryset.select_related('provider')
         ]
         return build_excel_response(
             'BlockedProviders.xlsx',
@@ -878,7 +948,6 @@ class ProviderBlockingAdmin(admin.ModelAdmin):
             [
                 str(_('Provider')),
                 str(_('Blocking Level')),
-                str(_('Blocking Rule')),
                 str(_('Debt Amount')),
                 str(_('Overdue Days')),
                 str(_('Blocked At')),
@@ -1430,7 +1499,7 @@ class PlatformCompanyAdmin(admin.ModelAdmin):
 
 class BillingConfigAdmin(admin.ModelAdmin):
     """Административное представление для конфигурации биллинга"""
-    list_display = ('name', 'commission_percent', 'payment_deferral_days', 'invoice_period_days', 'is_active', 'created_at')
+    list_display = ('name', 'commission_percent', 'invoice_period_days', 'payment_deferral_days', 'is_active', 'created_at')
     list_filter = ('is_active', 'created_at')
     search_fields = ('name', 'description')
     fieldsets = (
@@ -1439,7 +1508,7 @@ class BillingConfigAdmin(admin.ModelAdmin):
         }),
         (_('Billing Parameters'), {
             'fields': ('commission_percent', 'payment_deferral_days', 'invoice_period_days'),
-            'description': _('These values will be substituted into offer text as variables: {{commission_percent}}, {{payment_deferral_days}}, {{invoice_period_days}}')
+            'description': _('invoice_period_days stores the working day of month for automatic invoice generation, and payment_deferral_days stores the working day of month for invoice payment. These values are also available in offer text variables.')
         }),
         (_('Timestamps'), {
             'fields': ('created_at', 'updated_at'),
@@ -1491,7 +1560,7 @@ custom_admin_site.register(Payment, PaymentAdmin)
 custom_admin_site.register(Refund, RefundAdmin)
 custom_admin_site.register(BillingManagerProvider, BillingManagerProviderAdmin)
 custom_admin_site.register(BillingManagerEvent, BillingManagerEventAdmin)
-custom_admin_site.register(BlockingRule, BlockingRuleAdmin)
+custom_admin_site.register(RegionalBlockingPolicy, RegionalBlockingPolicyAdmin)
 custom_admin_site.register(ProviderBlocking, ProviderBlockingAdmin)
 custom_admin_site.register(BlockingNotification, BlockingNotificationAdmin)
 custom_admin_site.register(BlockingTemplate, BlockingTemplateAdmin)

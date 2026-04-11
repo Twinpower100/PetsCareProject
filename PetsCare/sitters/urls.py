@@ -14,6 +14,7 @@ from .api_views import (
     ConversationViewSet,
     PetFilterForSittingAPIView,
     PetSittingAdViewSet,
+    PetSittingRequestViewSet,
     PetSittingResponseViewSet,
     PetSittingViewSet,
     SitterProfileViewSet,
@@ -24,6 +25,7 @@ from .api_views import (
 router = DefaultRouter()
 router.register(r'profiles', SitterProfileViewSet, basename='sitter-profile')
 router.register(r'ads', PetSittingAdViewSet, basename='pet-sitting-ad')
+router.register(r'requests', PetSittingRequestViewSet, basename='pet-sitting-request')
 router.register(r'responses', PetSittingResponseViewSet, basename='pet-sitting-response')
 router.register(r'pet-sitting', PetSittingViewSet, basename='pet-sitting')
 router.register(r'reviews', SitterReviewViewSet, basename='sitter-review')

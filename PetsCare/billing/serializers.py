@@ -3,7 +3,7 @@ from decimal import Decimal
 from .models import (
     Payment, Invoice, Refund,
     Currency, ServicePrice, PaymentHistory, BillingManagerProvider, BillingManagerEvent,
-    BlockingRule, ProviderBlocking, BlockingNotification
+    RegionalBlockingPolicy, ProviderBlocking, BlockingNotification
 )
 from django.utils.translation import gettext_lazy as _
 
@@ -112,7 +112,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = [
-            'id', 'provider', 'booking', 'invoice',
+            'id', 'provider', 'invoice',
             'amount', 'status', 'payment_method',
             'transaction_id', 'notes', 'applied_at',
             'created_at', 'updated_at'
@@ -201,7 +201,7 @@ class PaymentCreateSerializer(serializers.ModelSerializer):
     """
     class Meta:
         model = Payment
-        fields = ['provider', 'booking', 'invoice', 'amount', 'payment_method', 'status', 'notes']
+        fields = ['provider', 'invoice', 'amount', 'payment_method', 'status', 'notes']
 
 
 class RefundCreateSerializer(serializers.ModelSerializer):
@@ -213,19 +213,25 @@ class RefundCreateSerializer(serializers.ModelSerializer):
         fields = ['payment', 'amount', 'reason']
 
 
-class BlockingRuleSerializer(serializers.ModelSerializer):
-    """
-    Сериализатор для правил блокировки.
-    """
-    created_by = serializers.ReadOnlyField(source='created_by.username')
-    
+class RegionalBlockingPolicySerializer(serializers.ModelSerializer):
+    """Платформенная политика блокировок по региону (код страны / EU / DEFAULT)."""
+
+    currency_code = serializers.ReadOnlyField(source='currency.code')
+
     class Meta:
-        model = BlockingRule
+        model = RegionalBlockingPolicy
         fields = [
-            'id', 'name', 'description', 'debt_amount_threshold', 
-            'overdue_days_threshold', 'is_mass_rule', 'regions', 
-            'service_types', 'priority', 'is_active', 'created_by', 
-            'created_at', 'updated_at'
+            'id',
+            'region_code',
+            'currency',
+            'currency_code',
+            'tolerance_amount',
+            'overdue_days_l2_from',
+            'overdue_days_l3_from',
+            'is_active',
+            'notes',
+            'created_at',
+            'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
 
@@ -235,17 +241,16 @@ class ProviderBlockingSerializer(serializers.ModelSerializer):
     Сериализатор для блокировок учреждений.
     """
     provider_name = serializers.ReadOnlyField(source='provider.name')
-    blocking_rule_name = serializers.ReadOnlyField(source='blocking_rule.name')
     currency_code = serializers.ReadOnlyField(source='currency.code')
     resolved_by_username = serializers.ReadOnlyField(source='resolved_by.username')
     
     class Meta:
         model = ProviderBlocking
         fields = [
-            'id', 'provider', 'provider_name', 'blocking_rule', 
-            'blocking_rule_name', 'status', 'blocking_level', 'debt_amount', 'overdue_days', 
-            'currency', 'currency_code', 'blocked_at', 'resolved_at', 
-            'resolved_by', 'resolved_by_username', 'notes'
+            'id', 'provider', 'provider_name',
+            'status', 'blocking_level', 'debt_amount', 'overdue_days',
+            'currency', 'currency_code', 'blocked_at', 'resolved_at',
+            'resolved_by', 'resolved_by_username', 'notes',
         ]
         read_only_fields = ['blocked_at', 'resolved_at']
 

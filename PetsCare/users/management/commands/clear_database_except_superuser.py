@@ -120,7 +120,7 @@ class Command(BaseCommand):
             # Биллинг
             ('billing', 'BlockingNotification'),
             ('billing', 'ProviderBlocking'),
-            ('billing', 'BlockingRule'),
+            ('billing', 'RegionalBlockingPolicy'),
             ('billing', 'BlockingTemplate'),
             ('billing', 'BillingManagerEvent'),
             ('billing', 'BillingManagerProvider'),

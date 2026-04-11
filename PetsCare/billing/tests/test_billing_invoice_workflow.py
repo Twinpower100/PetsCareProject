@@ -1,8 +1,8 @@
 """
-Тесты ручного инвойсинга, PDF и FIFO-проводки платежей.
+Тесты ручного и автоматического инвойсинга, PDF и FIFO-проводки платежей.
 """
 
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from unittest.mock import patch
@@ -17,13 +17,23 @@ from django.utils import timezone
 from openpyxl import load_workbook
 
 from billing.invoice_services import InvoiceGenerationService, InvoicePdfService
-from billing.models import Currency, Invoice, InvoiceLine, Payment, PlatformCompany, VATRate
+from billing.models import (
+    BillingConfig,
+    Currency,
+    Invoice,
+    InvoiceLine,
+    Payment,
+    PlatformCompany,
+    VATRate,
+)
 from billing.serializers import InvoiceSerializer
+from billing.tasks import generate_scheduled_invoices
 from booking.constants import COMPLETED_BY_SYSTEM
 from booking.models import Booking, BookingPayment, BookingStatus
 from custom_admin import custom_admin_site
 from catalog.models import Service
 from pets.models import Pet
+from production_calendar.models import DAY_TYPE_HOLIDAY, ProductionCalendar
 from providers.models import Employee, EmployeeProvider, Provider
 from users.models import User
 
@@ -36,10 +46,7 @@ class BillingInvoiceWorkflowTest(TestCase):
     @classmethod
     def setUpTestData(cls):
         call_command('generate_billing_data')
-        cls.admin_user = User.objects.create_superuser(
-            email='billing-admin@example.com',
-            password='Secret123!',
-        )
+        cls.admin_user = User.objects.get(email='billing-admin@example.com')
 
     def test_generate_invoice_for_online_completed_booking_creates_pdf(self):
         """
@@ -297,6 +304,164 @@ class BillingInvoiceWorkflowTest(TestCase):
         self.assertEqual(worksheet['A2'].value, booking_one.pk)
         self.assertEqual(worksheet['B2'].value, booking_one.code)
 
+    def test_generate_scheduled_invoice_for_previous_month_on_configured_working_day(self):
+        """
+        Автогенерация выставляет счет за предыдущий месяц в нужный рабочий день.
+        """
+        provider = Provider.objects.get(name='Provider_FullyPaid')
+        self._configure_provider_billing_schedule(
+            provider,
+            invoice_working_day=3,
+            payment_working_day=5,
+        )
+        completed_at = timezone.make_aware(datetime(2026, 3, 20, 12, 0))
+        booking = self._create_online_completed_booking_at(
+            provider=provider,
+            price=Decimal('185.00'),
+            completed_at=completed_at,
+        )
+
+        invoice = InvoiceGenerationService().generate_scheduled_for_provider(
+            provider,
+            run_date=date(2026, 4, 3),
+        )
+
+        self.assertIsNotNone(invoice)
+        assert invoice is not None
+        invoice.refresh_from_db()
+
+        self.assertEqual(invoice.start_date, date(2026, 3, 1))
+        self.assertEqual(invoice.end_date, date(2026, 3, 31))
+        self.assertEqual(invoice.issued_at.date(), date(2026, 4, 3))
+        self.assertEqual(invoice.payment_record.due_date, date(2026, 4, 7))
+        self.assertTrue(invoice.lines.filter(booking=booking).exists())
+        self.assertIsNone(
+            InvoiceGenerationService().generate_scheduled_for_provider(
+                provider,
+                run_date=date(2026, 4, 3),
+            )
+        )
+
+    def test_scheduled_invoice_task_uses_production_calendar_holiday_override(self):
+        """
+        Daily task сдвигает дату счета на следующий рабочий день по ProductionCalendar.
+        """
+        provider = Provider.objects.get(name='Provider_Level1')
+        self._configure_provider_billing_schedule(
+            provider,
+            invoice_working_day=1,
+            payment_working_day=3,
+        )
+        ProductionCalendar.objects.update_or_create(
+            country='ME',
+            date=date(2026, 6, 1),
+            defaults={
+                'day_type': DAY_TYPE_HOLIDAY,
+                'description': 'Synthetic billing holiday',
+                'is_manually_corrected': True,
+            },
+        )
+        booking = self._create_online_completed_booking_at(
+            provider=provider,
+            price=Decimal('210.00'),
+            completed_at=timezone.make_aware(datetime(2026, 5, 18, 14, 0)),
+        )
+
+        self.assertFalse(provider.should_generate_invoice_on(date(2026, 6, 1)))
+        self.assertTrue(provider.should_generate_invoice_on(date(2026, 6, 2)))
+
+        skipped_result = generate_scheduled_invoices(run_date_iso='2026-06-01')
+        self.assertEqual(skipped_result['status'], 'completed')
+        self.assertEqual(skipped_result['statistics']['generated_invoices'], 0)
+
+        task_result = generate_scheduled_invoices(run_date_iso='2026-06-02')
+        self.assertEqual(task_result['status'], 'completed')
+        self.assertEqual(task_result['statistics']['generated_invoices'], 1)
+
+        invoice = Invoice.objects.get(
+            provider=provider,
+            start_date=date(2026, 5, 1),
+            end_date=date(2026, 5, 31),
+        )
+        self.assertEqual(invoice.issued_at.date(), date(2026, 6, 2))
+        self.assertEqual(invoice.payment_record.due_date, date(2026, 6, 4))
+        self.assertTrue(invoice.lines.filter(booking=booking).exists())
+
+    def test_scheduled_invoice_task_catches_up_after_missed_issue_day(self):
+        """
+        Если daily task пропустила расчетный рабочий день, следующий запуск
+        все равно создаст счет за прошлый месяц.
+        """
+        provider = Provider.objects.get(name='Provider_Level2')
+        self._reset_provider_invoices(provider)
+        self._configure_provider_billing_schedule(
+            provider,
+            invoice_working_day=3,
+            payment_working_day=8,
+        )
+        booking = self._create_online_completed_booking_at(
+            provider=provider,
+            price=Decimal('199.00'),
+            completed_at=timezone.make_aware(datetime(2026, 3, 10, 11, 0)),
+        )
+
+        self.assertFalse(provider.should_generate_invoice_on(date(2026, 4, 6)))
+
+        task_result = generate_scheduled_invoices(run_date_iso='2026-04-06')
+        self.assertEqual(task_result['status'], 'completed')
+        self.assertEqual(task_result['statistics']['generated_invoices'], 1)
+
+        invoice = Invoice.objects.get(
+            provider=provider,
+            start_date=date(2026, 3, 1),
+            end_date=date(2026, 3, 31),
+        )
+        self.assertEqual(invoice.issued_at.date(), date(2026, 4, 6))
+        self.assertEqual(invoice.payment_record.due_date, provider.calculate_invoice_due_date(date(2026, 4, 6)))
+        self.assertTrue(invoice.lines.filter(booking=booking).exists())
+
+    def test_scheduled_invoice_task_catches_up_multiple_missed_months(self):
+        """
+        Один запуск задачи может догенерировать несколько просроченных месяцев.
+        """
+        provider = Provider.objects.get(name='Provider_Level3')
+        self._reset_provider_invoices(provider)
+        self._configure_provider_billing_schedule(
+            provider,
+            invoice_working_day=2,
+            payment_working_day=6,
+        )
+        february_booking = self._create_online_completed_booking_at(
+            provider=provider,
+            price=Decimal('101.00'),
+            completed_at=timezone.make_aware(datetime(2026, 2, 14, 10, 0)),
+        )
+        march_booking = self._create_online_completed_booking_at(
+            provider=provider,
+            price=Decimal('151.00'),
+            completed_at=timezone.make_aware(datetime(2026, 3, 19, 15, 0)),
+        )
+
+        task_result = generate_scheduled_invoices(run_date_iso='2026-04-10')
+        self.assertEqual(task_result['status'], 'completed')
+        self.assertEqual(task_result['statistics']['generated_invoices'], 2)
+
+        february_invoice = Invoice.objects.get(
+            provider=provider,
+            start_date=date(2026, 2, 1),
+            end_date=date(2026, 2, 28),
+        )
+        march_invoice = Invoice.objects.get(
+            provider=provider,
+            start_date=date(2026, 3, 1),
+            end_date=date(2026, 3, 31),
+        )
+
+        self.assertEqual(february_invoice.issued_at.date(), date(2026, 4, 10))
+        self.assertEqual(march_invoice.issued_at.date(), date(2026, 4, 10))
+        self.assertTrue(february_invoice.lines.filter(booking=february_booking).exists())
+        self.assertTrue(march_invoice.lines.filter(booking=march_booking).exists())
+
     def test_download_pdf_endpoint_regenerates_existing_invoice_pdf(self):
         """
         Скачивание PDF через API не отдает устаревший сохраненный файл.
@@ -396,13 +561,25 @@ class BillingInvoiceWorkflowTest(TestCase):
         """
         Создает completed booking с online payment для тестов инвойсинга.
         """
+        completed_at = timezone.now() - timedelta(days=completed_days_ago)
+        return self._create_online_completed_booking_at(
+            provider=provider,
+            price=price,
+            completed_at=completed_at,
+        )
+
+    def _create_online_completed_booking_at(self, provider, price, completed_at):
+        """
+        Создает completed booking с online payment в конкретный момент времени.
+        """
         owner = User.objects.get(email='billing-demo-owner@example.com')
         pet = Pet.objects.get(name='Billing Demo Pet')
         employee = Employee.objects.filter(providers=provider).first()
         service = Service.objects.get(code='billing_demo_service')
         location = provider.locations.first()
         status, _ = BookingStatus.objects.get_or_create(name='completed')
-        completed_at = timezone.now() - timedelta(days=completed_days_ago)
+        if timezone.is_naive(completed_at):
+            completed_at = timezone.make_aware(completed_at)
 
         booking = Booking.objects.create(
             user=owner,
@@ -425,6 +602,37 @@ class BillingInvoiceWorkflowTest(TestCase):
         )
         return booking
 
+    def _configure_provider_billing_schedule(self, provider, *, invoice_working_day, payment_working_day):
+        """
+        Привязывает провайдера к billing config с нужным рабочим днем счета и оплаты.
+        """
+        currency = provider.invoice_currency or Currency.objects.get(code='EUR')
+        provider.country = 'ME'
+        provider.invoice_currency = currency
+        provider.save(update_fields=['country', 'invoice_currency'])
+
+        acceptance = provider.document_acceptances.select_related('document__billing_config').get(
+            document__document_type__code='global_offer',
+            is_active=True,
+        )
+        document = acceptance.document
+        billing_config = document.billing_config
+        if billing_config is None:
+            billing_config = BillingConfig.objects.create(
+                name=f'Test Billing Config {provider.pk}',
+                commission_percent=Decimal('10.00'),
+                payment_deferral_days=payment_working_day,
+                invoice_period_days=invoice_working_day,
+                is_active=True,
+            )
+            document.billing_config = billing_config
+            document.save(update_fields=['billing_config'])
+            return
+
+        billing_config.payment_deferral_days = payment_working_day
+        billing_config.invoice_period_days = invoice_working_day
+        billing_config.save(update_fields=['payment_deferral_days', 'invoice_period_days', 'updated_at'])
+
     def _create_provider_admin(self, provider):
         """
         Создает provider admin, привязанного к нужному провайдеру.
@@ -445,3 +653,12 @@ class BillingInvoiceWorkflowTest(TestCase):
             start_date=timezone.now().date(),
         )
         return provider_admin
+
+    def _reset_provider_invoices(self, provider):
+        """
+        Очищает счета и блокировки провайдера, чтобы тесты scheduled billing
+        проверяли только созданные ими периоды.
+        """
+        provider.blockings.all().delete()
+        Payment.objects.filter(provider=provider).delete()
+        Invoice.objects.filter(provider=provider).delete()

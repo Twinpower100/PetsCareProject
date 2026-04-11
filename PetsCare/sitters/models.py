@@ -8,6 +8,7 @@
 """
 
 from django.db import models
+from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from users.models import User
 from django.core.exceptions import ValidationError
@@ -166,6 +167,16 @@ class PetSittingAd(models.Model):
     end_date = models.DateField(_('End Date'))
     description = models.TextField(_('Description'), blank=True)
     status = models.CharField(_('Status'), max_length=20, choices=[('active', _('Active')), ('closed', _('Closed'))], default='active')
+    visibility = models.CharField(
+        _('Visibility'),
+        max_length=20,
+        choices=[
+            ('public', _('Public')),
+            ('internal', _('Internal')),
+        ],
+        default='public',
+        help_text=_('Public ads are visible in search. Internal ads are created only for workflow records.')
+    )
     
     # Старое поле локации (для обратной совместимости)
     location = models.CharField(_('Location'), max_length=255, blank=True)
@@ -264,6 +275,162 @@ class PetSitting(models.Model):
         Возвращает строковое представление передержки.
         """
         return f"PetSitting: {self.pet} with {self.sitter} ({self.start_date}-{self.end_date})"
+
+
+class PetSittingRequest(models.Model):
+    """
+    Явный запрос владельца к ситтеру на передержку конкретного питомца.
+
+    Используется для прямых owner -> sitter сценариев без публикации публичного объявления.
+    После принятия запроса создаются внутренние служебные записи для жизненного цикла передержки.
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CANCELLED = 'cancelled'
+
+    SOURCE_OWNER_SEARCH = 'owner_search'
+    SOURCE_CHAT = 'chat'
+
+    owner = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='pet_sitting_requests_as_owner',
+        verbose_name=_('Owner')
+    )
+    sitter = models.ForeignKey(
+        'sitters.SitterProfile',
+        on_delete=models.CASCADE,
+        related_name='pet_sitting_requests',
+        verbose_name=_('Sitter')
+    )
+    pet = models.ForeignKey(
+        'pets.Pet',
+        on_delete=models.CASCADE,
+        related_name='pet_sitting_requests',
+        verbose_name=_('Pet')
+    )
+    initiated_by = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='initiated_pet_sitting_requests',
+        verbose_name=_('Initiated By')
+    )
+    conversation = models.ForeignKey(
+        'sitters.Conversation',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='pet_sitting_requests',
+        verbose_name=_('Conversation')
+    )
+    created_ad = models.OneToOneField(
+        'sitters.PetSittingAd',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='pet_sitting_request',
+        verbose_name=_('Created Ad')
+    )
+    created_response = models.OneToOneField(
+        'sitters.PetSittingResponse',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='pet_sitting_request',
+        verbose_name=_('Created Response')
+    )
+    pet_sitting = models.OneToOneField(
+        'sitters.PetSitting',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='pet_sitting_request',
+        verbose_name=_('Pet Sitting')
+    )
+    start_date = models.DateField(_('Start Date'))
+    end_date = models.DateField(_('End Date'))
+    message = models.TextField(_('Message'), blank=True)
+    status = models.CharField(
+        _('Status'),
+        max_length=20,
+        choices=[
+            (STATUS_PENDING, _('Pending')),
+            (STATUS_ACCEPTED, _('Accepted')),
+            (STATUS_REJECTED, _('Rejected')),
+            (STATUS_CANCELLED, _('Cancelled')),
+        ],
+        default=STATUS_PENDING
+    )
+    source = models.CharField(
+        _('Source'),
+        max_length=20,
+        choices=[
+            (SOURCE_OWNER_SEARCH, _('Owner Search')),
+            (SOURCE_CHAT, _('Chat')),
+        ],
+        default=SOURCE_OWNER_SEARCH
+    )
+    location = models.CharField(_('Location'), max_length=255, blank=True)
+    structured_address = models.ForeignKey(
+        'geolocation.Address',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='pet_sitting_requests',
+        verbose_name=_('Structured Address')
+    )
+    version = models.PositiveIntegerField(
+        _('Version'),
+        default=1,
+        help_text=_('Optimistic version for direct pet sitting request updates.')
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_('Created At')
+    )
+    updated_at = models.DateTimeField(
+        auto_now=True,
+        verbose_name=_('Updated At')
+    )
+
+    class Meta:
+        verbose_name = _('Pet Sitting Request')
+        verbose_name_plural = _('Pet Sitting Requests')
+        ordering = ['-created_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['owner', 'sitter', 'pet', 'start_date', 'end_date'],
+                condition=Q(status='pending'),
+                name='unique_pending_pet_sitting_request'
+            )
+        ]
+
+    def __str__(self):
+        """
+        Возвращает строковое представление прямого запроса на передержку.
+        """
+        return f"Request for {self.pet} from {self.owner} to {self.sitter} ({self.status})"
+
+    def clean(self):
+        """
+        Проверяет корректность участника-инициатора и дат.
+        """
+        if self.end_date and self.start_date and self.end_date < self.start_date:
+            raise ValidationError(_('End date must be after start date.'))
+
+        valid_initiator_ids = {self.owner_id, getattr(self.sitter, 'user_id', None)}
+        if self.initiated_by_id not in valid_initiator_ids:
+            raise ValidationError(_('The initiator must be either the owner or the sitter.'))
+
+    def get_recipient(self):
+        """
+        Возвращает пользователя, который должен принять решение по запросу.
+        """
+        if self.initiated_by_id == self.owner_id:
+            return self.sitter.user
+        return self.owner
 
 
 class SitterReview(models.Model):

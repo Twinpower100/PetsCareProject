@@ -52,6 +52,10 @@ class ProviderPermissionService:
         'locations.list',
         'locations.services',
     })
+    _inactive_location_resources = frozenset({
+        'locations.list',
+        'locations.deactivation',
+    })
 
     @classmethod
     def _get_provider_id(cls, provider) -> int | None:
@@ -92,38 +96,69 @@ class ProviderPermissionService:
         ).select_related('employee', 'provider')
 
     @classmethod
-    def _get_active_location_roles(cls, user, provider):
+    def _is_owner_read_only_window(cls, user, provider) -> bool:
+        """
+        Проверяет, находится ли пользователь в post-termination read-only окне owner.
+        """
+        if getattr(provider, 'partnership_status', None) != Provider.PARTNERSHIP_STATUS_TERMINATED:
+            return False
+        if not provider.has_post_termination_owner_access():
+            return False
+        return cls._get_active_provider_links(user, provider).filter(is_owner=True).exists()
+
+    @classmethod
+    def _downgrade_permissions_to_read_only(cls, permissions: dict) -> dict:
+        """
+        Превращает любой набор прав в read-only вариант.
+        """
+        downgraded: dict[str, dict] = {}
+        for resource_code, permission in permissions.items():
+            if not permission.get('can_read'):
+                continue
+            downgraded[resource_code] = {
+                'can_create': False,
+                'can_read': True,
+                'can_update': False,
+                'can_delete': False,
+                'scope': permission.get('scope') or ProviderRolePermission.SCOPE_OWN_ONLY,
+            }
+        return downgraded
+
+    @classmethod
+    def _get_active_location_roles(cls, user, provider, *, include_inactive_locations: bool = False):
         provider_id = cls._get_provider_id(provider)
         now = timezone.now()
-        return EmployeeLocationRole.objects.filter(
+        queryset = EmployeeLocationRole.objects.filter(
             employee__user=user,
             employee__is_active=True,
             provider_location__provider_id=provider_id,
-            provider_location__is_active=True,
             is_active=True,
         ).filter(
             Q(end_date__isnull=True) | Q(end_date__gte=now)
         ).select_related('employee', 'provider_location', 'provider_location__provider')
+        if not include_inactive_locations:
+            queryset = queryset.filter(provider_location__is_active=True)
+        return queryset
 
     @classmethod
-    def get_user_branch_locations(cls, user, provider):
+    def get_user_branch_locations(cls, user, provider, *, include_inactive: bool = False):
         provider_id = cls._get_provider_id(provider)
+        cache_key = (provider_id, include_inactive)
         cache = cls._get_cache(user, cls._branch_cache_attr)
-        if provider_id in cache:
-            return cache[provider_id]
+        if cache_key in cache:
+            return cache[cache_key]
 
         if cls._is_system_like(user):
-            queryset = ProviderLocation.objects.filter(
-                provider_id=provider_id,
-                is_active=True,
-            ).select_related('provider', 'manager')
-            cache[provider_id] = queryset
+            queryset = ProviderLocation.objects.filter(provider_id=provider_id)
+            if not include_inactive:
+                queryset = queryset.filter(is_active=True)
+            queryset = queryset.select_related('provider', 'manager')
+            cache[cache_key] = queryset
             return queryset
 
         now = timezone.now()
         queryset = ProviderLocation.objects.filter(
             provider_id=provider_id,
-            is_active=True,
         ).filter(
             Q(manager=user)
             | (
@@ -134,28 +169,30 @@ class ProviderPermissionService:
                 & Q(employee_roles__role=EmployeeLocationRole.ROLE_BRANCH_MANAGER)
             )
         ).select_related('provider', 'manager').distinct()
-        cache[provider_id] = queryset
+        if not include_inactive:
+            queryset = queryset.filter(is_active=True)
+        cache[cache_key] = queryset
         return queryset
 
     @classmethod
-    def get_user_member_locations(cls, user, provider):
+    def get_user_member_locations(cls, user, provider, *, include_inactive: bool = False):
         provider_id = cls._get_provider_id(provider)
+        cache_key = (provider_id, include_inactive)
         cache = cls._get_cache(user, cls._member_cache_attr)
-        if provider_id in cache:
-            return cache[provider_id]
+        if cache_key in cache:
+            return cache[cache_key]
 
         if cls._is_system_like(user):
-            queryset = ProviderLocation.objects.filter(
-                provider_id=provider_id,
-                is_active=True,
-            ).select_related('provider', 'manager')
-            cache[provider_id] = queryset
+            queryset = ProviderLocation.objects.filter(provider_id=provider_id)
+            if not include_inactive:
+                queryset = queryset.filter(is_active=True)
+            queryset = queryset.select_related('provider', 'manager')
+            cache[cache_key] = queryset
             return queryset
 
         now = timezone.now()
         queryset = ProviderLocation.objects.filter(
             provider_id=provider_id,
-            is_active=True,
         ).filter(
             Q(manager=user)
             | (
@@ -165,7 +202,9 @@ class ProviderPermissionService:
                 & (Q(employee_roles__end_date__isnull=True) | Q(employee_roles__end_date__gte=now))
             )
         ).select_related('provider', 'manager').distinct()
-        cache[provider_id] = queryset
+        if not include_inactive:
+            queryset = queryset.filter(is_active=True)
+        cache[cache_key] = queryset
         return queryset
 
     @classmethod
@@ -173,36 +212,49 @@ class ProviderPermissionService:
         return action == 'read' and resource_code in cls._member_backed_branch_read_resources
 
     @classmethod
+    def _resource_includes_inactive_locations(cls, resource_code: str, action: str) -> bool:
+        if resource_code == 'locations.list' and action == 'read':
+            return True
+        if resource_code == 'locations.deactivation' and action in {'read', 'delete'}:
+            return True
+        return False
+
+    @classmethod
     def get_location_ids_for_scope(cls, user, provider, resource_code: str, scope: str, action: str = 'read') -> set[int]:
         provider_id = cls._get_provider_id(provider)
+        include_inactive = cls._resource_includes_inactive_locations(resource_code, action)
         if cls._is_system_like(user):
-            return set(
-                ProviderLocation.objects.filter(
-                    provider_id=provider_id,
-                    is_active=True,
-                ).values_list('id', flat=True)
-            )
+            queryset = ProviderLocation.objects.filter(provider_id=provider_id)
+            if not include_inactive:
+                queryset = queryset.filter(is_active=True)
+            return set(queryset.values_list('id', flat=True))
 
         member_location_ids = set(
-            cls.get_user_member_locations(user, provider).values_list('id', flat=True)
+            cls.get_user_member_locations(
+                user,
+                provider,
+                include_inactive=include_inactive,
+            ).values_list('id', flat=True)
         )
         if scope == ProviderRolePermission.SCOPE_OWN_ONLY:
             return member_location_ids
 
         branch_location_ids = set(
-            cls.get_user_branch_locations(user, provider).values_list('id', flat=True)
+            cls.get_user_branch_locations(
+                user,
+                provider,
+                include_inactive=include_inactive,
+            ).values_list('id', flat=True)
         )
         if scope == ProviderRolePermission.SCOPE_OWN_BRANCH:
             if cls._branch_scope_includes_member_locations(resource_code, action):
                 branch_location_ids.update(member_location_ids)
             return branch_location_ids
 
-        return set(
-            ProviderLocation.objects.filter(
-                provider_id=provider_id,
-                is_active=True,
-            ).values_list('id', flat=True)
-        )
+        queryset = ProviderLocation.objects.filter(provider_id=provider_id)
+        if not include_inactive:
+            queryset = queryset.filter(is_active=True)
+        return set(queryset.values_list('id', flat=True))
 
     @classmethod
     def get_user_roles_for_provider(cls, user, provider) -> list[str]:
@@ -221,19 +273,42 @@ class ProviderPermissionService:
         for link in provider_links:
             roles.update(link.get_effective_role_codes())
 
-        active_location_roles = list(cls._get_active_location_roles(user, provider))
+        include_inactive_roles = cls._resource_includes_inactive_locations('locations.list', 'read')
+        active_location_roles = list(
+            cls._get_active_location_roles(
+                user,
+                provider,
+                include_inactive_locations=include_inactive_roles,
+            )
+        )
         if any(role.role == EmployeeLocationRole.ROLE_BRANCH_MANAGER for role in active_location_roles):
             roles.add(ProviderRole.CODE_BRANCH_MANAGER)
         if active_location_roles:
             roles.add(ProviderRole.CODE_WORKER)
 
-        branch_locations = cls.get_user_branch_locations(user, provider)
+        branch_locations = cls.get_user_branch_locations(
+            user,
+            provider,
+            include_inactive=include_inactive_roles,
+        )
         if branch_locations.exists():
             roles.add(ProviderRole.CODE_BRANCH_MANAGER)
 
-        member_locations = cls.get_user_member_locations(user, provider)
+        member_locations = cls.get_user_member_locations(
+            user,
+            provider,
+            include_inactive=include_inactive_roles,
+        )
         if member_locations.exists():
             roles.add(ProviderRole.CODE_WORKER)
+
+        if getattr(provider, 'partnership_status', None) == Provider.PARTNERSHIP_STATUS_TERMINATED:
+            if cls._is_owner_read_only_window(user, provider):
+                sorted_roles = [ProviderRole.CODE_OWNER]
+                cache[provider_id] = sorted_roles
+                return sorted_roles
+            cache[provider_id] = []
+            return []
 
         sorted_roles = sorted(roles, key=lambda code: ROLE_PRIORITY.get(code, 100))
         cache[provider_id] = sorted_roles
@@ -253,29 +328,32 @@ class ProviderPermissionService:
                 resource__is_active=True,
             ).select_related('role', 'resource')
         )
-        if queryset:
-            return [
-                {
-                    'role_code': item.role.code,
-                    'resource_code': item.resource.code,
-                    'can_create': item.can_create,
-                    'can_read': item.can_read,
-                    'can_update': item.can_update,
-                    'can_delete': item.can_delete,
-                    'scope': item.scope,
-                }
-                for item in queryset
-            ]
+        rows: list[dict] = [
+            {
+                'role_code': item.role.code,
+                'resource_code': item.resource.code,
+                'can_create': item.can_create,
+                'can_read': item.can_read,
+                'can_update': item.can_update,
+                'can_delete': item.can_delete,
+                'scope': item.scope,
+            }
+            for item in queryset
+        ]
 
-        rows: list[dict] = []
+        existing_pairs = {(row['role_code'], row['resource_code']) for row in rows}
         for role_code in role_codes:
             for resource in RESOURCE_DEFINITIONS:
-                if resource['code'] not in PERMISSION_MATRIX.get(role_code, {}):
+                resource_code = resource['code']
+                if resource_code not in PERMISSION_MATRIX.get(role_code, {}):
                     continue
-                entry = get_matrix_entry(role_code, resource['code'])
+                pair = (role_code, resource_code)
+                if pair in existing_pairs:
+                    continue
+                entry = get_matrix_entry(role_code, resource_code)
                 rows.append({
                     'role_code': role_code,
-                    'resource_code': resource['code'],
+                    'resource_code': resource_code,
                     **entry,
                 })
         return rows
@@ -299,8 +377,10 @@ class ProviderPermissionService:
 
         if cls._is_system_like(user):
             permissions = {}
-            resources = ProviderResource.objects.filter(is_active=True).values_list('code', flat=True)
-            resource_codes = list(resources) or [item['code'] for item in RESOURCE_DEFINITIONS]
+            resource_codes = {
+                *ProviderResource.objects.filter(is_active=True).values_list('code', flat=True),
+                *(item['code'] for item in RESOURCE_DEFINITIONS),
+            }
             for code in resource_codes:
                 permissions[code] = {
                     'can_create': True,
@@ -327,6 +407,9 @@ class ProviderPermissionService:
             })
             permissions[resource_code] = cls._merge_permission(current, row)
 
+        if cls._is_owner_read_only_window(user, provider):
+            permissions = cls._downgrade_permissions_to_read_only(permissions)
+
         cache[provider_id] = permissions
         return permissions
 
@@ -342,6 +425,9 @@ class ProviderPermissionService:
     ) -> bool:
         if cls._is_system_like(user):
             return True
+
+        if cls._is_owner_read_only_window(user, provider) and action != 'read':
+            return False
 
         action_key = f'can_{action}'
         permission = cls.get_user_permissions(user, provider).get(resource_code)
@@ -402,18 +488,21 @@ class ProviderPermissionService:
             provider_location__is_active=True,
         ).filter(Q(end_date__isnull=True) | Q(end_date__gte=now))
 
+        provider_ids: set[int] = set(active_provider_links.values_list('provider_id', flat=True))
+        provider_ids.update(
+            active_location_roles.values_list('provider_location__provider_id', flat=True)
+        )
+        provider_ids.update(
+            ProviderLocation.objects.filter(manager=user).values_list('provider_id', flat=True)
+        )
+
         roles: set[str] = set()
-        if active_provider_links.filter(is_owner=True).exists():
-            roles.add('owner')
-        if active_provider_links.filter(is_provider_admin=True).exists():
-            roles.add('provider_admin')
-        if active_provider_links.filter(is_provider_manager=True).exists():
-            roles.add('provider_manager')
-        if active_location_roles.filter(role=EmployeeLocationRole.ROLE_BRANCH_MANAGER).exists() or ProviderLocation.objects.filter(manager=user, is_active=True).exists():
-            roles.add('branch_manager')
-        if active_location_roles.exists() or active_provider_links.filter(role=EmployeeProvider.ROLE_WORKER).exists():
-            roles.add('specialist')
-            roles.add('worker')
+        for provider in Provider.objects.filter(id__in=provider_ids):
+            provider_roles = set(cls.get_user_roles_for_provider(user, provider))
+            roles.update(provider_roles)
+            if ProviderRole.CODE_WORKER in provider_roles:
+                roles.add('specialist')
+
         return roles
 
     @classmethod

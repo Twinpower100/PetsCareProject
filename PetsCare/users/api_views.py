@@ -5,12 +5,15 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import transaction, IntegrityError
 import re
 from .serializers import (
     UserSerializer, 
     UserRegistrationSerializer,
     GoogleAuthSerializer,
+    GoogleSignupCompleteSerializer,
+    EmailVerificationConfirmSerializer,
+    EmailVerificationResendSerializer,
     UserRoleAssignmentSerializer,
     ProviderFormSerializer,
     ProviderFormApprovalSerializer,
@@ -42,12 +45,45 @@ from .serializers import RoleTerminationSerializer
 from rest_framework.serializers import ValidationError
 from django.db.models import Q, Count, F, Value
 from django.db.models.functions import Coalesce
-from geolocation.utils import filter_by_distance, validate_coordinates
 import logging
+from .email_verification import confirm_email_verification, issue_email_verification, resend_email_verification
+from .google_signup import build_pending_google_signup_token
 logger = logging.getLogger(__name__)
 # from audit.models import AuditLog  # временно отключено - приложение audit отключено
 
 User = get_user_model()
+
+
+def _build_auth_response(user, refresh, *, needs_phone=False, email_verification_sent=False):
+    """
+    Формирует единый auth-ответ с флагами email verification.
+    """
+    return {
+        'refresh': str(refresh),
+        'access': str(refresh.access_token),
+        'user': UserSerializer(user).data,
+        'needs_phone': needs_phone,
+        'email_verification_required': not user.email_verified,
+        'email_verification_sent': email_verification_sent,
+    }
+
+
+def _build_pending_google_signup_response(google_user_data, *, phone_conflict=False):
+    """
+    Формирует ответ для незавершённой Google-регистрации до создания аккаунта.
+    """
+    pending_token = build_pending_google_signup_token(google_user_data)
+    return {
+        'needs_phone': True,
+        'pending_google_signup_token': pending_token,
+        'phone_conflict': phone_conflict,
+        'google_profile': {
+            'email': google_user_data.get('email'),
+            'name': google_user_data.get('name'),
+        },
+        'email_verification_required': True,
+        'email_verification_sent': False,
+    }
 
 
 class UserRegistrationAPIView(generics.CreateAPIView):
@@ -64,14 +100,15 @@ class UserRegistrationAPIView(generics.CreateAPIView):
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
-        
+        with transaction.atomic():
+            user = serializer.save()
+            issue_email_verification(user, invalidate_existing=True)
+
         refresh = RefreshToken.for_user(user)
-        return Response({
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
-            'user': UserSerializer(user).data
-        }, status=status.HTTP_201_CREATED)
+        return Response(
+            _build_auth_response(user, refresh, email_verification_sent=True),
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class UserLoginAPIView(TokenObtainPairView):
@@ -86,9 +123,14 @@ class UserLoginAPIView(TokenObtainPairView):
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+        preferred_language = (getattr(request, 'LANGUAGE_CODE', None) or 'en').split('-')[0]
+        if serializer.user.preferred_language != preferred_language:
+            serializer.user.preferred_language = preferred_language
+            serializer.user.save(update_fields=['preferred_language'])
+
         data = serializer.validated_data
         data['user'] = UserSerializer(serializer.user).data
+        data['email_verification_required'] = not serializer.user.email_verified
         return Response(data, status=status.HTTP_200_OK)
 
 
@@ -121,48 +163,174 @@ class GoogleAuthAPIView(generics.CreateAPIView):
         """
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        preferred_language = (getattr(request, 'LANGUAGE_CODE', None) or 'en').split('-')[0]
         
         try:
             # Получаем данные пользователя из сериализатора
             google_data = serializer.validated_data['google_user_data']
             email = google_data['email']
+            google_phone = (google_data.get('phone') or '').strip()
             
             # Получение или создание пользователя
             try:
                 user = User.objects.get(email=email)
             except User.DoesNotExist:
-                # Username генерируется автоматически в UserManager
-                # Получаем телефон от Google, если есть
-                google_phone = google_data.get('phone')
-                phone_number = google_phone if google_phone else ''
-                
-                user = User.objects.create_user(
-                    email=email,
-                    first_name=google_data.get('name', '').split(' ')[0] if google_data.get('name') else '',
-                    last_name=' '.join(google_data.get('name', '').split(' ')[1:]) if google_data.get('name') and len(google_data.get('name', '').split(' ')) > 1 else '',
-                    phone_number=phone_number,  # Пустая строка, если Google не предоставил телефон
-                    password=None  # Пароль не нужен для социальной аутентификации
-                )
+                phone_conflict = bool(google_phone) and User.objects.filter(phone_number=google_phone).exists()
+                if not google_phone or phone_conflict:
+                    google_data['requires_manual_phone'] = True
+                    return Response(
+                        _build_pending_google_signup_response(
+                            google_data,
+                            phone_conflict=phone_conflict,
+                        ),
+                        status=status.HTTP_200_OK,
+                    )
+
+                with transaction.atomic():
+                    user = User.objects.create_user(
+                        email=email,
+                        first_name=google_data.get('name', '').split(' ')[0] if google_data.get('name') else '',
+                        last_name=' '.join(google_data.get('name', '').split(' ')[1:]) if google_data.get('name') and len(google_data.get('name', '').split(' ')) > 1 else '',
+                        phone_number=google_phone,
+                        preferred_language=preferred_language,
+                        password=None,
+                        email_verified=False,
+                        email_verified_at=None,
+                    )
+                    issue_email_verification(user, invalidate_existing=True)
+                email_verification_sent = True
+            else:
+                update_fields = []
+                if preferred_language and user.preferred_language != preferred_language:
+                    user.preferred_language = preferred_language
+                    update_fields.append('preferred_language')
+                if update_fields:
+                    user.save(update_fields=update_fields)
+                email_verification_sent = False
             
             # Генерация JWT токенов
             refresh = RefreshToken.for_user(user)
-            user_data = UserSerializer(user).data
             
             # Проверяем, нужен ли телефон для завершения регистрации
             needs_phone = not user.phone_number
             
-            return Response({
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
-                'user': user_data,
-                'needs_phone': needs_phone
-            })
+            return Response(
+                _build_auth_response(
+                    user,
+                    refresh,
+                    needs_phone=needs_phone,
+                    email_verification_sent=email_verification_sent,
+                )
+            )
             
+        except IntegrityError:
+            return Response(
+                {'phone_number': [_('This phone number is already registered.')]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except Exception as e:
             return Response(
                 {'error': _(str(e))},
                 status=status.HTTP_400_BAD_REQUEST
             ) 
+
+
+class GoogleSignupCompleteAPIView(APIView):
+    """
+    Завершает Google-регистрацию после ручного ввода обязательного телефона.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = GoogleSignupCompleteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        google_data = serializer.validated_data['google_user_data']
+        phone_number = serializer.validated_data['final_phone_number']
+        preferred_language = (getattr(request, 'LANGUAGE_CODE', None) or 'en').split('-')[0]
+        email_verification_sent = False
+
+        try:
+            with transaction.atomic():
+                try:
+                    user = User.objects.select_for_update().get(email=google_data['email'])
+                    created = False
+                except User.DoesNotExist:
+                    user = User.objects.create_user(
+                        email=google_data['email'],
+                        first_name=google_data.get('name', '').split(' ')[0] if google_data.get('name') else '',
+                        last_name=' '.join(google_data.get('name', '').split(' ')[1:]) if google_data.get('name') and len(google_data.get('name', '').split(' ')) > 1 else '',
+                        phone_number=phone_number,
+                        preferred_language=preferred_language,
+                        password=None,
+                        email_verified=False,
+                        email_verified_at=None,
+                    )
+                    created = True
+
+                if created:
+                    issue_email_verification(user, invalidate_existing=True)
+                    email_verification_sent = True
+                else:
+                    update_fields = []
+                    if not user.phone_number:
+                        user.phone_number = phone_number
+                        update_fields.append('phone_number')
+                    if preferred_language and user.preferred_language != preferred_language:
+                        user.preferred_language = preferred_language
+                        update_fields.append('preferred_language')
+                    if update_fields:
+                        user.save(update_fields=update_fields)
+
+            refresh = RefreshToken.for_user(user)
+            return Response(
+                _build_auth_response(
+                    user,
+                    refresh,
+                    needs_phone=not user.phone_number,
+                    email_verification_sent=email_verification_sent,
+                ),
+                status=status.HTTP_200_OK,
+            )
+        except IntegrityError:
+            return Response(
+                {'phone_number': [_('This phone number is already registered.')]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class EmailVerificationConfirmAPIView(APIView):
+    """
+    Подтверждает email пользователя по токену.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        serializer = EmailVerificationConfirmSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = confirm_email_verification(serializer.validated_data['token'])
+        payload = {
+            'detail': _('Your email address has been verified successfully.'),
+            'code': 'email_verified',
+            'user': UserSerializer(user).data,
+        }
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+class EmailVerificationResendAPIView(APIView):
+    """
+    Повторно отправляет письмо подтверждения email.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = EmailVerificationResendSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        resend_email_verification(request.user)
+        return Response({
+            'detail': _('A new verification email has been sent.'),
+            'code': 'email_verification_sent',
+        }, status=status.HTTP_200_OK)
 
 class IsSystemAdmin(permissions.BasePermission):
     """
@@ -374,9 +542,6 @@ class RoleTerminationAPIView(APIView):
         # Устанавливаем дату окончания
         employee_provider.end_date = timezone.now().date()
         employee_provider.save()
-        
-        # Отправляем уведомление
-        self._send_termination_notification(user, 'employee', provider, reason)
     
     def _terminate_billing_manager(self, user, provider, reason):
         """
@@ -393,157 +558,6 @@ class RoleTerminationAPIView(APIView):
         
         # Завершаем управление
         billing_manager_provider.terminate(reason)
-        
-        # Отправляем уведомление
-        self._send_termination_notification(user, 'billing_manager', provider, reason)
-    
-    def _send_termination_notification(self, user, role, provider, reason):
-        """
-        Отправляет уведомление об увольнении.
-        """
-        # TODO: Реализовать отправку уведомления пользователю
-        pass
-
-
-class UserSearchByDistanceAPIView(generics.ListAPIView):
-    """
-    API для поиска пользователей по расстоянию от указанной точки.
-    
-    Основные возможности:
-    - Поиск пользователей в указанном радиусе
-    - Фильтрация по ролям (ситтеры, владельцы питомцев)
-    - Сортировка по расстоянию
-    - Возвращает расстояние до каждого пользователя
-    
-    Параметры запроса:
-    - latitude: Широта центральной точки
-    - longitude: Долгота центральной точки
-    - radius: Радиус поиска в километрах (по умолчанию 10)
-    - user_type: Тип пользователя для фильтрации (sitter, pet_owner)
-    - limit: Максимальное количество результатов (по умолчанию 20)
-    
-    Права доступа:
-    - Требуется аутентификация
-    """
-    serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        """
-        Возвращает пользователей в указанном радиусе.
-        """
-        # Получаем параметры запроса
-        latitude = self.request.query_params.get('latitude')
-        longitude = self.request.query_params.get('longitude')
-        radius = float(self.request.query_params.get('radius', 10))
-        user_type = self.request.query_params.get('user_type')
-        limit = int(self.request.query_params.get('limit', 20))
-        
-        # Валидируем координаты
-        if not latitude or not longitude:
-            return User.objects.none()
-        
-        try:
-            lat = float(latitude)
-            lon = float(longitude)
-        except (ValueError, TypeError):
-            return User.objects.none()
-        
-        if not validate_coordinates(lat, lon):
-            return User.objects.none()
-        
-        # Базовый queryset
-        queryset = User.objects.filter(is_active=True)
-        
-        # Фильтрация по типу пользователя
-        if user_type:
-            if user_type == 'sitter':
-                queryset = queryset.filter(user_types__name='sitter')
-            elif user_type == 'pet_owner':
-                queryset = queryset.filter(user_types__name='pet_owner')
-        
-        # В модели User нет геокоординат для поиска по расстоянию
-        return User.objects.none()
-    
-    def get_serializer_context(self):
-        """
-        Добавляет контекст для расчета расстояний в сериализатор.
-        """
-        context = super().get_serializer_context()
-        context['latitude'] = self.request.query_params.get('latitude')
-        context['longitude'] = self.request.query_params.get('longitude')
-        return context
-
-
-class SitterSearchByDistanceAPIView(generics.ListAPIView):
-    """
-    API для поиска ситтеров по расстоянию от указанной точки.
-    
-    Основные возможности:
-    - Поиск ситтеров в указанном радиусе
-    - Фильтрация по доступности и рейтингу
-    - Сортировка по расстоянию и рейтингу
-    - Возвращает расстояние до каждого ситтера
-    
-    Параметры запроса:
-    - latitude: Широта центральной точки
-    - longitude: Долгота центральной точки
-    - radius: Радиус поиска в километрах (по умолчанию 10)
-    - min_rating: Минимальный рейтинг ситтера
-    - available: Только доступные ситтеры (true/false)
-    - limit: Максимальное количество результатов (по умолчанию 20)
-    
-    Права доступа:
-    - Требуется аутентификация
-    """
-    serializer_class = UserSerializer
-    permission_classes = [permissions.IsAuthenticated]
-    
-    def get_queryset(self):
-        """
-        Возвращает ситтеров в указанном радиусе.
-        """
-        from geolocation.utils import filter_by_distance, validate_coordinates
-        from sitters.models import PetSitting
-        
-        # Получаем параметры запроса
-        latitude = self.request.query_params.get('latitude')
-        longitude = self.request.query_params.get('longitude')
-        radius = float(self.request.query_params.get('radius', 10))
-        min_rating = self.request.query_params.get('min_rating')
-        available = self.request.query_params.get('available')
-        limit = int(self.request.query_params.get('limit', 20))
-        
-        # Валидируем координаты
-        if not latitude or not longitude:
-            return User.objects.none()
-        
-        try:
-            lat = float(latitude)
-            lon = float(longitude)
-        except (ValueError, TypeError):
-            return User.objects.none()
-        
-        if not validate_coordinates(lat, lon):
-            return User.objects.none()
-        
-        # Базовый queryset ситтеров
-        queryset = User.objects.filter(
-            is_active=True,
-            user_types__name='sitter'
-        )
-        
-        # В модели User нет геокоординат и рейтинга для ситтеров
-        return User.objects.none()
-    
-    def get_serializer_context(self):
-        """
-        Добавляет контекст для расчета расстояний в сериализатор.
-        """
-        context = super().get_serializer_context()
-        context['latitude'] = self.request.query_params.get('latitude')
-        context['longitude'] = self.request.query_params.get('longitude')
-        return context
 
 
 class BulkRoleAssignmentAPIView(APIView):
@@ -1509,6 +1523,9 @@ class UserRolesView(APIView):
         Возвращает роли текущего пользователя.
         """
         user = request.user
+        from providers.permission_service import ProviderPermissionService
+
+        ProviderPermissionService.sync_user_access_roles(user)
         user_roles = [role.name for role in user.user_types.all()]
         
         return Response({

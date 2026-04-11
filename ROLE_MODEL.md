@@ -163,6 +163,7 @@
 | `org.legal`               | CRUD     | R        | —        | —                 | —                |
 | `org.billing`             | CRUD     | R        | R        | —                 | —                |
 | `org.deactivation`        | D        | —        | —        | —                 | —                |
+| `org.services`            | CRUD     | CRUD     | CRUD     | —                 | —                |
 | `locations.list`          | CRUD     | CRUD     | R        | R (own_branch)    | R (own_branch)   |
 | `locations.settings`      | CRUD     | CRUD     | RU       | RU (own_branch)   | —                |
 | `locations.schedule`      | CRUD     | CRUD     | CRUD     | CRUD (own_branch) | R (own_only)     |
@@ -183,6 +184,8 @@
 | `reviews`                 | RU       | RU       | RU       | RU (own_branch)   | R (own_only)     |
 
 ### Модели хранения матрицы
+
+`org.services` покрывает управление организационной матрицей цен и переключателем `Единые цены услуг для организации`. При включённом unified pricing branch-level ресурс `locations.services` остаётся источником read-model по услугам филиала, но операции изменения price matrix через него блокируются.
 
 - **`ProviderRole`** — справочник ролей (owner, provider_admin, provider_manager, branch_manager, worker) с уровнем иерархии
 - **`ProviderResource`** — справочник ресурсов (страниц/вкладок) с иерархией и порядком сортировки

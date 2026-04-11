@@ -13,11 +13,13 @@ API представления для модуля передержки пито
 from datetime import date, datetime, time, timedelta
 
 from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Avg, Count, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.dateparse import parse_date
+from django.utils import translation
 from django.utils.translation import gettext_lazy as _
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import generics, permissions, status, viewsets
@@ -30,13 +32,15 @@ from access.models import PetAccess
 from notifications.models import Notification
 from pets.models import Pet
 from pets.serializers import PetSerializer
+from users.email_verification_permissions import require_verified_email_for_owner_action
 
-from .models import Conversation, Message, PetSitting, PetSittingAd, PetSittingResponse, SitterProfile, SitterReview
+from .models import Conversation, Message, PetSitting, PetSittingAd, PetSittingRequest, PetSittingResponse, SitterProfile, SitterReview
 from .serializers import (
     ConversationDetailSerializer,
     ConversationSerializer,
     MessageSerializer,
     PetSittingAdSerializer,
+    PetSittingRequestSerializer,
     PetSittingResponseSerializer,
     PetSittingSerializer,
     SitterProfileSerializer,
@@ -46,6 +50,28 @@ from .serializers import (
 User = get_user_model()
 
 CAPACITY_BLOCKING_STATUSES = ('waiting_start', 'active', 'waiting_review')
+
+
+def _normalize_language_code(raw_value: str | None) -> str:
+    """
+    Нормализует язык пользователя до поддерживаемого кода.
+    """
+    if not raw_value:
+        return 'en'
+
+    language_code = raw_value.split('-')[0].strip().lower()
+    if language_code not in {'en', 'ru', 'me', 'de'}:
+        return 'en'
+    return language_code
+
+
+def _build_frontend_url(path: str) -> str:
+    """
+    Собирает абсолютную ссылку на публичный frontend.
+    """
+    base_url = settings.FRONTEND_URL.rstrip('/')
+    normalized_path = path if path.startswith('/') else f'/{path}'
+    return f'{base_url}{normalized_path}'
 
 
 def _notify_user(
@@ -60,15 +86,19 @@ def _notify_user(
     """
     Создаёт уведомление и сразу отправляет email/in-app каналами.
     """
-    notification = Notification.objects.create(
-        user=user,
-        pet=pet,
-        notification_type=notification_type,
-        title=title,
-        message=message,
-        channel='all',
-        data=data or {},
-    )
+    notification_data = dict(data or {})
+    language_code = _normalize_language_code(getattr(user, 'preferred_language', None))
+
+    with translation.override(language_code):
+        notification = Notification.objects.create(
+            user=user,
+            pet=pet,
+            notification_type=notification_type,
+            title=str(title),
+            message=str(message),
+            channel='all',
+            data=notification_data,
+        )
     notification.send()
     return notification
 
@@ -135,6 +165,24 @@ def _ensure_response_capacity(response: PetSittingResponse) -> int:
     return current_load
 
 
+def _ensure_request_capacity(sitting_request: PetSittingRequest) -> int:
+    """
+    Проверяет вместимость ситтера на даты прямого запроса.
+    """
+    overlapping_sittings = PetSitting.objects.select_for_update().filter(
+        sitter=sitting_request.sitter,
+        status__in=CAPACITY_BLOCKING_STATUSES,
+        start_date__lte=sitting_request.end_date,
+        end_date__gte=sitting_request.start_date,
+    )
+    current_load = overlapping_sittings.count()
+
+    if current_load >= sitting_request.sitter.max_pets:
+        raise ValidationError({'max_pets': _('Sitter capacity is exceeded for the selected dates.')})
+
+    return current_load
+
+
 def _get_or_create_conversation(*, owner, sitter_user, ad: PetSittingAd | None = None, sitting: PetSitting | None = None) -> Conversation:
     """
     Возвращает существующий чат между владельцем и ситтером или создаёт новый.
@@ -168,6 +216,32 @@ def _get_or_create_conversation(*, owner, sitter_user, ad: PetSittingAd | None =
         conversation.pet_sitting = sitting
         updated_fields.append('pet_sitting')
     if updated_fields:
+        conversation.save(update_fields=updated_fields + ['updated_at'])
+    return conversation
+
+
+def _attach_request_conversation(
+    conversation: Conversation | None,
+    *,
+    ad: PetSittingAd | None = None,
+    sitting: PetSitting | None = None,
+) -> Conversation | None:
+    """
+    Привязывает к уже существующему диалогу служебные сущности прямого запроса.
+    """
+    if conversation is None:
+        return None
+
+    updated_fields: list[str] = []
+    if ad is not None and conversation.pet_sitting_ad_id is None:
+        conversation.pet_sitting_ad = ad
+        updated_fields.append('pet_sitting_ad')
+    if sitting is not None and conversation.pet_sitting_id is None:
+        conversation.pet_sitting = sitting
+        updated_fields.append('pet_sitting')
+
+    if updated_fields:
+        conversation.updated_at = timezone.now()
         conversation.save(update_fields=updated_fields + ['updated_at'])
     return conversation
 
@@ -242,12 +316,12 @@ class SitterProfileViewSet(viewsets.ModelViewSet):
         )
 
         if self.action in {'update', 'partial_update', 'destroy', 'me'}:
-            return queryset.filter(user=self.request.user)
+            return queryset.filter(user=self.request.user).order_by('-updated_at', '-id')
 
         if self.request.query_params.get('mine') == 'true':
-            return queryset.filter(user=self.request.user)
+            return queryset.filter(user=self.request.user).order_by('-updated_at', '-id')
 
-        return queryset.filter(Q(is_active=True) | Q(user=self.request.user))
+        return queryset.filter(Q(is_active=True) | Q(user=self.request.user)).order_by('-updated_at', '-id')
 
     def perform_create(self, serializer):
         """
@@ -306,6 +380,8 @@ class PetSittingAdViewSet(viewsets.ModelViewSet):
             responses_count=Count('responses', distinct=True)
         )
 
+        queryset = queryset.filter(visibility='public')
+
         if self.action in {'update', 'partial_update', 'destroy', 'close'}:
             queryset = queryset.filter(owner=self.request.user)
         elif self.request.query_params.get('mine') == 'true':
@@ -327,6 +403,7 @@ class PetSittingAdViewSet(viewsets.ModelViewSet):
         """
         Создаёт объявление от имени текущего пользователя.
         """
+        require_verified_email_for_owner_action(self.request.user)
         pet = serializer.validated_data['pet']
         if not pet.owners.filter(id=self.request.user.id).exists():
             raise ValidationError({'pet': _('You can create pet sitting ads only for your own pets')})
@@ -337,6 +414,7 @@ class PetSittingAdViewSet(viewsets.ModelViewSet):
         """
         Закрывает объявление владельца.
         """
+        require_verified_email_for_owner_action(request.user)
         ad = self.get_object()
         ad.status = 'closed'
         ad.save(update_fields=['status', 'updated_at'])
@@ -370,7 +448,8 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         ).prefetch_related(
             'ad__pet__chronic_conditions'
         ).filter(
-            Q(ad__owner=self.request.user) | Q(sitter__user=self.request.user)
+            Q(ad__owner=self.request.user) | Q(sitter__user=self.request.user),
+            ad__visibility='public',
         )
 
         role = self.request.query_params.get('role')
@@ -387,7 +466,7 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         if response_status_value:
             queryset = queryset.filter(status=response_status_value)
 
-        return queryset
+        return queryset.order_by('-created_at', '-id')
 
     def perform_create(self, serializer):
         """
@@ -402,6 +481,8 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
             raise ValidationError({'detail': _('Owners cannot respond to their own ads.')})
         if ad.status != 'active':
             raise ValidationError({'detail': _('You can respond only to active ads.')})
+        if ad.visibility != 'public':
+            raise ValidationError({'detail': _('You can respond only to public ads.')})
 
         duplicate_exists = PetSittingResponse.objects.filter(
             ad=ad,
@@ -416,12 +497,16 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         _notify_user(
             ad.owner,
             title=_('New pet sitting response'),
-            message=_('%(user)s responded to your ad for %(pet)s.') % {
+            message=_('%(user)s responded to your ad for %(pet)s. Open PetsCare to review the response and continue the conversation.') % {
                 'user': self.request.user.get_full_name() or self.request.user.email,
                 'pet': ad.pet.name,
             },
             pet=ad.pet,
-            data={'ad_id': ad.id, 'response_id': response.id},
+            data={
+                'ad_id': ad.id,
+                'response_id': response.id,
+                'action_url': _build_frontend_url(f'/boarding?tab=ownerAds&ad={ad.id}'),
+            },
         )
 
     @action(detail=True, methods=['post'])
@@ -430,6 +515,7 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         """
         Принимает отклик и создаёт передержку с проверкой вместимости.
         """
+        require_verified_email_for_owner_action(request.user)
         response = get_object_or_404(
             PetSittingResponse.objects.select_for_update().select_related(
                 'ad',
@@ -477,7 +563,11 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
                     'pet': response.ad.pet.name,
                 },
                 pet=response.ad.pet,
-                data={'ad_id': response.ad.id, 'response_id': other_response.id},
+                data={
+                    'ad_id': response.ad.id,
+                    'response_id': other_response.id,
+                    'action_url': _build_frontend_url(f'/boarding?tab=sitterSearch&ad={response.ad.id}'),
+                },
             )
 
         response.ad.status = 'closed'
@@ -495,7 +585,12 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
             title=_('Your pet sitting response was accepted'),
             message=_('Your response to the ad for %(pet)s was accepted.') % {'pet': response.ad.pet.name},
             pet=response.ad.pet,
-            data={'ad_id': response.ad.id, 'response_id': response.id, 'sitting_id': sitting.id},
+            data={
+                'ad_id': response.ad.id,
+                'response_id': response.id,
+                'sitting_id': sitting.id,
+                'action_url': _build_frontend_url(f'/boarding?tab=stays&sitting={sitting.id}'),
+            },
         )
 
         serializer = PetSittingSerializer(sitting, context={'request': request})
@@ -507,6 +602,7 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
         """
         Отклоняет отклик ситтера.
         """
+        require_verified_email_for_owner_action(request.user)
         response = get_object_or_404(
             PetSittingResponse.objects.select_for_update().select_related('ad', 'ad__owner', 'ad__pet', 'sitter__user'),
             pk=pk,
@@ -525,10 +621,300 @@ class PetSittingResponseViewSet(viewsets.ModelViewSet):
             title=_('Your pet sitting response was rejected'),
             message=_('Your response to the ad for %(pet)s was rejected.') % {'pet': response.ad.pet.name},
             pet=response.ad.pet,
-            data={'ad_id': response.ad.id, 'response_id': response.id},
+            data={
+                'ad_id': response.ad.id,
+                'response_id': response.id,
+                'action_url': _build_frontend_url(f'/boarding?tab=sitterSearch&ad={response.ad.id}'),
+            },
         )
 
         return Response(self.get_serializer(response).data)
+
+
+class PetSittingRequestViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet прямых owner -> sitter запросов на передержку.
+    """
+
+    serializer_class = PetSittingRequestSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        """
+        Возвращает прямые запросы, видимые владельцу или ситтеру.
+        """
+        if getattr(self, 'swagger_fake_view', False):
+            return PetSittingRequest.objects.none()
+
+        queryset = PetSittingRequest.objects.select_related(
+            'owner',
+            'pet',
+            'pet__pet_type',
+            'pet__breed',
+            'sitter',
+            'sitter__user',
+            'conversation',
+            'pet_sitting',
+            'structured_address',
+        ).prefetch_related(
+            'pet__chronic_conditions'
+        ).filter(
+            Q(owner=self.request.user) | Q(sitter__user=self.request.user)
+        )
+
+        role = self.request.query_params.get('role')
+        if role == 'owner':
+            queryset = queryset.filter(owner=self.request.user)
+        elif role == 'sitter':
+            queryset = queryset.filter(sitter__user=self.request.user)
+
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        conversation_id = self.request.query_params.get('conversation')
+        if conversation_id:
+            queryset = queryset.filter(conversation_id=conversation_id)
+
+        return queryset.order_by('-created_at', '-id')
+
+    @transaction.atomic
+    def perform_create(self, serializer):
+        """
+        Создаёт прямой запрос владельца к ситтеру.
+        """
+        require_verified_email_for_owner_action(self.request.user)
+
+        sitter_profile = SitterProfile.objects.select_for_update().select_related('user').get(
+            pk=serializer.validated_data['sitter'].pk
+        )
+        pet = serializer.validated_data['pet']
+
+        if not pet.owners.filter(id=self.request.user.id).exists():
+            raise ValidationError({'pet': _('You can create pet sitting requests only for your own pets.')})
+        if sitter_profile.user_id == self.request.user.id:
+            raise ValidationError({'sitter': _('You cannot create a pet sitting request for yourself.')})
+        if not sitter_profile.is_active:
+            raise ValidationError({'sitter': _('Activate the sitter profile before sending a direct request.')})
+
+        duplicate_exists = PetSittingRequest.objects.select_for_update().filter(
+            owner=self.request.user,
+            sitter=sitter_profile,
+            pet=pet,
+            start_date=serializer.validated_data['start_date'],
+            end_date=serializer.validated_data['end_date'],
+            status=PetSittingRequest.STATUS_PENDING,
+        ).exists()
+        if duplicate_exists:
+            raise ValidationError({'detail': _('You already have a pending pet sitting request for this pet and sitter.')})
+
+        conversation = None
+        conversation_id = self.request.data.get('conversation_id')
+        if conversation_id:
+            conversation = get_object_or_404(
+                Conversation.objects.prefetch_related('participants'),
+                pk=conversation_id,
+                is_active=True,
+                participants=self.request.user,
+            )
+            if not conversation.participants.filter(id=sitter_profile.user_id).exists():
+                raise ValidationError({'conversation_id': _('The selected conversation does not belong to this sitter.')})
+        else:
+            conversation = _get_or_create_conversation(owner=self.request.user, sitter_user=sitter_profile.user)
+
+        pet_sitting_request = serializer.save(
+            owner=self.request.user,
+            initiated_by=self.request.user,
+            sitter=sitter_profile,
+            conversation=conversation,
+        )
+
+        _notify_user(
+            sitter_profile.user,
+            title=_('New pet sitting request'),
+            message=_('%(owner)s sent you a pet sitting request for %(pet)s. Open PetsCare to accept or decline it.') % {
+                'owner': self.request.user.get_full_name() or self.request.user.email,
+                'pet': pet.name,
+            },
+            pet=pet,
+            data={
+                'request_id': pet_sitting_request.id,
+                'conversation_id': conversation.id if conversation else None,
+                'action_url': _build_frontend_url(f'/boarding?tab=requests&request={pet_sitting_request.id}'),
+            },
+        )
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def accept(self, request, pk=None):
+        """
+        Принимает прямой запрос и создаёт внутреннюю передержку.
+        """
+        pet_sitting_request = get_object_or_404(
+            PetSittingRequest.objects.select_for_update().select_related(
+                'owner',
+                'pet',
+                'sitter',
+                'sitter__user',
+            ),
+            pk=pk,
+        )
+
+        if pet_sitting_request.sitter.user_id != request.user.id:
+            raise PermissionDenied(_('Only the sitter can accept a direct pet sitting request.'))
+        if pet_sitting_request.status != PetSittingRequest.STATUS_PENDING:
+            raise ValidationError({'detail': _('This pet sitting request has already been processed.')})
+
+        pet_sitting_request.sitter = SitterProfile.objects.select_for_update().get(pk=pet_sitting_request.sitter_id)
+        _ensure_request_capacity(pet_sitting_request)
+
+        internal_ad = PetSittingAd.objects.create(
+            pet=pet_sitting_request.pet,
+            owner=pet_sitting_request.owner,
+            start_date=pet_sitting_request.start_date,
+            end_date=pet_sitting_request.end_date,
+            description=pet_sitting_request.message,
+            status='closed',
+            visibility='internal',
+            location=pet_sitting_request.location,
+            structured_address=pet_sitting_request.structured_address,
+            max_distance_km=pet_sitting_request.sitter.max_distance_km,
+            compensation_type=pet_sitting_request.sitter.compensation_type,
+        )
+        internal_response = PetSittingResponse.objects.create(
+            ad=internal_ad,
+            sitter=pet_sitting_request.sitter,
+            message=pet_sitting_request.message,
+            status='accepted',
+        )
+        sitting = PetSitting.objects.create(
+            ad=internal_ad,
+            response=internal_response,
+            sitter=pet_sitting_request.sitter,
+            pet=pet_sitting_request.pet,
+            start_date=pet_sitting_request.start_date,
+            end_date=pet_sitting_request.end_date,
+            status='waiting_start',
+        )
+
+        pet_sitting_request.status = PetSittingRequest.STATUS_ACCEPTED
+        pet_sitting_request.version += 1
+        pet_sitting_request.created_ad = internal_ad
+        pet_sitting_request.created_response = internal_response
+        pet_sitting_request.pet_sitting = sitting
+
+        conversation = pet_sitting_request.conversation or _get_or_create_conversation(
+            owner=pet_sitting_request.owner,
+            sitter_user=pet_sitting_request.sitter.user,
+        )
+        pet_sitting_request.conversation = _attach_request_conversation(
+            conversation,
+            ad=internal_ad,
+            sitting=sitting,
+        )
+        pet_sitting_request.save(
+            update_fields=[
+                'status',
+                'version',
+                'created_ad',
+                'created_response',
+                'pet_sitting',
+                'conversation',
+                'updated_at',
+            ]
+        )
+
+        _notify_user(
+            pet_sitting_request.owner,
+            title=_('Your pet sitting request was accepted'),
+            message=_('%(sitter)s accepted your pet sitting request for %(pet)s. Open PetsCare to review the stay and continue in chat.') % {
+                'sitter': pet_sitting_request.sitter.user.get_full_name() or pet_sitting_request.sitter.user.email,
+                'pet': pet_sitting_request.pet.name,
+            },
+            pet=pet_sitting_request.pet,
+            data={
+                'request_id': pet_sitting_request.id,
+                'sitting_id': sitting.id,
+                'conversation_id': pet_sitting_request.conversation_id,
+                'action_url': _build_frontend_url(f'/boarding?tab=stays&sitting={sitting.id}'),
+            },
+        )
+
+        serializer = self.get_serializer(pet_sitting_request)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def reject(self, request, pk=None):
+        """
+        Отклоняет прямой запрос владельца.
+        """
+        pet_sitting_request = get_object_or_404(
+            PetSittingRequest.objects.select_for_update().select_related('owner', 'pet', 'sitter__user'),
+            pk=pk,
+        )
+
+        if pet_sitting_request.sitter.user_id != request.user.id:
+            raise PermissionDenied(_('Only the sitter can reject a direct pet sitting request.'))
+        if pet_sitting_request.status != PetSittingRequest.STATUS_PENDING:
+            raise ValidationError({'detail': _('This pet sitting request has already been processed.')})
+
+        pet_sitting_request.status = PetSittingRequest.STATUS_REJECTED
+        pet_sitting_request.version += 1
+        pet_sitting_request.save(update_fields=['status', 'version', 'updated_at'])
+
+        _notify_user(
+            pet_sitting_request.owner,
+            title=_('Your pet sitting request was declined'),
+            message=_('%(sitter)s declined your pet sitting request for %(pet)s. Open PetsCare to review the request history or continue the conversation.') % {
+                'sitter': pet_sitting_request.sitter.user.get_full_name() or pet_sitting_request.sitter.user.email,
+                'pet': pet_sitting_request.pet.name,
+            },
+            pet=pet_sitting_request.pet,
+            data={
+                'request_id': pet_sitting_request.id,
+                'action_url': _build_frontend_url(f'/boarding?tab=requests&request={pet_sitting_request.id}'),
+            },
+        )
+
+        return Response(self.get_serializer(pet_sitting_request).data)
+
+    @action(detail=True, methods=['post'])
+    @transaction.atomic
+    def cancel(self, request, pk=None):
+        """
+        Отменяет исходящий прямой запрос владельца.
+        """
+        require_verified_email_for_owner_action(request.user)
+        pet_sitting_request = get_object_or_404(
+            PetSittingRequest.objects.select_for_update().select_related('owner', 'pet', 'sitter__user'),
+            pk=pk,
+        )
+
+        if pet_sitting_request.owner_id != request.user.id:
+            raise PermissionDenied(_('Only the owner can cancel a direct pet sitting request.'))
+        if pet_sitting_request.status != PetSittingRequest.STATUS_PENDING:
+            raise ValidationError({'detail': _('Only pending pet sitting requests can be cancelled.')})
+
+        pet_sitting_request.status = PetSittingRequest.STATUS_CANCELLED
+        pet_sitting_request.version += 1
+        pet_sitting_request.save(update_fields=['status', 'version', 'updated_at'])
+
+        _notify_user(
+            pet_sitting_request.sitter.user,
+            title=_('A pet sitting request was cancelled'),
+            message=_('%(owner)s cancelled the pet sitting request for %(pet)s. Open PetsCare to review the conversation and current status.') % {
+                'owner': pet_sitting_request.owner.get_full_name() or pet_sitting_request.owner.email,
+                'pet': pet_sitting_request.pet.name,
+            },
+            pet=pet_sitting_request.pet,
+            data={
+                'request_id': pet_sitting_request.id,
+                'action_url': _build_frontend_url(f'/boarding?tab=requests&request={pet_sitting_request.id}'),
+            },
+        )
+
+        return Response(self.get_serializer(pet_sitting_request).data)
 
 
 class SitterReviewViewSet(viewsets.ModelViewSet):
@@ -550,7 +936,7 @@ class SitterReviewViewSet(viewsets.ModelViewSet):
         sitter_id = self.request.query_params.get('sitter')
         if sitter_id:
             queryset = queryset.filter(history__sitter_id=sitter_id)
-        return queryset
+        return queryset.order_by('-created_at', '-id')
 
     def perform_create(self, serializer):
         """
@@ -595,7 +981,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         elif role == 'sitter':
             queryset = queryset.filter(sitter__user=self.request.user)
 
-        return queryset
+        return queryset.order_by('-created_at', '-id')
 
     @action(detail=True, methods=['post'])
     @transaction.atomic
@@ -609,6 +995,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
         )
 
         if request.user.id == sitting.ad.owner_id:
+            require_verified_email_for_owner_action(request.user)
             if sitting.owner_confirmed_start:
                 raise ValidationError({'detail': _('You have already confirmed the start of this pet sitting.')})
             sitting.owner_confirmed_start = True
@@ -680,6 +1067,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
             raise ValidationError({'detail': _('Pet sitting can be finished only while it is active.')})
 
         if request.user.id == sitting.ad.owner_id:
+            require_verified_email_for_owner_action(request.user)
             if sitting.owner_confirmed_end:
                 raise ValidationError({'detail': _('You have already confirmed the end of this pet sitting.')})
             sitting.owner_confirmed_end = True
@@ -740,6 +1128,7 @@ class PetSittingViewSet(viewsets.ModelViewSet):
 
         if request.user.id != sitting.ad.owner_id:
             raise PermissionDenied(_('Only the owner can leave a review for pet sitting.'))
+        require_verified_email_for_owner_action(request.user)
         if sitting.status != 'waiting_review':
             raise ValidationError({'detail': _('A review can be left only after both sides confirm the end.')})
         if sitting.review_left:
@@ -795,6 +1184,8 @@ class PetSittingViewSet(viewsets.ModelViewSet):
 
         if request.user.id not in {sitting.ad.owner_id, sitting.sitter.user_id}:
             raise PermissionDenied(_('Only participants can cancel pet sitting.'))
+        if request.user.id == sitting.ad.owner_id:
+            require_verified_email_for_owner_action(request.user)
         if sitting.status in {'completed', 'cancelled'}:
             raise ValidationError({'detail': _('This pet sitting has already been finished.')})
 
@@ -1060,7 +1451,7 @@ class ConversationViewSet(viewsets.ModelViewSet):
         return Conversation.objects.filter(participants=self.request.user, is_active=True).prefetch_related(
             'participants',
             'messages',
-        )
+        ).order_by('-updated_at', '-id')
 
     def get_serializer_class(self):
         """
@@ -1093,12 +1484,16 @@ class ConversationViewSet(viewsets.ModelViewSet):
 
         _notify_user(
             other_participant,
-            title=_('New chat message'),
-            message=_('%(sender)s sent you a new message.') % {
+            title=_('New boarding chat message'),
+            message=_('%(sender)s sent you a new PetsCare boarding message. Open the chat to read and reply.') % {
                 'sender': request.user.get_full_name() or request.user.email,
             },
             notification_type='system',
-            data={'conversation_id': conversation.id, 'message_id': message.id},
+            data={
+                'conversation_id': conversation.id,
+                'message_id': message.id,
+                'action_url': _build_frontend_url(f'/boarding?tab=chat&conversation={conversation.id}'),
+            },
         )
 
         conversation.updated_at = timezone.now()

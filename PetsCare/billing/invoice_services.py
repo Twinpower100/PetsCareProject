@@ -2,6 +2,8 @@
 Сервисы для генерации инвойсов и PDF-файлов.
 """
 
+from collections import OrderedDict
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from html.parser import HTMLParser
 from io import BytesIO
@@ -101,17 +103,18 @@ def summarize_invoice_breakdown(invoice, rows=None):
 
 class InvoiceGenerationService:
     """
-    Сервис ручной генерации счетов по завершенным онлайн-бронированиям.
+    Сервис генерации счетов по завершенным онлайн-бронированиям.
     """
 
     @transaction.atomic
-    def generate_for_provider(self, provider, start_date, end_date):
+    def generate_for_provider(self, provider, start_date, end_date, *, issue_date=None, due_date=None):
         """
         Создает один счет по провайдеру за выбранный период.
         """
         invoice_currency = provider.invoice_currency or self._get_default_currency()
         financial_document = self.get_financial_document(provider)
         platform_company = PlatformCompany.resolve_for_provider(provider)
+        issue_datetime = self._build_issue_datetime(issue_date)
 
         if platform_company is None:
             raise ValidationError(_('No platform company is configured for invoice generation'))
@@ -130,7 +133,7 @@ class InvoiceGenerationService:
             amount=Decimal('0.00'),
             currency=invoice_currency,
             status='sent',
-            issued_at=timezone.now(),
+            issued_at=issue_datetime,
         )
 
         for booking in bookings:
@@ -157,8 +160,60 @@ class InvoiceGenerationService:
             refresh_amount=True,
             synchronize_payment_history=True,
         )
+        if due_date is not None and invoice.payment_record is not None:
+            payment_record = invoice.payment_record
+            payment_record.due_date = due_date
+            payment_record.save()
         invoice.ensure_pdf_file(force=True)
         return invoice
+
+    def generate_scheduled_for_provider(self, provider, run_date=None):
+        """
+        Генерирует счет провайдера в автоматическом месячном цикле.
+
+        Счет за предыдущий календарный месяц выставляется только в тот день,
+        который совпадает с настроенным рабочим днем месяца.
+        """
+        run_date = run_date or timezone.localdate()
+        if not provider.should_generate_invoice_on(run_date):
+            return None
+
+        period_start, period_end = self._get_previous_month_period(run_date)
+        due_date = provider.calculate_invoice_due_date(run_date)
+        return self.generate_for_provider(
+            provider=provider,
+            start_date=period_start,
+            end_date=period_end,
+            issue_date=run_date,
+            due_date=due_date,
+        )
+
+    def generate_due_scheduled_for_provider(self, provider, run_date=None):
+        """
+        Догенерирует все просроченные месячные счета, которые должны были
+        быть выставлены к run_date, но еще не были созданы.
+
+        Счет за каждый завершенный календарный месяц создается только если:
+        - в месяце есть завершенные online bookings без invoice;
+        - расчетная дата выставления счета уже наступила;
+        - за период еще не создан invoice.
+        """
+        run_date = run_date or timezone.localdate()
+        invoices = []
+        due_periods = self._get_due_scheduled_periods(provider, run_date)
+
+        for period_start, period_end, _scheduled_issue_date in due_periods:
+            invoice = self.generate_for_provider(
+                provider=provider,
+                start_date=period_start,
+                end_date=period_end,
+                issue_date=run_date,
+                due_date=provider.calculate_invoice_due_date(run_date),
+            )
+            if invoice is not None:
+                invoices.append(invoice)
+
+        return invoices
 
     def get_financial_document(self, provider):
         """
@@ -258,6 +313,84 @@ class InvoiceGenerationService:
             Currency.objects.filter(code='EUR', is_active=True).first()
             or Currency.objects.filter(is_active=True).order_by('code').first()
         )
+
+    def _build_issue_datetime(self, issue_date):
+        """
+        Возвращает issued_at для нового счета.
+        """
+        if issue_date is None:
+            return timezone.now()
+
+        naive_datetime = datetime.combine(issue_date, time(hour=9, minute=0))
+        if timezone.is_naive(naive_datetime):
+            return timezone.make_aware(naive_datetime, timezone.get_current_timezone())
+        return naive_datetime
+
+    def _get_previous_month_period(self, anchor_date):
+        """
+        Возвращает границы предыдущего календарного месяца.
+        """
+        current_month_start = anchor_date.replace(day=1)
+        previous_month_end = current_month_start - timedelta(days=1)
+        previous_month_start = previous_month_end.replace(day=1)
+        return previous_month_start, previous_month_end
+
+    def _get_due_scheduled_periods(self, provider, run_date):
+        """
+        Возвращает месячные периоды, счета по которым уже должны быть
+        выставлены к run_date.
+        """
+        current_month_start = run_date.replace(day=1)
+        month_periods = OrderedDict()
+
+        bookings = (
+            Booking.objects.select_related('provider_location__provider')
+            .filter(
+                Q(provider=provider) | Q(provider_location__provider=provider),
+                status__name=BOOKING_STATUS_COMPLETED,
+                payment__payment_method='online',
+                invoiceline__isnull=True,
+            )
+            .exclude(completed_at__isnull=True, end_time__isnull=True)
+            .order_by('completed_at', 'end_time', 'id')
+            .distinct()
+        )
+
+        for booking in bookings:
+            completed_at = booking.completed_at or booking.end_time
+            if completed_at is None:
+                continue
+
+            completed_date = completed_at.date() if hasattr(completed_at, 'date') else completed_at
+            period_start = completed_date.replace(day=1)
+            if period_start >= current_month_start:
+                continue
+
+            period_end = self._get_month_end(period_start)
+            month_periods[(period_start.year, period_start.month)] = (period_start, period_end)
+
+        due_periods = []
+        for period_start, period_end in month_periods.values():
+            scheduled_issue_date = self._get_period_scheduled_issue_date(provider, period_end)
+            if scheduled_issue_date is None or scheduled_issue_date > run_date:
+                continue
+            due_periods.append((period_start, period_end, scheduled_issue_date))
+
+        return due_periods
+
+    def _get_period_scheduled_issue_date(self, provider, period_end):
+        """
+        Возвращает расчетную дату выставления счета для месячного периода.
+        """
+        issue_month_anchor = (period_end.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return provider.get_scheduled_invoice_issue_date(issue_month_anchor)
+
+    def _get_month_end(self, period_start: date):
+        """
+        Возвращает последний день месяца для переданной даты начала месяца.
+        """
+        next_month = (period_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return next_month - timedelta(days=1)
 
 
 class InvoicePdfService:

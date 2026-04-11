@@ -87,7 +87,7 @@ class CustomUserAdmin(UserAdmin):
     """
     Кастомная админка для модели User.
     """
-    list_display = ('id', 'username', 'email', 'first_name', 'last_name', 'phone_number', 'get_user_roles', 'get_user_location_roles', 'is_active')
+    list_display = ('id', 'username', 'email', 'first_name', 'last_name', 'phone_number', 'email_verified', 'get_user_roles', 'get_user_location_roles', 'is_active')
     inlines = []
     list_filter = ('user_types', 'is_active')
     search_fields = ('email', 'first_name', 'last_name', 'username', 'phone_number', 'user_types__name')
@@ -188,6 +188,7 @@ class CustomUserAdmin(UserAdmin):
         (None, {'fields': ('username', 'email', 'password')}),
         (_('Personal info'), {'fields': ('first_name', 'last_name', 'phone_number')}),
         (_('Permissions'), {'fields': ('user_types', 'is_active', 'is_staff', 'is_superuser')}),
+        (_('Email Verification'), {'fields': ('email_verified_at',)}),
     )
     
     add_fieldsets = (
@@ -196,6 +197,12 @@ class CustomUserAdmin(UserAdmin):
             'fields': ('username', 'email', 'first_name', 'last_name', 'phone_number', 'password1', 'password2', 'user_types', 'is_active', 'is_staff', 'is_superuser'),
         }),
     )
+    
+    def get_readonly_fields(self, request, obj=None):
+        if obj:
+            return self.readonly_fields + ('email_verified_at',)
+        return self.readonly_fields
+        
     form = UserAdminForm
     
     actions = ['safe_delete_user', 'clear_user_roles']

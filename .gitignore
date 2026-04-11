@@ -70,6 +70,7 @@ logs/
 credentials.json
 token.json
 credentials.md
+Credentials.md
 image/credentials/
 
 # Development & Data seeding scripts

@@ -15,11 +15,14 @@ Tests for the users module.
 - UserURLTest: Тесты URL-маршрутов
 """
 
+from datetime import timedelta
+from unittest.mock import patch
 from django.test import TestCase, Client
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
-from .models import User, UserType, ProviderForm
+from django.utils import timezone
+from .models import EmailVerificationToken, User, UserType, ProviderForm
 from .serializers import UserRegistrationSerializer, ProviderAdminRegistrationSerializer, UserSerializer
 from rest_framework.test import APITestCase
 from rest_framework import status
@@ -197,3 +200,180 @@ class ProviderAdminRegistrationTest(TestCase):
                 provider=self.provider,
             ).filter(Q(end_date__isnull=True) | Q(end_date__gte=today)).exists()
         )
+
+
+class EmailVerificationFlowTest(APITestCase):
+    """
+    Тесты обязательной верификации email для owner signup.
+    """
+    def setUp(self):
+        self.registration_url = reverse('users:api_register')
+        self.confirm_url = reverse('users:email-verification-confirm')
+        self.resend_url = reverse('users:email-verification-resend')
+        self.invites_url = reverse('invites:invite-list-create')
+        self.registration_data = {
+            'email': 'verification-flow@example.com',
+            'password': 'Secret123!',
+            'first_name': 'Verify',
+            'last_name': 'Owner',
+            'phone_number': '+12125550001',
+        }
+
+    def test_registration_creates_unverified_user_and_token(self):
+        response = self.client.post(self.registration_url, self.registration_data, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        user = User.objects.get(email=self.registration_data['email'])
+        self.assertFalse(user.email_verified)
+        self.assertTrue(
+            EmailVerificationToken.objects.filter(user=user, used=False).exists()
+        )
+        self.assertTrue(response.data['email_verification_required'])
+        self.assertTrue(response.data['email_verification_sent'])
+
+    def test_confirm_endpoint_verifies_user_and_marks_token_used(self):
+        user = User.objects.create_user(
+            email='confirm-email@example.com',
+            password='Secret123!',
+            first_name='Confirm',
+            last_name='Owner',
+            phone_number='+12125550002',
+            email_verified=False,
+            email_verified_at=None,
+        )
+        token = EmailVerificationToken.create_for_user(user)
+
+        response = self.client.post(self.confirm_url, {'token': token.token}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        user.refresh_from_db()
+        token.refresh_from_db()
+        self.assertTrue(user.email_verified)
+        self.assertIsNotNone(user.email_verified_at)
+        self.assertTrue(token.used)
+        self.assertEqual(response.data['code'], 'email_verified')
+
+    def test_resend_is_throttled_inside_cooldown(self):
+        user = User.objects.create_user(
+            email='resend-email@example.com',
+            password='Secret123!',
+            first_name='Resend',
+            last_name='Owner',
+            phone_number='+12125550003',
+            email_verified=False,
+            email_verified_at=None,
+        )
+        EmailVerificationToken.create_for_user(user)
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(self.resend_url, {}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        self.assertEqual(response.data['code'], 'email_verification_resend_throttled')
+
+    def test_resend_creates_new_token_after_cooldown(self):
+        user = User.objects.create_user(
+            email='resend-late@example.com',
+            password='Secret123!',
+            first_name='Later',
+            last_name='Owner',
+            phone_number='+12125550004',
+            email_verified=False,
+            email_verified_at=None,
+        )
+        token = EmailVerificationToken.create_for_user(user)
+        EmailVerificationToken.objects.filter(pk=token.pk).update(
+            created_at=timezone.now() - timedelta(minutes=5)
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(self.resend_url, {}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['code'], 'email_verification_sent')
+        self.assertEqual(EmailVerificationToken.objects.filter(user=user, used=False).count(), 1)
+        token.refresh_from_db()
+        self.assertTrue(token.used)
+
+    def test_unverified_owner_cannot_create_invite(self):
+        user = User.objects.create_user(
+            email='blocked-owner@example.com',
+            password='Secret123!',
+            first_name='Blocked',
+            last_name='Owner',
+            phone_number='+12125550005',
+            email_verified=False,
+            email_verified_at=None,
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.post(self.invites_url, {'invite_type': 'pet_co_owner'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN, response.data)
+        self.assertEqual(response.data['code'], 'email_verification_required')
+
+
+class GoogleSignupFlowTest(APITestCase):
+    """
+    Тесты двухшаговой регистрации через Google с обязательным телефоном.
+    """
+    def setUp(self):
+        self.google_auth_url = reverse('users:api_google_auth')
+        self.google_complete_url = reverse('users:api_google_auth_complete')
+
+    def _mock_google_validate(self, phone=None, email='google-owner@example.com'):
+        def _validate(serializer, attrs):
+            attrs['google_user_data'] = {
+                'email': email,
+                'name': 'Google Owner',
+                'picture': 'https://example.com/avatar.png',
+                'google_id': 'google-user-1',
+                'phone': phone,
+            }
+            return attrs
+
+        return _validate
+
+    def test_google_signup_without_phone_returns_pending_state(self):
+        with patch('users.serializers.GoogleAuthSerializer.validate', new=self._mock_google_validate(phone=None)):
+            response = self.client.post(self.google_auth_url, {'token': 'google-code'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertTrue(response.data['needs_phone'])
+        self.assertIn('pending_google_signup_token', response.data)
+        self.assertFalse(User.objects.filter(email='google-owner@example.com').exists())
+
+    def test_google_signup_completion_creates_unverified_user_and_verification_token(self):
+        with patch('users.serializers.GoogleAuthSerializer.validate', new=self._mock_google_validate(phone=None)):
+            prepare_response = self.client.post(self.google_auth_url, {'token': 'google-code'}, format='json')
+
+        response = self.client.post(
+            self.google_complete_url,
+            {
+                'pending_token': prepare_response.data['pending_google_signup_token'],
+                'phone_number': '+12125550111',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        user = User.objects.get(email='google-owner@example.com')
+        self.assertEqual(str(user.phone_number), '+12125550111')
+        self.assertFalse(user.email_verified)
+        self.assertTrue(response.data['email_verification_required'])
+        self.assertTrue(response.data['email_verification_sent'])
+        self.assertTrue(
+            EmailVerificationToken.objects.filter(user=user, used=False).exists()
+        )
+
+    def test_google_signup_with_unique_google_phone_creates_user_immediately(self):
+        with patch('users.serializers.GoogleAuthSerializer.validate', new=self._mock_google_validate(phone='+12125550112', email='google-direct@example.com')):
+            response = self.client.post(self.google_auth_url, {'token': 'google-code'}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        user = User.objects.get(email='google-direct@example.com')
+        self.assertEqual(str(user.phone_number), '+12125550112')
+        self.assertFalse(user.email_verified)
+        self.assertFalse(response.data['needs_phone'])
+        self.assertTrue(response.data['email_verification_required'])
+        self.assertTrue(response.data['email_verification_sent'])

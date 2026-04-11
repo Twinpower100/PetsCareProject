@@ -38,7 +38,7 @@ def api_root(request):
                 'payments': '/api/v1/payments/',
                 'invoices': '/api/v1/invoices/',
                 'refunds': '/api/v1/refunds/',
-                'blocking_rules': '/api/v1/blocking-rules/'
+                'regional_blocking_policies': '/api/v1/regional-blocking-policies/'
             },
             'ratings': '/api/v1/ratings/',
             'reports': {

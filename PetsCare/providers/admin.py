@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.admin import widgets as admin_widgets
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
-from .models import Provider, Employee, Schedule, SchedulePattern, PatternDay, EmployeeWorkSlot, EmployeeProvider, LocationSchedule, HolidayShift, ProviderLocation, ProviderLocationService, EmployeeLocationService, ProviderRole, ProviderResource, ProviderRolePermission
+from .models import Provider, Employee, Schedule, SchedulePattern, PatternDay, EmployeeWorkSlot, EmployeeProvider, LocationSchedule, HolidayShift, ProviderLocation, ProviderLocationService, EmployeeLocationService, ProviderRole, ProviderResource, ProviderRolePermission, ProviderLifecycleSettings, ProviderLifecycleEvent
 from django import forms
 from django.shortcuts import render, redirect
 from django.urls import path, reverse
@@ -1380,6 +1380,55 @@ class ApplyPatternForm(forms.Form):
     date_to = forms.DateField(label=_('Date to'))
 
 
+class ProviderLifecycleSettingsAdmin(admin.ModelAdmin):
+    """Singleton-настройки lifecycle-политики."""
+
+    list_display = ('owner_post_termination_access_days', 'updated_at')
+    readonly_fields = ('created_at', 'updated_at')
+
+    def has_add_permission(self, request):
+        if ProviderLifecycleSettings.objects.exists():
+            return False
+        return super().has_add_permission(request)
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class ProviderLifecycleEventAdmin(admin.ModelAdmin):
+    """Audit событий lifecycle."""
+
+    list_display = (
+        'created_at',
+        'entity_type',
+        'action',
+        'provider',
+        'location',
+        'previous_status',
+        'new_status',
+        'effective_date',
+        'initiated_by',
+    )
+    list_filter = ('entity_type', 'action', 'new_status', 'effective_date', 'created_at')
+    search_fields = ('provider__name', 'location__name', 'reason')
+    readonly_fields = (
+        'entity_type',
+        'action',
+        'provider',
+        'location',
+        'previous_status',
+        'new_status',
+        'effective_date',
+        'resume_date',
+        'reason',
+        'initiated_by',
+        'is_staff_override',
+        'correlation_id',
+        'metadata',
+        'created_at',
+    )
+
+
 custom_admin_site.register(Provider, ProviderAdmin)
 custom_admin_site.register(Employee, EmployeeAdmin)
 custom_admin_site.register(Schedule, ScheduleAdmin)
@@ -1395,6 +1444,8 @@ custom_admin_site.register(ProviderLocationService, ProviderLocationServiceAdmin
 custom_admin_site.register(ProviderRole, ProviderRoleAdmin)
 custom_admin_site.register(ProviderResource, ProviderResourceAdmin)
 custom_admin_site.register(ProviderRolePermission, ProviderRolePermissionAdmin)
+custom_admin_site.register(ProviderLifecycleSettings, ProviderLifecycleSettingsAdmin)
+custom_admin_site.register(ProviderLifecycleEvent, ProviderLifecycleEventAdmin)
 
 
 class EmployeeLocationServiceAdmin(admin.ModelAdmin):

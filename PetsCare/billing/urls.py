@@ -24,8 +24,8 @@ urlpatterns = [
     path('', include(router.urls)),
     
     # API для блокировок учреждений
-    path('blocking-rules/', api_views.BlockingRuleListCreateAPIView.as_view(), name='blocking-rules-list'),
-    path('blocking-rules/<int:pk>/', api_views.BlockingRuleRetrieveUpdateDestroyAPIView.as_view(), name='blocking-rules-detail'),
+    path('regional-blocking-policies/', api_views.RegionalBlockingPolicyListCreateAPIView.as_view(), name='regional-blocking-policies-list'),
+    path('regional-blocking-policies/<int:pk>/', api_views.RegionalBlockingPolicyRetrieveUpdateDestroyAPIView.as_view(), name='regional-blocking-policies-detail'),
     
     path('provider-blockings/', api_views.ProviderBlockingListAPIView.as_view(), name='provider-blockings-list'),
     path('provider-blockings/<int:pk>/', api_views.ProviderBlockingRetrieveAPIView.as_view(), name='provider-blockings-detail'),

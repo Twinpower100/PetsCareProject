@@ -13,7 +13,7 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.utils import timezone
+from django.utils import timezone, translation
 from pets.models import Pet
 from catalog.models import Service
 # ProviderService удален - используйте ProviderLocationService
@@ -617,12 +617,37 @@ class Notification(models.Model):
         
         if self.user.email:
             try:
+                language_code = getattr(self.user, 'preferred_language', 'en') or 'en'
+                action_url = self.data.get('action_url') if isinstance(self.data, dict) else None
+
+                with translation.override(language_code):
+                    message_lines = [
+                        str(_('Dear PetsCare user,')),
+                        '',
+                        str(_('This email concerns your boarding activity in PetsCare.')),
+                        '',
+                        self.message,
+                    ]
+                    if action_url:
+                        message_lines.extend([
+                            '',
+                            str(_('Open in PetsCare: %(url)s')) % {'url': action_url},
+                        ])
+                    message_lines.extend([
+                        '',
+                        str(_('Thank you for using PetsCare.')),
+                    ])
+
+                text_message = '\n'.join(message_lines)
+                html_message = ''.join(f'<p>{line}</p>' for line in message_lines if line)
+
                 send_mail(
                     subject=self.title,
-                    message=self.message,
+                    message=text_message,
                     from_email=settings.DEFAULT_FROM_EMAIL,
                     recipient_list=[self.user.email],
                     fail_silently=True,
+                    html_message=html_message,
                 )
             except Exception as e:
                 # Логируем ошибку отправки email

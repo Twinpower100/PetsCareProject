@@ -19,7 +19,7 @@
 - Прикрепление файлов к записям
 """
 
-from django.db import models
+from django.db import models, transaction
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 from catalog.models import Service
@@ -28,7 +28,6 @@ from datetime import date, timedelta
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
 from django.utils import timezone
-import uuid
 import os
 import logging
 
@@ -40,6 +39,11 @@ from .document_type_catalog import (
 )
 
 logger = logging.getLogger(__name__)
+
+PET_VACCINATION_EXPIRY_SERVICE_FIELD_MAP = {
+    'vaccination_rabies': 'rabies_vaccination_expiry',
+    'vaccination_complex': 'core_vaccination_expiry',
+}
 
 
 class PetType(models.Model):
@@ -1081,13 +1085,100 @@ class VisitRecord(models.Model):
                 )
     
     def save(self, *args, **kwargs):
+        """
+        Сохраняет протокол визита и синхронизирует owner-facing сроки вакцинации.
+        """
+        previous_state = None
+        if self.pk:
+            previous_state = (
+                VisitRecord.objects.filter(pk=self.pk)
+                .values('pet_id', 'service__code')
+                .first()
+            )
+
         # Валидируем перед сохранением
         self.full_clean()
-        
-        # Если это новая запись и услуга периодическая, устанавливаем дату следующей процедуры
-        if not self.pk and self.service.is_periodic and self.service.period_days is not None:
+
+        # Если следующая дата не задана явно, для периодических услуг считаем ее автоматически.
+        if (
+            not self.pk
+            and self.next_date is None
+            and self.service.is_periodic
+            and self.service.period_days is not None
+        ):
             self.next_date = self.date + timedelta(days=self.service.period_days)
-        super().save(*args, **kwargs)
+
+        affected_sources = {
+            (
+                previous_state['pet_id'],
+                previous_state['service__code'],
+            )
+            for previous_state in [previous_state]
+            if previous_state is not None
+        }
+        affected_sources.add((self.pet_id, self.service.code))
+
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+            for pet_id, service_code in affected_sources:
+                self._sync_pet_vaccination_expiry(
+                    pet_id=pet_id,
+                    service_code=service_code,
+                )
+
+    def delete(self, *args, **kwargs):
+        """
+        Удаляет протокол и пересчитывает срок действия прививки в карточке питомца.
+        """
+        affected_source = (self.pet_id, self.service.code)
+        with transaction.atomic():
+            super().delete(*args, **kwargs)
+            self._sync_pet_vaccination_expiry(
+                pet_id=affected_source[0],
+                service_code=affected_source[1],
+            )
+
+    @classmethod
+    def _sync_pet_vaccination_expiry(cls, *, pet_id: int | None, service_code: str | None) -> None:
+        """
+        Синхронизирует каноническую дату действия прививки в карточке питомца.
+
+        Для вакцинаций owner-facing источником правды считается карточка питомца.
+        Поэтому после любого изменения VisitRecord мы пересчитываем соответствующее
+        expiry-поле по последнему протоколу этой вакцинации.
+        """
+        if pet_id is None or service_code is None:
+            return
+
+        expiry_field_name = PET_VACCINATION_EXPIRY_SERVICE_FIELD_MAP.get(service_code)
+        if expiry_field_name is None:
+            return
+
+        pet = (
+            Pet.objects.select_for_update()
+            .filter(pk=pet_id)
+            .only('id', expiry_field_name, 'updated_at')
+            .first()
+        )
+        if pet is None:
+            return
+
+        latest_record = (
+            cls.objects.filter(
+                pet_id=pet_id,
+                service__code=service_code,
+            )
+            .order_by('-date', '-id')
+            .only('id', 'next_date')
+            .first()
+        )
+        next_expiry = latest_record.next_date if latest_record is not None else None
+
+        if getattr(pet, expiry_field_name) == next_expiry:
+            return
+
+        setattr(pet, expiry_field_name, next_expiry)
+        pet.save(update_fields=[expiry_field_name, 'updated_at'])
 
 
 class VisitRecordAddendum(models.Model):

@@ -11,7 +11,19 @@ Serializers для API поставщиков.
 
 from rest_framework import serializers
 from django.utils.translation import gettext_lazy as _
-from .models import Provider, Employee, EmployeeProvider, Schedule, LocationSchedule, HolidayShift, EmployeeWorkSlot, ProviderLocation, ProviderLocationService
+from .models import (
+    Provider,
+    Employee,
+    EmployeeLocationRole,
+    EmployeeProvider,
+    Schedule,
+    LocationSchedule,
+    HolidayShift,
+    EmployeeWorkSlot,
+    ProviderLocation,
+    ProviderLocationService,
+    ProviderServicePricing,
+)
 from .contact_validators import validate_phone_contact, validate_email_contact
 from catalog.serializers import ServiceSerializer
 from catalog.models import Service
@@ -27,11 +39,26 @@ from geolocation.utils import calculate_distance
 class ProviderBriefSerializer(serializers.ModelSerializer):
     """Облегчённый сериализатор провайдера для списков в админке."""
     full_address = serializers.SerializerMethodField()
+    served_pet_types = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    served_pet_types_details = serializers.SerializerMethodField()
+    provider_currency_code = serializers.SerializerMethodField()
 
     def get_full_address(self, obj):
         if obj.structured_address:
             return obj.structured_address.formatted_address or str(obj.structured_address)
         return None
+
+    def get_served_pet_types_details(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return []
+        return [
+            {'id': pt.id, 'code': pt.code, 'name': getattr(pt, 'name_en', None) or pt.name}
+            for pt in obj.served_pet_types.all().order_by('code')
+        ]
+
+    def get_provider_currency_code(self, obj):
+        invoice_currency = getattr(obj, 'invoice_currency', None)
+        return getattr(invoice_currency, 'code', None) if invoice_currency else None
 
     class Meta:
         model = Provider
@@ -41,6 +68,12 @@ class ProviderBriefSerializer(serializers.ModelSerializer):
             'phone_number',
             'email',
             'full_address',
+            'partnership_status',
+            'post_termination_access_until',
+            'use_unified_service_pricing',
+            'served_pet_types',
+            'served_pet_types_details',
+            'provider_currency_code',
             'is_active',
         ]
         read_only_fields = fields
@@ -49,11 +82,26 @@ class ProviderBriefSerializer(serializers.ModelSerializer):
 class ProviderDetailLiteSerializer(serializers.ModelSerializer):
     """Облегчённая детальная карточка организации для админки."""
     full_address = serializers.SerializerMethodField()
+    served_pet_types = serializers.PrimaryKeyRelatedField(many=True, read_only=True)
+    served_pet_types_details = serializers.SerializerMethodField()
+    provider_currency_code = serializers.SerializerMethodField()
 
     def get_full_address(self, obj):
         if obj.structured_address:
             return obj.structured_address.formatted_address or str(obj.structured_address)
         return None
+
+    def get_served_pet_types_details(self, obj):
+        if getattr(self, 'swagger_fake_view', False):
+            return []
+        return [
+            {'id': pt.id, 'code': pt.code, 'name': getattr(pt, 'name_en', None) or pt.name}
+            for pt in obj.served_pet_types.all().order_by('code')
+        ]
+
+    def get_provider_currency_code(self, obj):
+        invoice_currency = getattr(obj, 'invoice_currency', None)
+        return getattr(invoice_currency, 'code', None) if invoice_currency else None
 
     class Meta:
         model = Provider
@@ -64,9 +112,58 @@ class ProviderDetailLiteSerializer(serializers.ModelSerializer):
             'phone_number',
             'email',
             'activation_status',
+            'partnership_status',
+            'partnership_effective_date',
+            'partnership_resume_date',
+            'partnership_reason',
+            'pending_partnership_status',
+            'pending_partnership_effective_date',
+            'pending_partnership_resume_date',
+            'pending_partnership_reason',
+            'post_termination_access_until',
+            'use_unified_service_pricing',
+            'served_pet_types',
+            'served_pet_types_details',
+            'provider_currency_code',
             'is_active',
             'full_address',
         ]
+
+
+class LifecycleTransitionSerializer(serializers.Serializer):
+    """
+    Базовый сериализатор lifecycle-операции.
+    """
+
+    effective_date = serializers.DateField()
+    resume_date = serializers.DateField(required=False, allow_null=True)
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2000)
+
+    def validate(self, attrs):
+        effective_date = attrs.get('effective_date')
+        resume_date = attrs.get('resume_date')
+        action = self.context.get('action')
+        if resume_date and effective_date and resume_date < effective_date:
+            raise serializers.ValidationError({
+                'resume_date': _('Resume date must be on or after the effective date.')
+            })
+        if action in {'pause', 'temporary_close'} and not resume_date:
+            raise serializers.ValidationError({
+                'resume_date': _('Resume date is required for temporary suspension.')
+            })
+        return attrs
+
+
+class BulkLocationReactivateSerializer(serializers.Serializer):
+    """Пакетная реактивация филиалов после реактивации организации."""
+
+    location_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        allow_empty=False,
+    )
+    effective_date = serializers.DateField()
+    reason = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=2000)
+    restore_staffing = serializers.BooleanField(required=False, default=True)
 
 
 class ProviderSerializer(serializers.ModelSerializer):
@@ -715,27 +812,38 @@ class ProviderLocationListSerializer(serializers.ModelSerializer):
     def get_employees_count(self, obj):
         if getattr(self, 'swagger_fake_view', False):
             return 0
-        if hasattr(obj, '_prefetched_objects_cache') and 'employees' in obj._prefetched_objects_cache:
-            return sum(1 for emp in obj.employees.all() if emp.is_active)
-        return obj.employees.filter(is_active=True).count()
+        now = timezone.now()
+        return EmployeeLocationRole.objects.filter(
+            provider_location=obj,
+            employee__is_active=True,
+            is_active=True,
+        ).filter(Q(end_date__isnull=True) | Q(end_date__gte=now)).count()
 
     def get_staff_schedule_filled(self, obj):
         if getattr(self, 'swagger_fake_view', False):
             return True
-        if hasattr(obj, '_prefetched_objects_cache') and 'employees' in obj._prefetched_objects_cache and 'schedules' in obj._prefetched_objects_cache:
-            active_employees = [emp for emp in obj.employees.all() if emp.is_active]
-            if not active_employees:
-                return True
-            schedules_emp_ids = {s.employee_id for s in obj.schedules.all()}
-            for emp in active_employees:
-                if emp.id not in schedules_emp_ids:
-                    return False
+        now = timezone.now()
+        active_worker_ids = list(
+            EmployeeLocationRole.objects.filter(
+                provider_location=obj,
+                employee__is_active=True,
+                is_active=True,
+            ).filter(
+                Q(end_date__isnull=True) | Q(end_date__gte=now)
+            ).exclude(
+                role=EmployeeLocationRole.ROLE_BRANCH_MANAGER
+            ).values_list('employee_id', flat=True).distinct()
+        )
+        if not active_worker_ids:
             return True
-        active = obj.employees.filter(is_active=True)
-        if not active.exists():
-            return True
-        for emp in active:
-            if not Schedule.objects.filter(employee=emp, provider_location=obj).exists():
+        scheduled_employee_ids = set(
+            Schedule.objects.filter(
+                provider_location=obj,
+                employee_id__in=active_worker_ids,
+            ).values_list('employee_id', flat=True).distinct()
+        )
+        for employee_id in active_worker_ids:
+            if employee_id not in scheduled_employee_ids:
                 return False
         return True
 
@@ -769,6 +877,12 @@ class ProviderLocationListSerializer(serializers.ModelSerializer):
             'manager_filled',
             'has_services',
             'has_prices',
+            'lifecycle_status',
+            'lifecycle_effective_date',
+            'lifecycle_resume_date',
+            'pending_lifecycle_status',
+            'pending_lifecycle_effective_date',
+            'pending_lifecycle_resume_date',
             'is_active',
             'created_at', 'updated_at',
         ]
@@ -902,32 +1016,39 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
         """Количество сотрудников, привязанных к этой локации (активные)."""
         if getattr(self, 'swagger_fake_view', False):
             return 0
-            
-        if hasattr(obj, '_prefetched_objects_cache') and 'employees' in obj._prefetched_objects_cache:
-            return sum(1 for emp in obj.employees.all() if emp.is_active)
-            
-        return obj.employees.filter(is_active=True).count()
+        now = timezone.now()
+        return EmployeeLocationRole.objects.filter(
+            provider_location=obj,
+            employee__is_active=True,
+            is_active=True,
+        ).filter(Q(end_date__isnull=True) | Q(end_date__gte=now)).count()
 
     def get_staff_schedule_filled(self, obj):
         """True если у локации нет активных сотрудников или у всех активных сотрудников есть хотя бы одна запись расписания (Schedule) для этой локации."""
         if getattr(self, 'swagger_fake_view', False):
             return True
-            
-        if hasattr(obj, '_prefetched_objects_cache') and 'employees' in obj._prefetched_objects_cache and 'schedules' in obj._prefetched_objects_cache:
-            active_employees = [emp for emp in obj.employees.all() if emp.is_active]
-            if not active_employees:
-                return True
-            schedules_emp_ids = {s.employee_id for s in obj.schedules.all()}
-            for emp in active_employees:
-                if emp.id not in schedules_emp_ids:
-                    return False
+        now = timezone.now()
+        active_worker_ids = list(
+            EmployeeLocationRole.objects.filter(
+                provider_location=obj,
+                employee__is_active=True,
+                is_active=True,
+            ).filter(
+                Q(end_date__isnull=True) | Q(end_date__gte=now)
+            ).exclude(
+                role=EmployeeLocationRole.ROLE_BRANCH_MANAGER
+            ).values_list('employee_id', flat=True).distinct()
+        )
+        if not active_worker_ids:
             return True
-
-        active = obj.employees.filter(is_active=True)
-        if not active.exists():
-            return True
-        for emp in active:
-            if not Schedule.objects.filter(employee=emp, provider_location=obj).exists():
+        scheduled_employee_ids = set(
+            Schedule.objects.filter(
+                provider_location=obj,
+                employee_id__in=active_worker_ids,
+            ).values_list('employee_id', flat=True).distinct()
+        )
+        for employee_id in active_worker_ids:
+            if employee_id not in scheduled_employee_ids:
                 return False
         return True
 
@@ -1013,10 +1134,18 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
             'manager_filled',
             'manager_invite_pending_email',
             'provider_currency_code',
+            'lifecycle_status',
+            'lifecycle_effective_date',
+            'lifecycle_resume_date',
+            'lifecycle_reason',
+            'pending_lifecycle_status',
+            'pending_lifecycle_effective_date',
+            'pending_lifecycle_resume_date',
+            'pending_lifecycle_reason',
             'is_active',
             'created_at', 'updated_at'
         ]
-        read_only_fields = ['created_at', 'updated_at', 'provider_name', 'country', 'full_address', 'latitude', 'longitude', 'served_pet_types_details', 'available_services', 'schedule_filled', 'employees_count', 'staff_schedule_filled', 'has_services', 'has_prices', 'manager', 'manager_filled', 'manager_invite_pending_email', 'provider_currency_code']
+        read_only_fields = ['created_at', 'updated_at', 'provider_name', 'country', 'full_address', 'latitude', 'longitude', 'served_pet_types_details', 'available_services', 'schedule_filled', 'employees_count', 'staff_schedule_filled', 'has_services', 'has_prices', 'manager', 'manager_filled', 'manager_invite_pending_email', 'provider_currency_code', 'lifecycle_status', 'lifecycle_effective_date', 'lifecycle_resume_date', 'lifecycle_reason', 'pending_lifecycle_status', 'pending_lifecycle_effective_date', 'pending_lifecycle_resume_date', 'pending_lifecycle_reason']
 
     def validate_phone_number(self, value):
         """Валидация формата телефона (10–15 цифр, E.164-подобный)."""
@@ -1057,6 +1186,16 @@ class ProviderLocationSerializer(serializers.ModelSerializer):
                 data.setdefault('phone_number', provider.phone_number)
             if not data.get('email') and getattr(provider, 'email', None):
                 data.setdefault('email', provider.email)
+            served_pet_types = data.get('served_pet_types')
+            if provider.use_unified_service_pricing and served_pet_types is not None:
+                allowed_ids = set(provider.served_pet_types.values_list('id', flat=True))
+                requested_ids = {pet_type.id for pet_type in served_pet_types}
+                if not requested_ids.issubset(allowed_ids):
+                    raise serializers.ValidationError({
+                        'served_pet_types': _(
+                            'When organization-level pricing is enabled, branch pet types must be a subset of the organization served pet types.'
+                        )
+                    })
         return data
 
 
@@ -1185,6 +1324,51 @@ class LocationServicePriceItemWriteSerializer(serializers.Serializer):
 class LocationServicePricesUpdateSerializer(serializers.Serializer):
     """Тело PUT запроса на обновление матрицы цен по услуге локации."""
     prices = serializers.ListField(child=LocationServicePriceItemWriteSerializer())
+
+
+class ProviderPricingModeSerializer(serializers.Serializer):
+    """Тело PATCH запроса на переключение unified pricing режима организации."""
+
+    use_unified_service_pricing = serializers.BooleanField()
+
+
+class ProviderServedPetTypesSerializer(serializers.Serializer):
+    """Тело PATCH запроса на обновление org-level scope типов питомцев."""
+
+    served_pet_types = serializers.PrimaryKeyRelatedField(
+        many=True,
+        queryset=PetType.objects.all().order_by('code'),
+        allow_empty=True,
+    )
+
+
+class ProviderServicePricingSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор одной строки org-level прайса.
+    """
+
+    service_name = serializers.CharField(source='service.name', read_only=True)
+    pet_type_code = serializers.CharField(source='pet_type.code', read_only=True)
+
+    class Meta:
+        model = ProviderServicePricing
+        fields = [
+            'id',
+            'provider',
+            'service',
+            'service_name',
+            'pet_type',
+            'pet_type_code',
+            'size_code',
+            'price',
+            'duration_minutes',
+            'tech_break_minutes',
+            'is_active',
+            'version',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = ['created_at', 'updated_at', 'service_name', 'pet_type_code', 'version']
 
 
 class LocationScheduleSerializer(serializers.ModelSerializer):

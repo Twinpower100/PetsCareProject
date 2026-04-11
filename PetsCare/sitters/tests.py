@@ -14,6 +14,7 @@ from datetime import datetime, time, timedelta
 
 from django.contrib.auth import get_user_model
 from django.contrib.gis.geos import Point
+from django.core import mail
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework import status
@@ -22,7 +23,7 @@ from rest_framework.test import APIClient
 from access.models import PetAccess
 from geolocation.models import UserLocation
 from pets.models import Pet, PetOwner, PetType
-from .models import PetSitting, PetSittingAd, PetSittingResponse, SitterProfile, SitterReview
+from .models import PetSitting, PetSittingAd, PetSittingRequest, PetSittingResponse, SitterProfile, SitterReview
 
 User = get_user_model()
 
@@ -134,6 +135,35 @@ class PetSittingApiTestCase(TestCase):
             start_date=ad.start_date,
             end_date=ad.end_date,
             status=status_value,
+        )
+
+    def create_direct_request(
+        self,
+        owner: User | None = None,
+        sitter: SitterProfile | None = None,
+        pet: Pet | None = None,
+        start_offset: int = 2,
+        duration_days: int = 2,
+        source_value: str = PetSittingRequest.SOURCE_OWNER_SEARCH,
+    ) -> PetSittingRequest:
+        """
+        Создаёт прямой owner -> sitter запрос на передержку.
+        """
+        owner = owner or self.owner
+        sitter = sitter or self.sitter_profile
+        pet = pet or self.owner_pet
+        start_date = timezone.now().date() + timedelta(days=start_offset)
+        end_date = start_date + timedelta(days=duration_days)
+        return PetSittingRequest.objects.create(
+            owner=owner,
+            sitter=sitter,
+            pet=pet,
+            initiated_by=owner,
+            start_date=start_date,
+            end_date=end_date,
+            message='Need a calm home boarding stay',
+            source=source_value,
+            location='Podgorica',
         )
 
     def test_accept_response_rejects_when_capacity_exceeded(self):
@@ -357,6 +387,89 @@ class PetSittingApiTestCase(TestCase):
         result_ids = [item['id'] for item in response.data['results']]
         self.assertNotIn(closed_ad.id, result_ids)
         self.assertIn(active_ad.id, result_ids)
+
+    def test_create_direct_request_does_not_publish_public_ad_and_sends_localized_email(self):
+        """
+        Прямой запрос не должен создавать публичное объявление и должен отправлять локализованное письмо ситтеру.
+        """
+        self.sitter_user.preferred_language = 'ru'
+        self.sitter_user.save(update_fields=['preferred_language'])
+        mail.outbox.clear()
+
+        start_date = timezone.now().date() + timedelta(days=3)
+        end_date = start_date + timedelta(days=2)
+
+        self.client.force_authenticate(user=self.owner)
+        response = self.client.post(
+            '/api/v1/requests/',
+            {
+                'sitter': self.sitter_profile.id,
+                'pet': self.owner_pet.id,
+                'start_date': start_date.isoformat(),
+                'end_date': end_date.isoformat(),
+                'message': 'Please keep Buddy at home and send daily updates.',
+                'location': 'Podgorica',
+                'source': PetSittingRequest.SOURCE_OWNER_SEARCH,
+                'address_label': 'Podgorica, Montenegro',
+                'address_latitude': 42.4411,
+                'address_longitude': 19.2624,
+                'address_city': 'Podgorica',
+                'address_country': 'Montenegro',
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        created_request = PetSittingRequest.objects.get()
+
+        self.assertEqual(created_request.status, PetSittingRequest.STATUS_PENDING)
+        self.assertEqual(created_request.source, PetSittingRequest.SOURCE_OWNER_SEARCH)
+        self.assertIsNotNone(created_request.conversation_id)
+        self.assertEqual(PetSittingAd.objects.count(), 0)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.sitter_user.email])
+        self.assertIn('Уважаемый пользователь PetsCare,', mail.outbox[0].body)
+        self.assertIn('запрос на передержку питомца Buddy', mail.outbox[0].body)
+        self.assertIn('/boarding?tab=requests&request=', mail.outbox[0].body)
+
+    def test_accept_direct_request_creates_internal_records_and_localized_owner_email(self):
+        """
+        Принятие прямого запроса должно создать внутреннюю передержку и отправить владельцу локализованное письмо.
+        """
+        self.owner.preferred_language = 'ru'
+        self.owner.save(update_fields=['preferred_language'])
+        direct_request = self.create_direct_request()
+        mail.outbox.clear()
+
+        self.client.force_authenticate(user=self.sitter_user)
+        response = self.client.post(f'/api/v1/requests/{direct_request.id}/accept/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        direct_request.refresh_from_db()
+        self.assertEqual(direct_request.status, PetSittingRequest.STATUS_ACCEPTED)
+        self.assertEqual(direct_request.version, 2)
+        self.assertIsNotNone(direct_request.created_ad_id)
+        self.assertIsNotNone(direct_request.created_response_id)
+        self.assertIsNotNone(direct_request.pet_sitting_id)
+        self.assertIsNotNone(direct_request.conversation_id)
+
+        direct_request.created_ad.refresh_from_db()
+        direct_request.created_response.refresh_from_db()
+        direct_request.pet_sitting.refresh_from_db()
+
+        self.assertEqual(direct_request.created_ad.visibility, 'internal')
+        self.assertEqual(direct_request.created_ad.status, 'closed')
+        self.assertEqual(direct_request.created_response.status, 'accepted')
+        self.assertEqual(direct_request.pet_sitting.status, 'waiting_start')
+        self.assertEqual(PetSittingAd.objects.filter(visibility='public').count(), 0)
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.owner.email])
+        self.assertIn('Уважаемый пользователь PetsCare,', mail.outbox[0].body)
+        self.assertIn('принял(а) ваш запрос на передержку питомца Buddy', mail.outbox[0].body)
+        self.assertIn('/boarding?tab=stays&sitting=', mail.outbox[0].body)
 
 
 def datetime_for_date(target_date):

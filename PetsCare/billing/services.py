@@ -14,7 +14,6 @@ from providers.models import EmployeeProvider, Provider
 
 from .models import (
     BlockingNotification,
-    BlockingRule,
     BlockingSystemSettings,
     ProviderBlocking,
 )
@@ -63,12 +62,11 @@ class MultiLevelBlockingService:
         thresholds = provider.get_blocking_thresholds()
 
         blocking_level = self._resolve_blocking_level(
-            total_debt=debt_info['total_debt'],
+            overdue_debt=debt_info['overdue_debt'],
             overdue_days=overdue_days,
             thresholds=thresholds,
         )
         reasons = self._build_reasons(
-            total_debt=debt_info['total_debt'],
             overdue_debt=debt_info['overdue_debt'],
             overdue_days=overdue_days,
             thresholds=thresholds,
@@ -95,32 +93,31 @@ class MultiLevelBlockingService:
     def _resolve_blocking_level(
         self,
         *,
-        total_debt: Decimal,
+        overdue_debt: Decimal,
         overdue_days: int,
         thresholds: Dict[str, Any],
     ) -> int:
         """
-        Рассчитывает уровень блокировки по общей задолженности и просрочке.
+        Рассчитывает уровень по региональной политике: просроченный долг vs допуск, дни vs L2/L3.
         """
-        debt_threshold = thresholds.get('debt_threshold')
-        threshold_1 = int(thresholds.get('overdue_threshold_1') or 0)
-        threshold_2 = int(thresholds.get('overdue_threshold_2') or 0)
-        threshold_3 = int(thresholds.get('overdue_threshold_3') or 0)
+        tolerance = Decimal(str(thresholds.get('tolerance_amount') or '0'))
+        l2 = int(thresholds.get('overdue_days_l2_from') or 0)
+        l3 = int(thresholds.get('overdue_days_l3_from') or 0)
+        od = Decimal(overdue_debt)
 
-        if debt_threshold is not None and Decimal(total_debt) > Decimal(str(debt_threshold)):
-            return 3
-        if threshold_3 and overdue_days >= threshold_3:
-            return 3
-        if threshold_2 and overdue_days >= threshold_2:
-            return 2
-        if threshold_1 and overdue_days >= threshold_1:
+        if od <= tolerance:
+            return 0
+        if l2 <= 0:
+            return 0
+        if overdue_days < l2:
             return 1
-        return 0
+        if l3 <= 0 or overdue_days < l3:
+            return 2
+        return 3
 
     def _build_reasons(
         self,
         *,
-        total_debt: Decimal,
         overdue_debt: Decimal,
         overdue_days: int,
         thresholds: Dict[str, Any],
@@ -133,45 +130,39 @@ class MultiLevelBlockingService:
             return []
 
         reasons: List[str] = []
-        debt_threshold = thresholds.get('debt_threshold')
-        threshold_1 = thresholds.get('overdue_threshold_1')
-        threshold_2 = thresholds.get('overdue_threshold_2')
-        threshold_3 = thresholds.get('overdue_threshold_3')
+        tolerance = thresholds.get('tolerance_amount')
+        l2 = thresholds.get('overdue_days_l2_from')
+        l3 = thresholds.get('overdue_days_l3_from')
+        region = thresholds.get('blocking_region_code') or ''
 
-        if debt_threshold is not None and Decimal(total_debt) > Decimal(str(debt_threshold)):
-            reasons.append(
-                _("Debt threshold exceeded: %(debt)s > %(threshold)s") % {
-                    'debt': total_debt,
-                    'threshold': debt_threshold,
-                }
-            )
+        reasons.append(
+            _("Overdue debt %(debt)s exceeds tolerance %(tol)s (region %(region)s)") % {
+                'debt': overdue_debt,
+                'tol': tolerance,
+                'region': region,
+            }
+        )
 
-        if blocking_level == 3 and threshold_3:
+        if blocking_level == 3 and l3 is not None:
             reasons.append(
-                _("Critical overdue: %(days)s days >= %(threshold)s") % {
+                _("Level 3: overdue days %(days)s >= %(threshold)s") % {
                     'days': overdue_days,
-                    'threshold': threshold_3,
+                    'threshold': l3,
                 }
             )
-        elif blocking_level == 2 and threshold_2:
+        elif blocking_level == 2 and l2 is not None:
             reasons.append(
-                _("Search visibility disabled: %(days)s days >= %(threshold)s") % {
+                _("Level 2: overdue days %(days)s >= %(l2)s and < %(l3)s") % {
                     'days': overdue_days,
-                    'threshold': threshold_2,
+                    'l2': l2,
+                    'l3': l3,
                 }
             )
-        elif blocking_level == 1 and threshold_1:
+        elif blocking_level == 1:
             reasons.append(
-                _("Payment warning: %(days)s days >= %(threshold)s") % {
+                _("Level 1: overdue days %(days)s < %(l2)s") % {
                     'days': overdue_days,
-                    'threshold': threshold_1,
-                }
-            )
-
-        if overdue_debt > Decimal('0.00'):
-            reasons.append(
-                _("Overdue amount: %(amount)s") % {
-                    'amount': overdue_debt,
+                    'l2': l2,
                 }
             )
 
@@ -211,18 +202,15 @@ class MultiLevelBlockingService:
             if current_blocking is None or blocking.id != current_blocking.id:
                 blocking.resolve(notes='Superseded by a new billing blocking evaluation')
 
-        blocking_rule = self._get_or_create_rule(blocking_level, thresholds)
         notes = '; '.join(reasons)
 
         if current_blocking:
-            current_blocking.blocking_rule = blocking_rule
             current_blocking.debt_amount = debt_info['total_debt']
             current_blocking.overdue_days = overdue_days
             current_blocking.currency = debt_info['currency']
             current_blocking.notes = notes
             current_blocking.save(
                 update_fields=[
-                    'blocking_rule',
                     'debt_amount',
                     'overdue_days',
                     'currency',
@@ -234,7 +222,6 @@ class MultiLevelBlockingService:
         else:
             blocking = ProviderBlocking.objects.create(
                 provider=provider,
-                blocking_rule=blocking_rule,
                 blocking_level=blocking_level,
                 status='active',
                 debt_amount=debt_info['total_debt'],
@@ -317,43 +304,6 @@ class MultiLevelBlockingService:
                 stats['errors'].append(f"Provider {provider.id}: {exc}")
 
         return stats
-
-    def _get_or_create_rule(self, blocking_level: int, thresholds: Dict[str, Any]) -> BlockingRule:
-        """
-        Возвращает служебное правило блокировки для указанного уровня.
-        """
-        overdue_threshold_map = {
-            1: int(thresholds.get('overdue_threshold_1') or 0),
-            2: int(thresholds.get('overdue_threshold_2') or 0),
-            3: int(thresholds.get('overdue_threshold_3') or 0),
-        }
-        debt_threshold = Decimal(str(thresholds.get('debt_threshold') or '0.00'))
-
-        rule, _ = BlockingRule.objects.get_or_create(
-            name=f'Automatic billing blocking L{blocking_level}',
-            defaults={
-                'description': 'Automatically maintained by MultiLevelBlockingService',
-                'debt_amount_threshold': debt_threshold,
-                'overdue_days_threshold': overdue_threshold_map[blocking_level],
-                'priority': blocking_level,
-                'is_active': True,
-            },
-        )
-
-        fields_to_update: List[str] = []
-        if rule.debt_amount_threshold != debt_threshold:
-            rule.debt_amount_threshold = debt_threshold
-            fields_to_update.append('debt_amount_threshold')
-        if rule.overdue_days_threshold != overdue_threshold_map[blocking_level]:
-            rule.overdue_days_threshold = overdue_threshold_map[blocking_level]
-            fields_to_update.append('overdue_days_threshold')
-        if not rule.is_active:
-            rule.is_active = True
-            fields_to_update.append('is_active')
-        if fields_to_update:
-            rule.save(update_fields=fields_to_update)
-
-        return rule
 
     def _create_notifications(self, blocking: ProviderBlocking) -> None:
         """

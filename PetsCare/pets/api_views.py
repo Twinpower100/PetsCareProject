@@ -11,6 +11,7 @@ from datetime import timedelta
 from users.models import User
 from rest_framework.parsers import MultiPartParser, FormParser
 from django.db import transaction
+from users.email_verification_permissions import IsVerifiedForOwnerWriteActions
 from .models import Pet, PetHealthNote, VisitRecord, VisitRecordAddendum, PetAccess, PetDocument, DocumentType, ChronicCondition, PhysicalFeature, BehavioralTrait, PetOwner
 from .serializers import (
     PetSerializer,
@@ -100,7 +101,7 @@ class PetViewSet(viewsets.ModelViewSet):
     """
     queryset = Pet._default_manager.all()
     serializer_class = PetSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsVerifiedForOwnerWriteActions]
 
     def get_queryset(self):
         """Возвращает список питомцев текущего пользователя с prefetch для избежания N+1"""
@@ -486,7 +487,7 @@ class PetDocumentViewSet(
     - withdraw для provider-managed visit-linked документов
     """
     serializer_class = PetDocumentSummarySerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsVerifiedForOwnerWriteActions]
     http_method_names = ['get', 'patch', 'post', 'head', 'options']
 
     def _include_inactive(self):
@@ -656,7 +657,7 @@ class PetAccessViewSet(viewsets.ModelViewSet):
     """
     queryset = PetAccess._default_manager.all()
     serializer_class = PetAccessSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsVerifiedForOwnerWriteActions]
 
     def get_queryset(self):
         """Возвращает доступы к питомцам текущего пользователя"""
@@ -721,7 +722,7 @@ class PetDeleteAPIView(APIView):
     """
     API for deleting a pet.
     """
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsVerifiedForOwnerWriteActions]
 
     def delete(self, request, pk=None, pet_id=None):
         """Удаляет питомца"""
@@ -886,6 +887,8 @@ class PetHealthNoteListCreateAPIView(generics.ListCreateAPIView):
             )
 
     def get_queryset(self):
+        if getattr(self, 'swagger_fake_view', False):
+            return PetHealthNote._default_manager.none()
         pet = self._get_pet()
         if not can_view_pet_medical_card(self.request.user, pet):
             raise PermissionDenied(
@@ -916,7 +919,7 @@ class PetHealthNoteRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAP
 
 class PetAccessListCreateAPIView(generics.ListCreateAPIView):
     serializer_class = PetAccessSerializer
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsVerifiedForOwnerWriteActions]
 
     def get_queryset(self):
         if getattr(self, 'swagger_fake_view', False):

@@ -349,6 +349,29 @@ class User(AbstractUser):
         unique=True,
         help_text=_('Required. Unique phone number for contact and verification.')
     )
+    email_verified = models.BooleanField(
+        _('Email Verified'),
+        default=True,
+        help_text=_('Whether the user has confirmed ownership of the email address.')
+    )
+    email_verified_at = models.DateTimeField(
+        _('Email Verified At'),
+        null=True,
+        blank=True,
+        help_text=_('When the email address was confirmed.')
+    )
+    preferred_language = models.CharField(
+        _('Preferred Language'),
+        max_length=10,
+        choices=[
+            ('en', _('English')),
+            ('ru', _('Russian')),
+            ('me', _('Montenegrin')),
+            ('de', _('German')),
+        ],
+        default='en',
+        help_text=_('Preferred UI and notification language for the user.')
+    )
     
     # Структурированный адрес пользователя (убрано для избежания циклических зависимостей)
     # Адрес пользователя можно получить через geolocation.Location
@@ -424,6 +447,23 @@ class User(AbstractUser):
         """
         full_name = f"{self.first_name} {self.last_name}"
         return full_name.strip()
+
+    def mark_email_as_verified(self, verified_at=None):
+        """
+        Отмечает email пользователя как подтвержденный.
+        """
+        verification_time = verified_at or timezone.now()
+        self.email_verified = True
+        self.email_verified_at = verification_time
+        self.save(update_fields=['email_verified', 'email_verified_at'])
+
+    def requires_email_verification_for_owner_actions(self):
+        """
+        Возвращает True, если owner-действия должны быть заблокированы до подтверждения email.
+        """
+        if not self.is_authenticated:
+            return False
+        return not self.email_verified
 
     def has_role(self, role_name):
         """
@@ -504,18 +544,40 @@ class User(AbstractUser):
         """
         from django.db.models import Q
         from django.utils import timezone
-        from providers.models import Provider
+        from providers.models import Provider, ProviderLocation, EmployeeLocationRole
+        from providers.permission_service import ProviderPermissionService
 
         if self.has_role('billing_manager'):
             return Provider.objects.filter(is_active=True)
         today = timezone.now().date()
-        return Provider.objects.filter(
+        provider_ids = set(
+            Provider.objects.filter(
             employeeprovider_set__employee__user=self,
             employeeprovider_set__employee__is_active=True,
         ).filter(
             Q(employeeprovider_set__end_date__isnull=True)
             | Q(employeeprovider_set__end_date__gte=today)
-        ).distinct()
+        ).values_list('id', flat=True)
+        )
+        provider_ids.update(
+            ProviderLocation.objects.filter(manager=self).values_list('provider_id', flat=True)
+        )
+        provider_ids.update(
+            EmployeeLocationRole.objects.filter(
+                employee__user=self,
+                employee__is_active=True,
+                is_active=True,
+            ).filter(
+                Q(end_date__isnull=True) | Q(end_date__gte=timezone.now())
+            ).values_list('provider_location__provider_id', flat=True)
+        )
+
+        accessible_ids = [
+            provider.id
+            for provider in Provider.objects.filter(id__in=provider_ids).distinct()
+            if ProviderPermissionService.get_user_roles_for_provider(self, provider)
+        ]
+        return Provider.objects.filter(id__in=accessible_ids)
     
     def has_active_role(self, role_name):
         """
@@ -1440,6 +1502,103 @@ class PasswordResetToken(models.Model):
         count = expired_tokens.count()
         expired_tokens.delete()
         return count 
+
+
+class EmailVerificationToken(models.Model):
+    """
+    Токен подтверждения email для обычной регистрации владельца.
+    """
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='email_verification_tokens',
+        verbose_name=_('User')
+    )
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        verbose_name=_('Verification Token'),
+        help_text=_('Unique token for email verification')
+    )
+    sent_to_email = models.EmailField(
+        _('Sent To Email'),
+        blank=True,
+        help_text=_('Email address used for the verification message')
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+        verbose_name=_('Created At')
+    )
+    expires_at = models.DateTimeField(
+        verbose_name=_('Expires At'),
+        help_text=_('Token expiration time')
+    )
+    used = models.BooleanField(
+        default=False,
+        verbose_name=_('Used'),
+        help_text=_('Whether the token has been used')
+    )
+    used_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        verbose_name=_('Used At'),
+        help_text=_('When the token was used')
+    )
+
+    class Meta:
+        verbose_name = _('Email Verification Token')
+        verbose_name_plural = _('Email Verification Tokens')
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['token']),
+            models.Index(fields=['user', 'created_at']),
+            models.Index(fields=['expires_at']),
+        ]
+
+    def __str__(self):
+        return f"Email verification token for {self.user.email} ({'used' if self.used else 'active'})"
+
+    def is_valid(self):
+        """
+        Проверяет, действителен ли токен.
+        """
+        return not self.used and timezone.now() <= self.expires_at
+
+    def mark_as_used(self, used_at=None):
+        """
+        Отмечает токен как использованный.
+        """
+        self.used = True
+        self.used_at = used_at or timezone.now()
+        self.save(update_fields=['used', 'used_at'])
+
+    def save(self, *args, **kwargs):
+        """
+        Автоматически устанавливает время истечения при создании.
+        """
+        if not self.pk:
+            timeout = getattr(settings, 'EMAIL_VERIFICATION_TIMEOUT', 86400)
+            self.expires_at = timezone.now() + timedelta(seconds=timeout)
+            if not self.sent_to_email:
+                self.sent_to_email = self.user.email
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def create_for_user(cls, user):
+        """
+        Создает новый токен подтверждения email.
+        """
+        import secrets
+
+        token = secrets.token_urlsafe(32)
+        while cls.objects.filter(token=token).exists():
+            token = secrets.token_urlsafe(32)
+
+        return cls.objects.create(
+            user=user,
+            token=token,
+            sent_to_email=user.email,
+        )
 
 
 # Сигналы для автоматического назначения ролей

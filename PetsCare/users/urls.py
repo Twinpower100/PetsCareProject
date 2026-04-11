@@ -6,7 +6,6 @@ URL routes for the users module.
 2. Управления профилем
 3. Google OAuth
 4. Системы инвайтов ролей
-5. Поиска пользователей по геолокации
 
 Основные маршруты:
 - /api/register/ - Регистрация нового пользователя
@@ -14,8 +13,6 @@ URL routes for the users module.
 - /api/profile/ - Профиль пользователя
 - /api/google-auth/ - Аутентификация через Google
 - /api/v1/invites/ - Унифицированные инвайты (см. приложение invites)
-- /search/distance/ - Поиск пользователей по расстоянию
-- /search/sitters/distance/ - Поиск ситтеров по расстоянию
 """
 
 from django.urls import path
@@ -33,6 +30,9 @@ urlpatterns = [
     path('login/', api_views.UserLoginAPIView.as_view(), name='api_login'),
     path('profile/', api_views.UserProfileAPIView.as_view(), name='api_profile'),
     path('google-auth/', api_views.GoogleAuthAPIView.as_view(), name='api_google_auth'),
+    path('google-auth/complete/', api_views.GoogleSignupCompleteAPIView.as_view(), name='api_google_auth_complete'),
+    path('email-verification/confirm/', api_views.EmailVerificationConfirmAPIView.as_view(), name='email-verification-confirm'),
+    path('email-verification/resend/', api_views.EmailVerificationResendAPIView.as_view(), name='email-verification-resend'),
     path('check-email/', api_views.CheckEmailAPIView.as_view(), name='api_check_email'),
     path('check-phone/', api_views.CheckPhoneAPIView.as_view(), name='api_check_phone'),
     path('check-provider-name/', api_views.CheckProviderNameAPIView.as_view(), name='api_check_provider_name'),
@@ -54,10 +54,6 @@ urlpatterns = [
     path('employees/deactivate/<int:employee_id>/', 
          api_views.EmployeeDeactivationAPIView.as_view(), 
          name='deactivate-employee'),
-    
-    # Поиск по геолокации согласно ФД
-    path('search/distance/', api_views.UserSearchByDistanceAPIView.as_view(), name='user-search-distance'),
-    path('search/sitters/distance/', api_views.SitterSearchByDistanceAPIView.as_view(), name='sitter-search-distance'),
     
     # Массовые операции согласно ФД
     path('users/bulk-role-assignment/', api_views.BulkRoleAssignmentAPIView.as_view(), name='bulk-role-assignment'),

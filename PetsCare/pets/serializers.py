@@ -40,7 +40,6 @@ from .medical_card_access import (
     can_view_pet_document,
     can_withdraw_pet_document,
     can_view_health_notes,
-    can_view_visit_record,
     get_accessible_documents_queryset,
     get_accessible_visit_records_queryset,
     is_pet_owner,

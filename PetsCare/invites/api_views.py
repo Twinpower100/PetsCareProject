@@ -1,6 +1,7 @@
 """
 Единые API-представления для создания, приёма, отклонения и просмотра инвайтов.
 """
+from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
 from django.shortcuts import get_object_or_404
@@ -10,6 +11,7 @@ from rest_framework.response import Response
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.generics import ListAPIView
 from django.utils.translation import gettext_lazy as _
+from users.email_verification_permissions import require_verified_email_for_owner_action
 
 from .models import Invite
 from .serializers import (
@@ -60,6 +62,21 @@ def _can_create_invite(request, invite_type, provider=None, provider_location=No
     return False, _('Unknown invite type.')
 
 
+def _get_invite_accept_link(invite: Invite) -> str:
+    provider_admin_url = getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173').rstrip('/')
+    frontend_url = getattr(settings, 'FRONTEND_URL', provider_admin_url).rstrip('/')
+
+    if invite.invite_type in (Invite.TYPE_PROVIDER_MANAGER, Invite.TYPE_PROVIDER_ADMIN):
+        return f'{provider_admin_url}/accept-organization-role-invite'
+    if invite.invite_type == Invite.TYPE_BRANCH_MANAGER:
+        return f'{provider_admin_url}/accept-location-manager-invite'
+    if invite.invite_type == Invite.TYPE_SPECIALIST:
+        return f'{provider_admin_url}/accept-location-staff-invite'
+    if invite.invite_type in (Invite.TYPE_PET_CO_OWNER, Invite.TYPE_PET_TRANSFER):
+        return f'{frontend_url}/pet-invite/{invite.token}/'
+    return f'{provider_admin_url}/invite/{invite.token}/'
+
+
 class InviteListCreateAPIView(APIView):
     """
     Список инвайтов (GET) и создание (POST). GET/POST /api/v1/invites/
@@ -85,6 +102,7 @@ class InviteListCreateAPIView(APIView):
         return Response(ser.data)
 
     def post(self, request):
+        require_verified_email_for_owner_action(request.user)
         from providers.models import Provider, ProviderLocation
         from pets.models import Pet
         from users.models import User
@@ -413,13 +431,7 @@ class InviteQRCodeAPIView(APIView):
                 {'detail': _('This invitation is no longer valid.')},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        from django.conf import settings
-        base_url = getattr(settings, 'PROVIDER_ADMIN_URL', getattr(settings, 'FRONTEND_URL', '')).rstrip('/')
-        if not base_url and invite.invite_type in (
-            Invite.TYPE_PET_CO_OWNER, Invite.TYPE_PET_TRANSFER,
-        ):
-            base_url = getattr(settings, 'FRONTEND_URL', '').rstrip('/')
-        link = f"{base_url}/invite/{invite.token}/"
+        link = _get_invite_accept_link(invite)
         import qrcode
         from io import BytesIO
         import base64

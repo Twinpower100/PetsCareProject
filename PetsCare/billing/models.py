@@ -313,7 +313,7 @@ class Payment(models.Model):
     - Различные методы оплаты
     - Отслеживание статуса
     - Поддержка возвратов
-    - Привязка к бронированиям
+    - Проводка по счетам (FIFO / привязка к invoice)
     """
     STATUS_CHOICES = [
         ('pending', _('Pending')),
@@ -336,14 +336,6 @@ class Payment(models.Model):
         null=True,
         blank=True,
         help_text=_('Provider for whom the payment was received')
-    )
-    booking = models.ForeignKey(
-        Booking,
-        on_delete=models.CASCADE,
-        related_name='payments',
-        verbose_name=_('Booking'),
-        null=True,
-        blank=True
     )
     invoice = models.ForeignKey(
         'Invoice',
@@ -402,7 +394,7 @@ class Payment(models.Model):
         ordering = ['-created_at']
 
     def __str__(self):
-        subject = self.invoice or self.booking or self.provider
+        subject = self.invoice or self.provider
         return f"{subject} - {self.amount}"
 
     def save(self, *args, **kwargs):
@@ -419,8 +411,6 @@ class Payment(models.Model):
 
         if self.invoice_id and self.provider_id is None:
             self.provider = self.invoice.provider
-        elif self.booking_id and self.provider_id is None:
-            self.provider = self.booking.provider or getattr(self.booking.provider_location, 'provider', None)
 
         super().save(*args, **kwargs)
 
@@ -574,8 +564,10 @@ class Invoice(models.Model):
 
     def _get_default_due_date(self):
         """Рассчитывает дедлайн оплаты на основе правил провайдера."""
-        if self.end_date and self.provider:
-            return self.end_date + timezone.timedelta(days=self.provider._get_payment_deferral_days())
+        if self.provider and self.issued_at:
+            due_date = self.provider.calculate_invoice_due_date(self.issued_at.date())
+            if due_date is not None:
+                return due_date
         return self.issued_at.date() + timezone.timedelta(days=7)
 
     def sync_payment_history(self):
@@ -1555,116 +1547,86 @@ class OverdueThresholdSettings(models.Model):
         return f"{self.name} ({self.currency.code})"
 
 
-class BlockingRule(models.Model):
+class RegionalBlockingPolicy(models.Model):
     """
-    Модель для правил автоматической блокировки учреждений.
-    
-    Особенности:
-    - Настройка порогов по сумме и дням просрочки
-    - Массовая настройка по географии и типу услуг
-    - Приоритет правил
-    - Отслеживание активности
+    Единственная настраиваемая платформенная политика блокировок: по коду региона
+    (DEFAULT, EU или ISO-страна) задаются валюта, допуск по сумме и пороги дней для уровней 2 и 3.
+
+    Уровни 1–3 считаются в MultiLevelBlockingService из фактического долга и просрочки;
+    отдельных «правил L1/L2/L3» и приоритетов в БД нет.
     """
-    name = models.CharField(
-        _('Rule Name'),
-        max_length=200,
-        help_text=_('Descriptive name for this blocking rule')
+
+    region_code = models.CharField(
+        _('Region / country code'),
+        max_length=32,
+        unique=True,
+        db_index=True,
+        help_text=_(
+            'DEFAULT — если для вычисленного кода провайдера нет своей строки. '
+            'EU — все страны ЕС. Иначе ISO 3166-1 alpha-2 (RU, ME, DE, …).'
+        ),
     )
-    description = models.TextField(
-        _('Description'),
-        blank=True,
-        help_text=_('Detailed description of the rule')
+    currency = models.ForeignKey(
+        Currency,
+        on_delete=models.PROTECT,
+        related_name='regional_blocking_policies',
+        verbose_name=_('Policy currency'),
+        help_text=_('Currency in which tolerance_amount is defined; converted to provider invoice currency.'),
     )
-    
-    # Пороги блокировки
-    debt_amount_threshold = models.DecimalField(
-        _('Debt Amount Threshold'),
+    tolerance_amount = models.DecimalField(
+        _('Tolerance amount'),
         max_digits=12,
         decimal_places=2,
-        help_text=_('Minimum debt amount to trigger blocking')
+        help_text=_(
+            'Overdue debt at or below this amount (after conversion to provider invoice currency) '
+            'does not advance blocking levels.'
+        ),
     )
-    overdue_days_threshold = models.PositiveIntegerField(
-        _('Overdue Days Threshold'),
-        help_text=_('Minimum number of overdue days to trigger blocking')
+    overdue_days_l2_from = models.PositiveIntegerField(
+        _('Overdue days for level 2 (from)'),
+        help_text=_(
+            'Minimum calendar days overdue to reach level 2 (marketplace restrictions), '
+            'when overdue debt exceeds tolerance.'
+        ),
     )
-    
-    # Массовая настройка
-    is_mass_rule = models.BooleanField(
-        _('Is Mass Rule'),
-        default=False,
-        help_text=_('If True, applies to multiple providers based on criteria')
+    overdue_days_l3_from = models.PositiveIntegerField(
+        _('Overdue days for level 3 (from)'),
+        help_text=_(
+            'Minimum calendar days overdue to reach level 3 (billing-only), '
+            'when overdue debt exceeds tolerance.'
+        ),
     )
-    
-    # Критерии для массовой настройки
-    regions = models.JSONField(
-        _('Regions'),
-        default=list,
-        blank=True,
-        help_text=_('List of region IDs for mass rule application')
-    )
-    service_types = models.JSONField(
-        _('Service Types'),
-        default=list,
-        blank=True,
-        help_text=_('List of service type IDs for mass rule application')
-    )
-    
-    # Приоритет правила (меньше = выше приоритет)
-    priority = models.PositiveIntegerField(
-        _('Priority'),
-        default=100,
-        help_text=_('Rule priority (lower number = higher priority)')
-    )
-    
-    is_active = models.BooleanField(
-        _('Is Active'),
-        default=True,
-        help_text=_('Whether this rule is active')
-    )
-    
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        verbose_name=_('Created By'),
-        related_name='created_blocking_rules'
-    )
+    is_active = models.BooleanField(_('Is active'), default=True)
+    notes = models.TextField(_('Notes'), blank=True)
     created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
     updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
 
     class Meta:
         verbose_name = _('Blocking Rule')
         verbose_name_plural = _('Blocking Rules')
-        ordering = ['priority', 'name']
-        indexes = [
-            models.Index(fields=['is_active', 'priority']),
-            models.Index(fields=['is_mass_rule', 'is_active']),
-        ]
+        ordering = ['region_code']
 
     def __str__(self):
-        return f"{self.name} (Priority: {self.priority})"
+        return f'{self.region_code} ({self.currency.code})'
 
-    def get_applicable_providers(self):
-        """Возвращает список провайдеров, к которым применяется это правило"""
-        from providers.models import Provider
-        
-        if not self.is_mass_rule:
-            return []
-        
-        providers = Provider.objects.filter(is_active=True)
-        
-        if self.regions:
-            providers = providers.filter(
-                structured_address__region__in=self.regions
+    def clean(self):
+        from .blocking_region_choices import is_allowed_region_code
+
+        super().clean()
+        code = (self.region_code or '').strip().upper()
+        if not is_allowed_region_code(code):
+            raise ValidationError(
+                {'region_code': _('Unknown region code. Choose DEFAULT, EU, or an ISO country code.')}
             )
-        
-        if self.service_types:
-            # Фильтр по типам услуг, которые предоставляет провайдер
-            providers = providers.filter(
-                locations__available_services__id__in=self.service_types
-            ).distinct()
-        
-        return providers
+        if self.overdue_days_l3_from <= self.overdue_days_l2_from:
+            raise ValidationError(
+                _('Level 3 overdue threshold must be greater than level 2 threshold.')
+            )
+
+    def save(self, *args, **kwargs):
+        if self.region_code:
+            self.region_code = self.region_code.strip().upper()
+        super().save(*args, **kwargs)
 
 
 class ProviderBlocking(models.Model):
@@ -1672,9 +1634,8 @@ class ProviderBlocking(models.Model):
     Модель для отслеживания блокировок учреждений.
     
     Особенности:
-    - Отслеживание статуса блокировки
+    - Отслеживание статуса блокировки и уровня (1–3)
     - История блокировок
-    - Привязка к правилу блокировки
     - Автоматическое управление статусом
     """
     STATUS_CHOICES = [
@@ -1689,13 +1650,7 @@ class ProviderBlocking(models.Model):
         verbose_name=_('Provider'),
         related_name='blockings'
     )
-    blocking_rule = models.ForeignKey(
-        BlockingRule,
-        on_delete=models.PROTECT,
-        verbose_name=_('Blocking Rule'),
-        related_name='provider_blockings'
-    )
-    
+
     status = models.CharField(
         _('Status'),
         max_length=20,
@@ -2663,13 +2618,13 @@ class BillingConfig(models.Model):
     )
     payment_deferral_days = models.PositiveIntegerField(
         default=5,
-        verbose_name=_('Payment Deferral Days'),
-        help_text=_('Payment deferral days after service completion. Used in offer text as {{payment_deferral_days}}')
+        verbose_name=_('Payment Due Working Day'),
+        help_text=_('Working day of month when the invoice must be paid. Used in offer text as {{payment_deferral_days}}')
     )
     invoice_period_days = models.PositiveIntegerField(
         default=3,
-        verbose_name=_('Invoice Period Days'),
-        help_text=_('Days to generate invoice after period end. Used in offer text as {{invoice_period_days}}')
+        verbose_name=_('Invoice Generation Working Day'),
+        help_text=_('Working day of month when the invoice for the previous billing month is generated. Used in offer text as {{invoice_period_days}}')
     )
     
     is_active = models.BooleanField(

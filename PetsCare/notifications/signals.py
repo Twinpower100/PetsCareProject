@@ -15,11 +15,9 @@ from django.utils.translation import gettext as _
 from django.contrib.auth import get_user_model
 from django.apps import apps
 from .tasks import (
-    send_email_verification_task,
     send_password_reset_task,
     send_booking_confirmation_task,
     send_booking_cancellation_task,
-    schedule_booking_reminders_task,
     send_new_review_notification_task,
     send_pet_sitting_notification_task,
     send_payment_failed_notification_task,
@@ -29,7 +27,7 @@ from .tasks import (
     send_invite_response_task,
     send_invite_expired_task,
 )
-from .services import PreferenceService, NotificationService, NotificationRuleService
+from .services import NotificationService, NotificationRuleService, PreferenceService
 from django.utils import timezone
 
 User = get_user_model()
@@ -54,36 +52,6 @@ def create_user_notification_preferences(sender, instance, created, **kwargs):
             logger.info(_("Created default notification preferences for user {}").format(instance.id))
         except Exception as e:
             logger.error(_("Failed to create notification preferences for user {}: {}").format(instance.id, e))
-
-
-@receiver(post_save, sender=User)
-def send_email_verification_on_registration(sender, instance, created, **kwargs):
-    """
-    Отправляет email верификации при регистрации нового пользователя.
-    
-    Args:
-        sender: Модель отправителя сигнала
-        instance: Экземпляр пользователя
-        created: Создан ли пользователь
-        **kwargs: Дополнительные аргументы
-    """
-    if created and instance.email:
-        try:
-            # Генерируем токен верификации
-            from django.contrib.auth.tokens import default_token_generator
-            from django.utils.http import urlsafe_base64_encode
-            from django.utils.encoding import force_bytes
-            
-            token = default_token_generator.make_token(instance)
-            uid = urlsafe_base64_encode(force_bytes(instance.pk))
-            
-            # Отправляем задачу на верификацию email
-            send_email_verification_task.delay(instance.id, f"{uid}-{token}")
-            
-            logger.info(_("Email verification task queued for user {}").format(instance.id))
-            
-        except Exception as e:
-            logger.error(_("Failed to queue email verification for user {}: {}").format(instance.id, e))
 
 
 # Сигналы для бронирований

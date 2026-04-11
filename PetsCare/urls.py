@@ -184,6 +184,12 @@ urlpatterns = [
         RedirectView.as_view(url='/admin/invites/invite/', permanent=True),
         name='admin-managertransferinvite-redirect',
     ),
+    # Удалённая модель BlockingRule → Regional blocking policies
+    re_path(
+        r'^admin/billing/blockingrule/.*$',
+        RedirectView.as_view(url='/admin/billing/regionalblockingpolicy/', permanent=True),
+        name='admin-blockingrule-to-regional-policy-redirect',
+    ),
     # Административный интерфейс
     path('admin/', custom_admin_site.urls),  # Используем кастомный админ-сайт
     

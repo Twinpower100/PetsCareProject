@@ -33,9 +33,25 @@ app.conf.beat_schedule = {
         'task': 'billing.tasks.update_currency_rates',
         'schedule': crontab(hour='0', minute='0'),  # Ежедневно в полночь
     },
+    'generate-scheduled-invoices': {
+        'task': 'billing.tasks.generate_scheduled_invoices',
+        'schedule': crontab(hour='6', minute='0'),  # Ежедневно утром, фактический запуск зависит от рабочего дня месяца
+    },
     'activate-pending-offers': {
         'task': 'billing.tasks.activate_pending_offers',
         'schedule': crontab(hour='0', minute='0'),  # Ежедневно в полночь (проверка оферт с effective_date = сегодня)
+    },
+    'apply-pending-provider-lifecycle-transitions': {
+        'task': 'providers.tasks.apply_pending_provider_lifecycle_transitions',
+        'schedule': crontab(minute='0'),  # Каждый час для future-dated lifecycle операций
+    },
+    'send-upcoming-booking-reminders': {
+        'task': 'notifications.tasks.send_upcoming_booking_reminders_task',
+        'schedule': crontab(minute='*/15'),
+    },
+    'process-periodic-procedure-reminders': {
+        'task': 'notifications.tasks.process_reminders_task',
+        'schedule': crontab(hour='8', minute='0'),
     },
 }
 

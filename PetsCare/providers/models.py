@@ -30,6 +30,8 @@ from catalog.models import Service
 import googlemaps
 from geopy.distance import geodesic
 from decimal import Decimal
+from datetime import date, timedelta
+from calendar import monthrange
 import uuid
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator, MinLengthValidator
@@ -37,6 +39,47 @@ from users.models import User
 from django.contrib.gis.db import models as gis_models
 from django.contrib.gis.geos import Point
 from django_countries.fields import CountryField
+
+
+class ProviderLifecycleSettings(models.Model):
+    """
+    Глобальные настройки жизненного цикла организаций и филиалов.
+
+    Хранится одна запись, редактируемая через кастомную админку.
+    """
+
+    singleton_key = models.PositiveSmallIntegerField(
+        default=1,
+        unique=True,
+        editable=False,
+        verbose_name=_('Singleton Key'),
+        help_text=_('Technical key for the singleton settings record.'),
+    )
+    owner_post_termination_access_days = models.PositiveIntegerField(
+        _('Owner Post-Termination Access Days'),
+        default=30,
+        help_text=_('How many days the owner keeps read-only access after organization termination.'),
+    )
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Provider Lifecycle Settings')
+        verbose_name_plural = _('Provider Lifecycle Settings')
+
+    def __str__(self):
+        return str(_('Provider Lifecycle Settings'))
+
+    @classmethod
+    def get_solo(cls):
+        """
+        Возвращает singleton-настройки, создавая запись при первом обращении.
+        """
+        settings_obj, _ = cls.objects.get_or_create(
+            singleton_key=1,
+            defaults={'owner_post_termination_access_days': 30},
+        )
+        return settings_obj
 
 
 class Provider(models.Model):
@@ -115,6 +158,101 @@ class Provider(models.Model):
         choices=ACTIVATION_STATUS_CHOICES,
         default='pending',
         help_text=_('Status of provider activation process')
+    )
+
+    PARTNERSHIP_STATUS_ACTIVE = 'active'
+    PARTNERSHIP_STATUS_TEMPORARILY_INACTIVE = 'temporarily_inactive'
+    PARTNERSHIP_STATUS_TERMINATED = 'terminated'
+    PARTNERSHIP_STATUS_CHOICES = [
+        (PARTNERSHIP_STATUS_ACTIVE, _('Active')),
+        (PARTNERSHIP_STATUS_TEMPORARILY_INACTIVE, _('Temporarily Inactive')),
+        (PARTNERSHIP_STATUS_TERMINATED, _('Terminated')),
+    ]
+
+    partnership_status = models.CharField(
+        _('Partnership Status'),
+        max_length=30,
+        choices=PARTNERSHIP_STATUS_CHOICES,
+        default=PARTNERSHIP_STATUS_ACTIVE,
+        db_index=True,
+        help_text=_('Operational partnership status of the organization on the platform.'),
+    )
+    partnership_effective_date = models.DateField(
+        _('Partnership Effective Date'),
+        null=True,
+        blank=True,
+        help_text=_('Date when the current partnership status became effective.'),
+    )
+    partnership_resume_date = models.DateField(
+        _('Partnership Resume Date'),
+        null=True,
+        blank=True,
+        help_text=_('Planned date when the organization is expected to return to active status.'),
+    )
+    partnership_reason = models.TextField(
+        _('Partnership Reason'),
+        blank=True,
+        help_text=_('Reason for the current partnership status.'),
+    )
+    partnership_status_changed_at = models.DateTimeField(
+        _('Partnership Status Changed At'),
+        null=True,
+        blank=True,
+        help_text=_('When the current partnership status was last changed.'),
+    )
+    partnership_status_changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='provider_partnership_status_changes',
+        verbose_name=_('Partnership Status Changed By'),
+        help_text=_('User who last changed the partnership status.'),
+    )
+    pending_partnership_status = models.CharField(
+        _('Pending Partnership Status'),
+        max_length=30,
+        blank=True,
+        default='',
+        help_text=_('Scheduled partnership status to apply in the future.'),
+    )
+    pending_partnership_effective_date = models.DateField(
+        _('Pending Partnership Effective Date'),
+        null=True,
+        blank=True,
+        help_text=_('Date when the pending partnership status should be applied.'),
+    )
+    pending_partnership_resume_date = models.DateField(
+        _('Pending Partnership Resume Date'),
+        null=True,
+        blank=True,
+        help_text=_('Planned resume date stored for the pending partnership change.'),
+    )
+    pending_partnership_reason = models.TextField(
+        _('Pending Partnership Reason'),
+        blank=True,
+        help_text=_('Reason stored for the pending partnership change.'),
+    )
+    pending_partnership_requested_at = models.DateTimeField(
+        _('Pending Partnership Requested At'),
+        null=True,
+        blank=True,
+        help_text=_('When the pending partnership change was scheduled.'),
+    )
+    pending_partnership_requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='provider_pending_partnership_requests',
+        verbose_name=_('Pending Partnership Requested By'),
+        help_text=_('User who scheduled the pending partnership change.'),
+    )
+    post_termination_access_until = models.DateTimeField(
+        _('Post-Termination Access Until'),
+        null=True,
+        blank=True,
+        help_text=_('Read-only owner access end time after organization termination.'),
     )
     
     # Статус активности (автоматически устанавливается при activation_status=active)
@@ -313,6 +451,18 @@ class Provider(models.Model):
         default=False,
         help_text=_('Whether provider services should be displayed on UI. Provider can toggle this in admin panel.')
     )
+    use_unified_service_pricing = models.BooleanField(
+        _('Use Unified Service Pricing'),
+        default=False,
+        help_text=_('Whether service prices are managed centrally at the organization level and synced to branches.'),
+    )
+    served_pet_types = models.ManyToManyField(
+        'pets.PetType',
+        related_name='providers_served',
+        verbose_name=_('Organization served pet types'),
+        help_text=_('Pet types that can be priced at the organization level and used as the allowed scope for branches in unified pricing mode.'),
+        blank=True,
+    )
     show_services_toggled_at = models.DateTimeField(
         _('Show Services Toggled At'),
         null=True,
@@ -335,6 +485,15 @@ class Provider(models.Model):
     )
     
     # Настройки блокировки
+    blocking_region_code = models.CharField(
+        _('Blocking region override'),
+        max_length=32,
+        blank=True,
+        help_text=_(
+            'Optional region code for billing blocking policy (EU, ME, …). '
+            'If empty, region is derived from country (EU aggregate for EU members).'
+        ),
+    )
     exclude_from_blocking_checks = models.BooleanField(
         _('Exclude From Blocking Checks'),
         default=False,
@@ -370,6 +529,7 @@ class Provider(models.Model):
             models.Index(fields=['registration_number']),
             models.Index(fields=['country', 'is_eu']),
             models.Index(fields=['is_eu']),
+            models.Index(fields=['use_unified_service_pricing']),
             models.Index(fields=['show_services', 'is_active']),
         ]
         constraints = [
@@ -551,10 +711,18 @@ class Provider(models.Model):
         """
         super().clean()
         
-        # Автоматически устанавливаем is_active в зависимости от activation_status
-        if self.activation_status == 'active':
+        # Организация операционно активна только если завершён онбординг и не применён lifecycle-stop.
+        if (
+            self.activation_status == 'active'
+            and self.partnership_status == self.PARTNERSHIP_STATUS_ACTIVE
+        ):
             self.is_active = True
         elif self.activation_status in ['pending', 'activation_required', 'rejected', 'inactive']:
+            self.is_active = False
+        elif self.partnership_status in [
+            self.PARTNERSHIP_STATUS_TEMPORARILY_INACTIVE,
+            self.PARTNERSHIP_STATUS_TERMINATED,
+        ]:
             self.is_active = False
         
         # Если провайдер в статусе activation_required или active, реквизиты должны быть заполнены
@@ -596,6 +764,17 @@ class Provider(models.Model):
             QuerySet: Активные локации организации
         """
         return self.locations.filter(is_active=True)
+
+    def has_post_termination_owner_access(self, moment=None):
+        """
+        Проверяет, действует ли post-termination read-only окно для owner.
+        """
+        if self.partnership_status != self.PARTNERSHIP_STATUS_TERMINATED:
+            return False
+        if self.post_termination_access_until is None:
+            return False
+        current_moment = moment or timezone.now()
+        return self.post_termination_access_until >= current_moment
     
     def get_available_categories(self):
         """
@@ -723,97 +902,156 @@ class Provider(models.Model):
     
     def _get_payment_deferral_days(self):
         """
-        Получает количество дней отсрочки платежа для провайдера.
-        
-        Сначала проверяет ProviderSpecialTerms, затем LegalDocument/BillingConfig.
-        
-        Returns:
-            int: Количество дней отсрочки платежа
+        Возвращает порядковый номер рабочего дня месяца для срока оплаты счета.
+
+        Legacy-имя поля сохранено, но в текущем биллинге значение трактуется
+        как рабочий день месяца, а не как количество календарных дней.
         """
-        from legal.models import LegalDocument, DocumentAcceptance
-        
-        # Проверяем специальные условия из LegalDocument (side_letter)
+        offer_config = self.get_offer_billing_config()
         side_letter = self.legal_documents.filter(
             document_type__code='side_letter',
             is_active=True
         ).first()
         if side_letter and side_letter.payment_deferral_days:
             return side_letter.payment_deferral_days
-        
-        # Получаем активный акцепт оферты
+        if offer_config and offer_config.payment_deferral_days:
+            return offer_config.payment_deferral_days
+        return 5
+
+    def get_offer_billing_config(self):
+        """
+        Возвращает billing config активной глобальной оферты провайдера.
+        """
         active_acceptance = self.document_acceptances.filter(
             document__document_type__code='global_offer',
             is_active=True
+        ).select_related('document__billing_config').first()
+        if active_acceptance and active_acceptance.document:
+            return active_acceptance.document.billing_config
+        return None
+
+    def get_invoice_generation_working_day(self):
+        """
+        Возвращает порядковый номер рабочего дня месяца для выставления счета.
+        """
+        offer_config = self.get_offer_billing_config()
+        if offer_config and offer_config.invoice_period_days:
+            return offer_config.invoice_period_days
+        return 3
+
+    def _get_billing_country_code(self):
+        """
+        Возвращает ISO-код страны провайдера для расчета рабочих дней.
+        """
+        if not self.country:
+            return ''
+        return getattr(self.country, 'code', str(self.country) or '').upper()
+
+    def _is_working_billing_day(self, target_date):
+        """
+        Проверяет рабочий день через ProductionCalendar с fallback на CalendarProvider.
+        """
+        country_code = self._get_billing_country_code()
+        if not country_code:
+            return target_date.weekday() < 5
+
+        from production_calendar.calendar_provider import CalendarProvider
+        from production_calendar.models import (
+            DAY_TYPE_SHORT_DAY,
+            DAY_TYPE_WORKING,
+            ProductionCalendar,
+        )
+
+        calendar_day = ProductionCalendar.objects.filter(
+            country=country_code,
+            date=target_date,
         ).first()
-        if active_acceptance:
-            # НОВЫЙ ПОДХОД: Используем LegalDocument
-            if active_acceptance.document and active_acceptance.document.billing_config:
-                return active_acceptance.document.billing_config.payment_deferral_days
-            # УДАЛЕНО: обратная совместимость с PublicOffer
-        
-        # Если нет активной оферты, используем значение по умолчанию
-        return 5  # 5 дней по умолчанию
+        if calendar_day is not None:
+            return calendar_day.day_type in {DAY_TYPE_WORKING, DAY_TYPE_SHORT_DAY}
+
+        info = CalendarProvider.get_day_info(country_code, target_date)
+        return info.get('day_type') in {DAY_TYPE_WORKING, DAY_TYPE_SHORT_DAY}
+
+    def resolve_working_day_of_month(self, year, month, working_day_number):
+        """
+        Возвращает дату N-го рабочего дня месяца.
+
+        Если номер больше количества рабочих дней, используется последний
+        рабочий день месяца.
+        """
+        if not working_day_number or working_day_number <= 0:
+            return None
+
+        last_working_day = None
+        working_day_counter = 0
+        days_in_month = monthrange(year, month)[1]
+
+        for day_number in range(1, days_in_month + 1):
+            candidate_date = date(year, month, day_number)
+            if not self._is_working_billing_day(candidate_date):
+                continue
+
+            last_working_day = candidate_date
+            working_day_counter += 1
+            if working_day_counter == working_day_number:
+                return candidate_date
+
+        return last_working_day
+
+    def get_scheduled_invoice_issue_date(self, reference_date):
+        """
+        Возвращает дату выставления счета в месяце reference_date.
+        """
+        return self.resolve_working_day_of_month(
+            reference_date.year,
+            reference_date.month,
+            self.get_invoice_generation_working_day(),
+        )
+
+    def should_generate_invoice_on(self, run_date):
+        """
+        Проверяет, должен ли счет автоматически выставляться в указанную дату.
+        """
+        return self.get_scheduled_invoice_issue_date(run_date) == run_date
+
+    def calculate_invoice_due_date(self, issue_date):
+        """
+        Возвращает срок оплаты как N-й рабочий день месяца.
+
+        Если расчетный рабочий день уже прошел относительно issue_date,
+        используется следующий месяц.
+        """
+        due_working_day = self._get_payment_deferral_days()
+        due_date = self.resolve_working_day_of_month(
+            issue_date.year,
+            issue_date.month,
+            due_working_day,
+        )
+        if due_date and due_date >= issue_date:
+            return due_date
+
+        next_month_anchor = (issue_date.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return self.resolve_working_day_of_month(
+            next_month_anchor.year,
+            next_month_anchor.month,
+            due_working_day,
+        )
     
     def get_blocking_thresholds(self):
         """
-        Получает пороги блокировки для провайдера.
-        
-        Сначала проверяет ProviderSpecialTerms, затем LegalDocument/BillingConfig.
-        
+        Возвращает пороги блокировки по региональной политике платформы.
+
+        Юридические документы на суммы блокировок не влияют: допуск и дни задаются
+        моделью RegionalBlockingPolicy по коду региона (или дефолты из settings).
+
         Returns:
-            dict: Словарь с полями:
-                - debt_threshold: Decimal или None
-                - overdue_threshold_1: int или None
-                - overdue_threshold_2: int или None
-                - overdue_threshold_3: int или None
+            dict: Поля tolerance_amount, overdue_days_l2_from, overdue_days_l3_from,
+            blocking_region_code, policy_currency_code; устаревшие ключи
+            overdue_threshold_* оставлены для совместимости чтения.
         """
-        from legal.models import LegalDocument
-        from django.conf import settings
-        
-        # Проверяем специальные условия из LegalDocument (side_letter)
-        side_letter = self.legal_documents.filter(
-            document_type__code='side_letter',
-            is_active=True
-        ).first()
-        if side_letter:
-            return {
-                'debt_threshold': side_letter.debt_threshold,
-                'overdue_threshold_1': side_letter.overdue_threshold_1,
-                'overdue_threshold_2': side_letter.overdue_threshold_2,
-                'overdue_threshold_3': side_letter.overdue_threshold_3,
-            }
-        
-        # Получаем активный акцепт оферты
-        active_acceptance = self.document_acceptances.filter(
-            document__document_type__code='global_offer',
-            is_active=True
-        ).first()
-        if active_acceptance and active_acceptance.document:
-            blocking_settings = getattr(settings, 'BLOCKING_SETTINGS', {})
-            document = active_acceptance.document
-            return {
-                'debt_threshold': document.debt_threshold
-                if document.debt_threshold is not None
-                else blocking_settings.get('DEFAULT_DEBT_THRESHOLD', 1000.00),
-                'overdue_threshold_1': document.overdue_threshold_1
-                if document.overdue_threshold_1 is not None
-                else blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_1', 7),
-                'overdue_threshold_2': document.overdue_threshold_2
-                if document.overdue_threshold_2 is not None
-                else blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_2', 14),
-                'overdue_threshold_3': document.overdue_threshold_3
-                if document.overdue_threshold_3 is not None
-                else blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_3', 30),
-            }
-        
-        # Если нет активной оферты, используем глобальные настройки
-        blocking_settings = getattr(settings, 'BLOCKING_SETTINGS', {})
-        return {
-            'debt_threshold': blocking_settings.get('DEFAULT_DEBT_THRESHOLD', 1000.00),
-            'overdue_threshold_1': blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_1', 7),
-            'overdue_threshold_2': blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_2', 14),
-            'overdue_threshold_3': blocking_settings.get('DEFAULT_OVERDUE_THRESHOLD_3', 30),
-        }
+        from billing.regional_blocking import resolve_blocking_thresholds_for_provider
+
+        return resolve_blocking_thresholds_for_provider(self)
     
     def can_show_services(self):
         """
@@ -2435,6 +2673,99 @@ class ProviderLocationService(models.Model):
         return f"{self.location} - {self.service} ({self.pet_type.code}/{self.size_code})"
 
 
+class ProviderServicePricing(models.Model):
+    """
+    Организационная матрица цен по услугам.
+
+    Используется, когда у провайдера включён режим единых цен.
+    Одна запись = организация + услуга + тип животного + размер.
+    """
+
+    SIZE_CHOICES = ProviderLocationService.SIZE_CHOICES
+
+    provider = models.ForeignKey(
+        'Provider',
+        on_delete=models.CASCADE,
+        related_name='service_pricing_rows',
+        verbose_name=_('Provider'),
+        help_text=_('Organization that owns the unified service price row.'),
+    )
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.CASCADE,
+        related_name='provider_pricing_rows',
+        verbose_name=_('Service'),
+        help_text=_('Service covered by the unified organization-level price.'),
+    )
+    pet_type = models.ForeignKey(
+        'pets.PetType',
+        on_delete=models.CASCADE,
+        related_name='provider_pricing_rows',
+        verbose_name=_('Pet Type'),
+        help_text=_('Pet type covered by the organization-level price row.'),
+    )
+    size_code = models.CharField(
+        _('Size Code'),
+        max_length=10,
+        choices=SIZE_CHOICES,
+        help_text=_('Size category: S, M, L, XL (must match SizeRule).'),
+    )
+    price = models.DecimalField(
+        _('Price'),
+        max_digits=10,
+        decimal_places=2,
+        help_text=_('Organization-level price for this service, pet type, and size.'),
+    )
+    duration_minutes = models.PositiveIntegerField(
+        _('Duration In Minutes'),
+        help_text=_('Organization-level duration in minutes for this service row.'),
+    )
+    tech_break_minutes = models.PositiveIntegerField(
+        _('Technical Break Minutes'),
+        default=0,
+        help_text=_('Technical break time in minutes after the service.'),
+    )
+    is_active = models.BooleanField(
+        _('Is Active'),
+        default=True,
+        help_text=_('Whether this organization-level pricing row is active.'),
+    )
+    version = models.PositiveIntegerField(
+        _('Version'),
+        default=1,
+        help_text=_('Optimistic locking version for the organization pricing row.'),
+    )
+    created_at = models.DateTimeField(
+        _('Created At'),
+        auto_now_add=True,
+    )
+    updated_at = models.DateTimeField(
+        _('Updated At'),
+        auto_now=True,
+    )
+
+    class Meta:
+        verbose_name = _('Provider Service Pricing')
+        verbose_name_plural = _('Provider Service Pricing')
+        ordering = ['provider', 'service', 'pet_type', 'size_code']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['provider', 'service', 'pet_type', 'size_code'],
+                name='providers_providerpricing_provider_service_pet_type_size_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['provider', 'service'], name='prov_prc_prov_svc_idx'),
+            models.Index(fields=['is_active'], name='prov_prc_active_idx'),
+        ]
+
+    def __str__(self):
+        """
+        Возвращает человекочитаемое представление строки org-level прайса.
+        """
+        return f'{self.provider} - {self.service} ({self.pet_type.code}/{self.size_code})'
+
+
 class ProviderLocation(models.Model):
     """
     Локация (филиал организации по предоставлению услуг).
@@ -2518,6 +2849,95 @@ class ProviderLocation(models.Model):
         help_text=_('Whether this location is currently active')
     )
 
+    LIFECYCLE_STATUS_ACTIVE = 'active'
+    LIFECYCLE_STATUS_TEMPORARILY_CLOSED = 'temporarily_closed'
+    LIFECYCLE_STATUS_DEACTIVATED = 'deactivated'
+    LIFECYCLE_STATUS_CHOICES = [
+        (LIFECYCLE_STATUS_ACTIVE, _('Active')),
+        (LIFECYCLE_STATUS_TEMPORARILY_CLOSED, _('Temporarily Closed')),
+        (LIFECYCLE_STATUS_DEACTIVATED, _('Deactivated')),
+    ]
+
+    lifecycle_status = models.CharField(
+        _('Lifecycle Status'),
+        max_length=30,
+        choices=LIFECYCLE_STATUS_CHOICES,
+        default=LIFECYCLE_STATUS_ACTIVE,
+        db_index=True,
+        help_text=_('Operational lifecycle status of the location.'),
+    )
+    lifecycle_effective_date = models.DateField(
+        _('Lifecycle Effective Date'),
+        null=True,
+        blank=True,
+        help_text=_('Date when the current lifecycle status became effective.'),
+    )
+    lifecycle_resume_date = models.DateField(
+        _('Lifecycle Resume Date'),
+        null=True,
+        blank=True,
+        help_text=_('Planned date when the location is expected to return to active status.'),
+    )
+    lifecycle_reason = models.TextField(
+        _('Lifecycle Reason'),
+        blank=True,
+        help_text=_('Reason for the current lifecycle status.'),
+    )
+    lifecycle_status_changed_at = models.DateTimeField(
+        _('Lifecycle Status Changed At'),
+        null=True,
+        blank=True,
+        help_text=_('When the current lifecycle status was last changed.'),
+    )
+    lifecycle_status_changed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='provider_location_lifecycle_status_changes',
+        verbose_name=_('Lifecycle Status Changed By'),
+        help_text=_('User who last changed the lifecycle status.'),
+    )
+    pending_lifecycle_status = models.CharField(
+        _('Pending Lifecycle Status'),
+        max_length=30,
+        blank=True,
+        default='',
+        help_text=_('Scheduled lifecycle status to apply in the future.'),
+    )
+    pending_lifecycle_effective_date = models.DateField(
+        _('Pending Lifecycle Effective Date'),
+        null=True,
+        blank=True,
+        help_text=_('Date when the pending lifecycle status should be applied.'),
+    )
+    pending_lifecycle_resume_date = models.DateField(
+        _('Pending Lifecycle Resume Date'),
+        null=True,
+        blank=True,
+        help_text=_('Planned resume date stored for the pending lifecycle change.'),
+    )
+    pending_lifecycle_reason = models.TextField(
+        _('Pending Lifecycle Reason'),
+        blank=True,
+        help_text=_('Reason stored for the pending lifecycle change.'),
+    )
+    pending_lifecycle_requested_at = models.DateTimeField(
+        _('Pending Lifecycle Requested At'),
+        null=True,
+        blank=True,
+        help_text=_('When the pending lifecycle change was scheduled.'),
+    )
+    pending_lifecycle_requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='provider_location_pending_lifecycle_requests',
+        verbose_name=_('Pending Lifecycle Requested By'),
+        help_text=_('User who scheduled the pending lifecycle change.'),
+    )
+
     # Руководитель филиала (назначается после принятия инвайта по email)
     manager = models.ForeignKey(
         User,
@@ -2586,6 +3006,12 @@ class ProviderLocation(models.Model):
             # При редактировании: при необходимости проверять open_time < close_time у LocationSchedule
             pass
 
+        # Филиал операционно активен только в lifecycle_status=active.
+        if self.lifecycle_status == self.LIFECYCLE_STATUS_ACTIVE:
+            self.is_active = True
+        else:
+            self.is_active = False
+
     def save(self, *args, **kwargs):
         """Сохранение с полной валидацией (в т.ч. телефон и email)."""
         self.full_clean()
@@ -2602,6 +3028,133 @@ class ProviderLocation(models.Model):
         if self.structured_address and self.structured_address.point:
             return self.structured_address.point
         return None
+
+
+class ProviderLifecycleEvent(models.Model):
+    """
+    Audit trail lifecycle-операций организаций и филиалов.
+    """
+
+    ENTITY_PROVIDER = 'provider'
+    ENTITY_LOCATION = 'location'
+    ENTITY_CHOICES = [
+        (ENTITY_PROVIDER, _('Provider')),
+        (ENTITY_LOCATION, _('Location')),
+    ]
+
+    ACTION_PROVIDER_PAUSE = 'provider_pause'
+    ACTION_PROVIDER_TERMINATE = 'provider_terminate'
+    ACTION_PROVIDER_REACTIVATE = 'provider_reactivate'
+    ACTION_LOCATION_TEMP_CLOSE = 'location_temporary_close'
+    ACTION_LOCATION_DEACTIVATE = 'location_deactivate'
+    ACTION_LOCATION_REACTIVATE = 'location_reactivate'
+    ACTION_CHOICES = [
+        (ACTION_PROVIDER_PAUSE, _('Provider Pause')),
+        (ACTION_PROVIDER_TERMINATE, _('Provider Terminate')),
+        (ACTION_PROVIDER_REACTIVATE, _('Provider Reactivate')),
+        (ACTION_LOCATION_TEMP_CLOSE, _('Location Temporary Close')),
+        (ACTION_LOCATION_DEACTIVATE, _('Location Deactivate')),
+        (ACTION_LOCATION_REACTIVATE, _('Location Reactivate')),
+    ]
+
+    entity_type = models.CharField(
+        _('Entity Type'),
+        max_length=20,
+        choices=ENTITY_CHOICES,
+        help_text=_('Type of entity affected by the lifecycle action.'),
+    )
+    action = models.CharField(
+        _('Action'),
+        max_length=40,
+        choices=ACTION_CHOICES,
+        help_text=_('Lifecycle action that was executed or scheduled.'),
+    )
+    provider = models.ForeignKey(
+        Provider,
+        on_delete=models.CASCADE,
+        related_name='lifecycle_events',
+        verbose_name=_('Provider'),
+        help_text=_('Provider affected by the lifecycle action.'),
+    )
+    location = models.ForeignKey(
+        'ProviderLocation',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='lifecycle_events',
+        verbose_name=_('Location'),
+        help_text=_('Location affected by the lifecycle action when applicable.'),
+    )
+    previous_status = models.CharField(
+        _('Previous Status'),
+        max_length=40,
+        blank=True,
+        help_text=_('Previous lifecycle status before the action.'),
+    )
+    new_status = models.CharField(
+        _('New Status'),
+        max_length=40,
+        blank=True,
+        help_text=_('New lifecycle status after the action.'),
+    )
+    effective_date = models.DateField(
+        _('Effective Date'),
+        null=True,
+        blank=True,
+        help_text=_('Effective date of the lifecycle action.'),
+    )
+    resume_date = models.DateField(
+        _('Resume Date'),
+        null=True,
+        blank=True,
+        help_text=_('Planned resume date linked to the lifecycle action.'),
+    )
+    reason = models.TextField(
+        _('Reason'),
+        blank=True,
+        help_text=_('Reason supplied for the lifecycle action.'),
+    )
+    initiated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='provider_lifecycle_events',
+        verbose_name=_('Initiated By'),
+        help_text=_('User who initiated the lifecycle action.'),
+    )
+    is_staff_override = models.BooleanField(
+        _('Is Staff Override'),
+        default=False,
+        help_text=_('Whether the action was initiated by platform staff override.'),
+    )
+    correlation_id = models.UUIDField(
+        _('Correlation ID'),
+        default=uuid.uuid4,
+        db_index=True,
+        help_text=_('Correlation identifier for grouped lifecycle operations.'),
+    )
+    metadata = models.JSONField(
+        _('Metadata'),
+        default=dict,
+        blank=True,
+        help_text=_('Additional audit metadata for lifecycle processing.'),
+    )
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+
+    class Meta:
+        verbose_name = _('Provider Lifecycle Event')
+        verbose_name_plural = _('Provider Lifecycle Events')
+        ordering = ['-created_at', '-id']
+        indexes = [
+            models.Index(fields=['entity_type', 'created_at']),
+            models.Index(fields=['provider', 'created_at']),
+            models.Index(fields=['correlation_id']),
+        ]
+
+    def __str__(self):
+        target = self.location.name if self.location_id else self.provider.name
+        return f'{self.action} - {target}'
 
 
 def provider_report_export_upload_to(instance, filename):

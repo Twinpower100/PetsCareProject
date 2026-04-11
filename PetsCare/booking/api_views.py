@@ -19,6 +19,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.db.models import Prefetch, Q
 from datetime import datetime
+from users.email_verification_permissions import require_verified_email_for_owner_action
 from .models import Booking, BookingCancellationReason, BookingPayment, BookingReview, TimeSlot, BookingServiceIssue
 from .serializers import (
     BookingCreateSerializer,
@@ -542,6 +543,7 @@ class BookingViewSet(viewsets.ModelViewSet):
         Отмена бронирования клиентом.
         """
         booking = self.get_object()
+        require_verified_email_for_owner_action(request.user)
         
         # Проверяем права
         if booking.user != request.user:

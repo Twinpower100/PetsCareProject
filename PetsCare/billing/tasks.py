@@ -1,4 +1,5 @@
 from celery import shared_task
+from datetime import datetime
 from django.utils import timezone
 from django.utils.translation import gettext as _
 from django.core.mail import send_mail
@@ -12,7 +13,9 @@ from .models import (
     BlockingSystemSettings, BlockingSchedule, Currency, Invoice, PaymentHistory
 )
 from legal.models import LegalDocument, DocumentAcceptance, LegalDocumentType
+from providers.models import Provider
 from .services import MultiLevelBlockingService
+from .invoice_services import InvoiceGenerationService
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,63 @@ def synchronize_open_invoice_statuses():
     PaymentHistory.update_overdue_status()
     for invoice in Invoice.objects.filter(status__in=['sent', 'partially_paid', 'overdue']).iterator():
         invoice.refresh_status_from_payment_history()
+
+
+@shared_task
+def generate_scheduled_invoices(run_date_iso=None):
+    """
+    Генерирует счета по месячному расписанию из Billing Config.
+
+    Задача запускается ежедневно и:
+    - создает счета в расчетный рабочий день месяца;
+    - догенерирует пропущенные месяцы, если beat/celery не сработал в нужный день.
+    """
+    try:
+        run_date = datetime.fromisoformat(run_date_iso).date() if run_date_iso else timezone.localdate()
+        service = InvoiceGenerationService()
+        stats = {
+            'run_date': run_date.isoformat(),
+            'checked_providers': 0,
+            'generated_invoices': 0,
+            'providers_without_due_periods': 0,
+            'providers_without_bookings': 0,
+            'errors': [],
+        }
+
+        providers = Provider.objects.filter(is_active=True).order_by('id')
+        for provider in providers.iterator():
+            stats['checked_providers'] += 1
+            try:
+                invoices = service.generate_due_scheduled_for_provider(provider, run_date=run_date)
+                if not invoices:
+                    has_due_periods = bool(service._get_due_scheduled_periods(provider, run_date))
+                    if has_due_periods:
+                        stats['providers_without_bookings'] += 1
+                    else:
+                        stats['providers_without_due_periods'] += 1
+                    continue
+
+                stats['generated_invoices'] += len(invoices)
+                for invoice in invoices:
+                    logger.info(
+                        "Scheduled invoice %s generated for provider %s on %s",
+                        invoice.number,
+                        provider.id,
+                        run_date,
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "Scheduled invoice generation failed for provider %s on %s",
+                    provider.id,
+                    run_date,
+                )
+                stats['errors'].append(f"Provider {provider.id}: {exc}")
+
+        return {'status': 'completed', 'statistics': stats}
+
+    except Exception as exc:
+        logger.exception("Error in generate_scheduled_invoices")
+        return {'error': str(exc)}
 
 
 @shared_task

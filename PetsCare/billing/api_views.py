@@ -14,7 +14,7 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.http import FileResponse
-from .models import Payment, Invoice, Refund, BillingManagerProvider, BillingManagerEvent, BlockingRule, ProviderBlocking, BlockingNotification, Currency
+from .models import Payment, Invoice, Refund, BillingManagerProvider, BillingManagerEvent, RegionalBlockingPolicy, ProviderBlocking, BlockingNotification, Currency
 from .export_utils import build_excel_response
 from .invoice_services import build_invoice_breakdown_rows, summarize_invoice_breakdown
 from .serializers import (
@@ -26,7 +26,7 @@ from .serializers import (
     BillingManagerProviderSerializer,
     BillingManagerProviderCreateSerializer,
     BillingManagerEventSerializer,
-    BlockingRuleSerializer, 
+    RegionalBlockingPolicySerializer,
     ProviderBlockingSerializer, 
     BlockingNotificationSerializer,
     CurrencySerializer
@@ -439,31 +439,21 @@ class BillingManagerEventViewSet(viewsets.ReadOnlyModelViewSet):
 # ContractViewSet удален - используется LegalDocument и DocumentAcceptance
 
 
-class BlockingRuleListCreateAPIView(generics.ListCreateAPIView):
+class RegionalBlockingPolicyListCreateAPIView(generics.ListCreateAPIView):
     """
-    API для просмотра списка и создания правил блокировки.
-    
-    Права доступа:
-    - Требуется аутентификация
-    - Требуются права админа или биллинг-менеджера
+    API: платформенные политики блокировок по региону (валюта, допуск, пороги дней L2/L3).
     """
-    queryset = BlockingRule.objects.all()
-    serializer_class = BlockingRuleSerializer
+    queryset = RegionalBlockingPolicy.objects.all()
+    serializer_class = RegionalBlockingPolicySerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['is_active', 'is_mass_rule', 'priority']
+    filterset_fields = ['is_active', 'region_code']
 
 
-class BlockingRuleRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
-    """
-    API для работы с конкретным правилом блокировки.
-    
-    Права доступа:
-    - Требуется аутентификация
-    - Требуются права админа или биллинг-менеджера
-    """
-    queryset = BlockingRule.objects.all()
-    serializer_class = BlockingRuleSerializer
+class RegionalBlockingPolicyRetrieveUpdateDestroyAPIView(generics.RetrieveUpdateDestroyAPIView):
+    """API: одна запись RegionalBlockingPolicy."""
+    queryset = RegionalBlockingPolicy.objects.all()
+    serializer_class = RegionalBlockingPolicySerializer
     permission_classes = [permissions.IsAuthenticated]
 
 
@@ -479,7 +469,7 @@ class ProviderBlockingListAPIView(generics.ListAPIView):
     serializer_class = ProviderBlockingSerializer
     permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend]
-    filterset_fields = ['status', 'blocking_rule', 'provider']
+    filterset_fields = ['status', 'provider']
 
 
 class ProviderBlockingRetrieveAPIView(generics.RetrieveAPIView):
@@ -527,11 +517,11 @@ class ProviderBlockingStatusAPIView(generics.RetrieveAPIView):
                 'is_blocked': True,
                 'blocking_id': active_blocking.id,
                 'blocked_at': active_blocking.blocked_at,
+                'blocking_level': active_blocking.blocking_level,
                 'debt_amount': active_blocking.debt_amount,
                 'overdue_days': active_blocking.overdue_days,
                 'currency': active_blocking.currency.code,
-                'rule_name': active_blocking.blocking_rule.name,
-                'notes': active_blocking.notes
+                'notes': active_blocking.notes,
             })
         else:
             return Response({

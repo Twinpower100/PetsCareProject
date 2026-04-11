@@ -12,6 +12,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import ProviderLocation, ProviderReportExportJob
+from .lifecycle_services import ProviderLifecycleService
 from .reporting_services import ProviderLocationReportingService
 
 
@@ -79,3 +80,11 @@ def generate_provider_report_export_task(self, job_id: int) -> None:
             job.error_message = str(exc)[:2000]
             job.version += 1
             job.save(update_fields=['status', 'completed_at', 'error_message', 'version', 'updated_at'])
+
+
+@shared_task
+def apply_pending_provider_lifecycle_transitions() -> dict:
+    """
+    Применяет отложенные lifecycle-переходы организаций и филиалов.
+    """
+    return ProviderLifecycleService.apply_pending_transitions()

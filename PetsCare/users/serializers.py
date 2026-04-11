@@ -8,8 +8,11 @@ from .requisite_normalize import (
     normalize_iban,
 )
 from django.utils.translation import gettext_lazy as _
+from django.core import signing
 from providers.models import Provider  # noqa: F401
 from django.utils import timezone
+import re
+from .google_signup import load_pending_google_signup_token
 
 
 class UserTypeSerializer(serializers.ModelSerializer):
@@ -61,8 +64,11 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ['id', 'email', 'username', 'first_name', 'last_name', 'phone_number', 'user_types', 'is_active', 'distance']
-        read_only_fields = ['email', 'user_types', 'distance']
+        fields = [
+            'id', 'email', 'username', 'first_name', 'last_name', 'phone_number',
+            'user_types', 'is_active', 'distance', 'email_verified', 'email_verified_at', 'preferred_language',
+        ]
+        read_only_fields = ['email', 'user_types', 'distance', 'email_verified', 'email_verified_at']
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -92,14 +98,36 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         Создает нового пользователя с указанными данными.
         Username генерируется автоматически.
         """
+        request = self.context.get('request')
+        preferred_language = 'en'
+        if request is not None:
+            preferred_language = (getattr(request, 'LANGUAGE_CODE', None) or 'en').split('-')[0]
+
         user = User.objects.create_user(
             email=validated_data['email'],
             password=validated_data['password'],
             first_name=validated_data.get('first_name', ''),
             last_name=validated_data.get('last_name', ''),
             phone_number=validated_data.get('phone_number', ''),
+            preferred_language=preferred_language,
+            email_verified=False,
+            email_verified_at=None,
         )
         return user
+
+
+class EmailVerificationConfirmSerializer(serializers.Serializer):
+    """
+    Сериализатор подтверждения email по токену.
+    """
+    token = serializers.CharField()
+
+
+class EmailVerificationResendSerializer(serializers.Serializer):
+    """
+    Сериализатор повторной отправки письма подтверждения email.
+    """
+    pass
 
 
 class GoogleAuthSerializer(serializers.Serializer):
@@ -196,6 +224,59 @@ class GoogleAuthSerializer(serializers.Serializer):
             )
         
         return attrs 
+
+
+class GoogleSignupCompleteSerializer(serializers.Serializer):
+    """
+    Сериализатор завершения Google-регистрации после добора телефона.
+    """
+    pending_token = serializers.CharField()
+    phone_number = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        pending_token = attrs.get('pending_token')
+        phone_number = (attrs.get('phone_number') or '').strip()
+
+        try:
+            google_user_data = load_pending_google_signup_token(pending_token)
+        except signing.SignatureExpired:
+            raise serializers.ValidationError({
+                'pending_token': [_('Google sign-up session has expired. Please try again.')]
+            })
+        except signing.BadSignature:
+            raise serializers.ValidationError({
+                'pending_token': [_('Google sign-up session is invalid. Please try again.')]
+            })
+
+        google_phone = (google_user_data.get('phone') or '').strip()
+        requires_manual_phone = bool(google_user_data.get('requires_manual_phone'))
+        final_phone_number = phone_number or ('' if requires_manual_phone else google_phone)
+
+        if not final_phone_number:
+            raise serializers.ValidationError({
+                'phone_number': [_('Phone number is required to complete Google sign-up.')]
+            })
+
+        phone_regex = r'^\+?[1-9]\d{1,14}$'
+        if not re.match(phone_regex, final_phone_number):
+            raise serializers.ValidationError({
+                'phone_number': [_('Enter a valid phone number.')]
+            })
+
+        email = google_user_data.get('email')
+        if not email:
+            raise serializers.ValidationError({
+                'pending_token': [_('Google sign-up session is invalid. Please try again.')]
+            })
+
+        if User.objects.filter(phone_number=final_phone_number).exclude(email=email).exists():
+            raise serializers.ValidationError({
+                'phone_number': [_('This phone number is already registered.')]
+            })
+
+        attrs['google_user_data'] = google_user_data
+        attrs['final_phone_number'] = final_phone_number
+        return attrs
 
 
 class ProviderFormSerializer(serializers.ModelSerializer):

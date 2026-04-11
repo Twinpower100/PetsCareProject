@@ -4,7 +4,7 @@ from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
 from django.utils.translation import gettext as _
-from .models import Currency, ServicePrice, PaymentHistory, ProviderBlocking, BlockingRule, BlockingNotification, BillingManagerProvider
+from .models import Currency, ServicePrice, PaymentHistory, ProviderBlocking, BlockingNotification, BillingManagerProvider
 from catalog.models import Service
 from providers.models import Provider, Employee, ProviderService
 from users.models import User, UserType
@@ -251,14 +251,6 @@ class MultiLevelBlockingTestCase(TestCase):
             name='Test Service',
             description='Test service description'
         )
-        
-        # Создаем правило блокировки
-        self.blocking_rule = BlockingRule.objects.create(
-            name='Test Rule',
-            debt_amount_threshold=Decimal('1000.00'),
-            overdue_days_threshold=10,
-            is_active=True
-        )
     
     def test_contract_blocking_level_calculation(self):
         """Тест расчета уровня блокировки договора."""
@@ -325,7 +317,7 @@ class MultiLevelBlockingTestCase(TestCase):
         # Создаем активную блокировку
         blocking = ProviderBlocking.objects.create(
             provider=self.provider,
-            blocking_rule=self.blocking_rule,
+            blocking_level=3,
             status='active',
             debt_amount=Decimal('5000.00'),
             overdue_days=30,
@@ -353,7 +345,7 @@ class MultiLevelBlockingTestCase(TestCase):
         # Создаем активную блокировку
         ProviderBlocking.objects.create(
             provider=self.provider,
-            blocking_rule=self.blocking_rule,
+            blocking_level=3,
             status='active',
             debt_amount=Decimal('5000.00'),
             overdue_days=30,

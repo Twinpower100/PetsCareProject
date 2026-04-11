@@ -15,5 +15,8 @@
     "reportGeneralTypeIssues": false,
     "reportOptionalCall": false,
     "reportCallIssue": false,
-    "reportUnboundVariable": false
+    "reportUnboundVariable": false,
+    "extraPaths": [
+        "c:/Users/andre/OneDrive/Documents/Projects/PetCare/PetsCare-backend/PetsCare"
+    ]
 }

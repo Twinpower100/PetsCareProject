@@ -21,6 +21,7 @@ from .models import (
     Message,
     PetSitting,
     PetSittingAd,
+    PetSittingRequest,
     PetSittingResponse,
     SitterProfile,
     SitterReview,
@@ -109,6 +110,7 @@ class SitterProfileSerializer(serializers.ModelSerializer):
     """
 
     user = serializers.HiddenField(default=serializers.CurrentUserDefault())
+    user_id = serializers.IntegerField(source='user.id', read_only=True)
     full_name = serializers.SerializerMethodField()
     rating = serializers.SerializerMethodField()
     reviews_count = serializers.SerializerMethodField()
@@ -119,6 +121,7 @@ class SitterProfileSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'user',
+            'user_id',
             'full_name',
             'description',
             'experience_years',
@@ -238,6 +241,7 @@ class PetSittingAdSerializer(serializers.ModelSerializer):
             'end_date',
             'description',
             'status',
+            'visibility',
             'location',
             'structured_address',
             'location_detail',
@@ -257,6 +261,7 @@ class PetSittingAdSerializer(serializers.ModelSerializer):
             'owner_detail',
             'pet_detail',
             'status',
+            'visibility',
             'responses_count',
             'location_detail',
             'created_at',
@@ -408,6 +413,221 @@ class PetSittingResponseSerializer(serializers.ModelSerializer):
             'hourly_rate': obj.sitter.hourly_rate,
             'is_active': obj.sitter.is_active,
         }
+
+
+class PetSittingRequestSerializer(serializers.ModelSerializer):
+    """
+    Сериализатор явного owner -> sitter запроса на передержку.
+    """
+
+    owner = serializers.HiddenField(default=serializers.CurrentUserDefault())
+    initiated_by = serializers.HiddenField(default=serializers.CurrentUserDefault())
+    owner_detail = serializers.SerializerMethodField()
+    sitter_detail = serializers.SerializerMethodField()
+    pet_detail = serializers.SerializerMethodField()
+    location_detail = serializers.SerializerMethodField()
+    conversation_id = serializers.IntegerField(source='conversation.id', read_only=True)
+    pet_sitting_id = serializers.IntegerField(source='pet_sitting.id', read_only=True)
+    can_accept = serializers.SerializerMethodField()
+    can_reject = serializers.SerializerMethodField()
+    can_cancel = serializers.SerializerMethodField()
+    address_label = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    address_latitude = serializers.FloatField(write_only=True, required=False)
+    address_longitude = serializers.FloatField(write_only=True, required=False)
+    address_city = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    address_country = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = PetSittingRequest
+        fields = [
+            'id',
+            'owner',
+            'owner_detail',
+            'sitter',
+            'sitter_detail',
+            'pet',
+            'pet_detail',
+            'initiated_by',
+            'status',
+            'source',
+            'start_date',
+            'end_date',
+            'message',
+            'location',
+            'structured_address',
+            'location_detail',
+            'conversation_id',
+            'pet_sitting_id',
+            'can_accept',
+            'can_reject',
+            'can_cancel',
+            'address_label',
+            'address_latitude',
+            'address_longitude',
+            'address_city',
+            'address_country',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'owner_detail',
+            'sitter_detail',
+            'pet_detail',
+            'status',
+            'location_detail',
+            'conversation_id',
+            'pet_sitting_id',
+            'can_accept',
+            'can_reject',
+            'can_cancel',
+            'created_at',
+            'updated_at',
+        ]
+
+    def get_owner_detail(self, obj: PetSittingRequest) -> dict | None:
+        """
+        Возвращает компактные данные владельца.
+        """
+        return _serialize_user_brief(obj.owner)
+
+    def get_sitter_detail(self, obj: PetSittingRequest) -> dict | None:
+        """
+        Возвращает компактные данные ситтера.
+        """
+        return {
+            'id': obj.sitter.id,
+            'user': _serialize_user_brief(obj.sitter.user),
+            'description': obj.sitter.description,
+            'experience_years': obj.sitter.experience_years,
+            'max_pets': obj.sitter.max_pets,
+            'compensation_type': obj.sitter.compensation_type,
+            'hourly_rate': obj.sitter.hourly_rate,
+            'is_active': obj.sitter.is_active,
+        }
+
+    def get_pet_detail(self, obj: PetSittingRequest) -> dict | None:
+        """
+        Возвращает краткие данные питомца.
+        """
+        return _serialize_pet_brief(obj.pet)
+
+    def get_location_detail(self, obj: PetSittingRequest) -> dict | None:
+        """
+        Возвращает структурированную локацию запроса.
+        """
+        return _serialize_location_detail(obj.structured_address, obj.location)
+
+    def get_can_accept(self, obj: PetSittingRequest) -> bool:
+        """
+        Возвращает возможность принять запрос текущим пользователем.
+        """
+        request = self.context.get('request')
+        return bool(
+            request
+            and request.user.id == obj.sitter.user_id
+            and obj.status == PetSittingRequest.STATUS_PENDING
+        )
+
+    def get_can_reject(self, obj: PetSittingRequest) -> bool:
+        """
+        Возвращает возможность отклонить запрос текущим пользователем.
+        """
+        request = self.context.get('request')
+        return bool(
+            request
+            and request.user.id == obj.sitter.user_id
+            and obj.status == PetSittingRequest.STATUS_PENDING
+        )
+
+    def get_can_cancel(self, obj: PetSittingRequest) -> bool:
+        """
+        Возвращает возможность отменить исходящий запрос текущим пользователем.
+        """
+        request = self.context.get('request')
+        return bool(
+            request
+            and request.user.id == obj.owner_id
+            and obj.status == PetSittingRequest.STATUS_PENDING
+        )
+
+    def _extract_address_payload(self, validated_data: dict) -> dict:
+        """
+        Извлекает входные поля адреса из validated_data.
+        """
+        return {
+            'label': validated_data.pop('address_label', '').strip(),
+            'latitude': validated_data.pop('address_latitude', None),
+            'longitude': validated_data.pop('address_longitude', None),
+            'city': validated_data.pop('address_city', '').strip(),
+            'country': validated_data.pop('address_country', '').strip(),
+        }
+
+    def _upsert_structured_address(self, address_payload: dict) -> Address | None:
+        """
+        Создаёт структурированный адрес для прямого запроса.
+        """
+        label = address_payload['label']
+        latitude = address_payload['latitude']
+        longitude = address_payload['longitude']
+        city = address_payload['city']
+        country = address_payload['country']
+
+        has_payload = bool(label or city or country or latitude is not None or longitude is not None)
+        if not has_payload:
+            return None
+
+        address = Address()
+        address.formatted_address = label
+        address.city = city or None
+        address.country = country or None
+        if latitude is not None and longitude is not None:
+            address.latitude = latitude
+            address.longitude = longitude
+            address.validation_status = 'valid'
+        address.save()
+        return address
+
+    def validate(self, attrs: dict) -> dict:
+        """
+        Проверяет корректность дат, питомца и координат.
+        """
+        request = self.context.get('request')
+        pet = attrs.get('pet', getattr(self.instance, 'pet', None))
+        sitter = attrs.get('sitter', getattr(self.instance, 'sitter', None))
+        start_date = attrs.get('start_date', getattr(self.instance, 'start_date', None))
+        end_date = attrs.get('end_date', getattr(self.instance, 'end_date', None))
+        address_label = attrs.get('address_label')
+        address_latitude = attrs.get('address_latitude')
+        address_longitude = attrs.get('address_longitude')
+
+        if start_date and end_date and start_date > end_date:
+            raise serializers.ValidationError({'end_date': _('End date must be after start date')})
+
+        if request and pet and not pet.owners.filter(id=request.user.id).exists():
+            raise serializers.ValidationError({'pet': _('You can create pet sitting requests only for your own pets.')})
+
+        if request and sitter and sitter.user_id == request.user.id:
+            raise serializers.ValidationError({'sitter': _('You cannot create a pet sitting request for yourself.')})
+
+        if (address_latitude is None) != (address_longitude is None):
+            raise serializers.ValidationError({'address_latitude': _('Latitude and longitude must be provided together.')})
+
+        if address_label and not attrs.get('location'):
+            attrs['location'] = address_label.strip()
+
+        return attrs
+
+    def create(self, validated_data: dict) -> PetSittingRequest:
+        """
+        Создаёт прямой запрос на передержку с опциональным структурированным адресом.
+        """
+        address_payload = self._extract_address_payload(validated_data)
+        structured_address = self._upsert_structured_address(address_payload)
+        if structured_address is not None:
+            validated_data['structured_address'] = structured_address
+            validated_data['location'] = address_payload['label'] or validated_data.get('location', '')
+        return super().create(validated_data)
 
 
 class PetSittingSerializer(serializers.ModelSerializer):
@@ -588,6 +808,9 @@ class ConversationSerializer(serializers.ModelSerializer):
     last_message = serializers.SerializerMethodField()
     unread_count = serializers.SerializerMethodField()
     other_participant = serializers.SerializerMethodField()
+    pet_sitting_ad_id = serializers.IntegerField(source='pet_sitting_ad.id', read_only=True)
+    pet_sitting_id = serializers.IntegerField(source='pet_sitting.id', read_only=True)
+    other_participant_sitter_profile_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Conversation
@@ -595,6 +818,9 @@ class ConversationSerializer(serializers.ModelSerializer):
             'id',
             'participants',
             'other_participant',
+            'other_participant_sitter_profile_id',
+            'pet_sitting_ad_id',
+            'pet_sitting_id',
             'last_message',
             'unread_count',
             'created_at',
@@ -643,6 +869,21 @@ class ConversationSerializer(serializers.ModelSerializer):
         if request is None:
             return None
         return _serialize_user_brief(obj.get_other_participant(request.user))
+
+    def get_other_participant_sitter_profile_id(self, obj: Conversation) -> int | None:
+        """
+        Возвращает ID профиля ситтера второго участника, если он существует.
+        """
+        request = self.context.get('request')
+        if request is None:
+            return None
+
+        other_participant = obj.get_other_participant(request.user)
+        if other_participant is None:
+            return None
+
+        sitter_profile = getattr(other_participant, 'sitter', None)
+        return sitter_profile.id if sitter_profile else None
 
 
 class ConversationDetailSerializer(ConversationSerializer):

@@ -653,9 +653,27 @@ class DeviceLocationService:
         cached_location = self._get_cached_location(user)
         if cached_location:
             return cached_location
-        
-        # Если нет кэша, возвращаем None
-        # Фронтенд должен запросить геолокацию устройства
+
+        # Если кэш пуст, восстанавливаем последнее сохранённое положение из БД.
+        stored_location = UserLocation.objects.filter(user=user).only(
+            'point',
+            'accuracy',
+            'source',
+            'last_updated',
+        ).first()
+        if stored_location and stored_location.point:
+            location_data = {
+                'latitude': Decimal(str(stored_location.point.y)),
+                'longitude': Decimal(str(stored_location.point.x)),
+                'accuracy': stored_location.accuracy,
+                'source': stored_location.source,
+                'timestamp': stored_location.last_updated,
+            }
+            self._cache_location(user, location_data)
+            return location_data
+
+        # Если нет ни кэша, ни БД, возвращаем None.
+        # Фронтенд должен запросить геолокацию устройства.
         return None
     
     def check_address_requirement(self, user: User) -> Dict[str, Any]:
