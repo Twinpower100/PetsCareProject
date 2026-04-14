@@ -11,7 +11,7 @@
 """
 
 from django.db.models import Sum, Count, Q, Avg
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, ExtractMonth, ExtractWeekDay
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from datetime import datetime, timedelta
@@ -94,7 +94,7 @@ class ReportService:
 class IncomeReportService(ReportService):
     """Сервис для генерации отчетов по доходам."""
     
-    def generate_income_report(
+    def generate_report(
         self, 
         start_date: datetime, 
         end_date: datetime, 
@@ -139,8 +139,8 @@ class IncomeReportService(ReportService):
         ).order_by('-income')
         
         # Статистика по месяцам
-        monthly_stats = bookings.extra(
-            select={'month': "EXTRACT(month FROM start_time)"}
+        monthly_stats = bookings.annotate(
+            month=ExtractMonth('start_time')
         ).values('month').annotate(
             income=Sum('price'),
             bookings_count=Count('id')
@@ -205,7 +205,7 @@ class IncomeReportService(ReportService):
 class EmployeeWorkloadReportService(ReportService):
     """Сервис для генерации отчетов по загруженности сотрудников."""
     
-    def generate_workload_report(
+    def generate_report(
         self, 
         start_date: datetime, 
         end_date: datetime, 
@@ -282,7 +282,7 @@ class EmployeeWorkloadReportService(ReportService):
 class DebtReportService(ReportService):
     """Сервис для генерации отчетов по дебиторской задолженности."""
     
-    def generate_debt_report(
+    def generate_report(
         self, 
         start_date: datetime, 
         end_date: datetime, 
@@ -309,7 +309,7 @@ class DebtReportService(ReportService):
             # Проверяем, есть ли активная оферта
             if provider.has_active_offer_acceptance():
                 # Рассчитываем задолженность через новый метод Provider
-                debt_info = provider.calculate_debt(start_date.date(), end_date.date())
+                debt_info = provider.calculate_debt()
                 
                 if debt_info['total_debt'] > 0:
                     # Получаем историю платежей
@@ -361,7 +361,7 @@ class DebtReportService(ReportService):
 class ActivityReportService(ReportService):
     """Сервис для генерации отчетов по активности учреждений."""
     
-    def generate_activity_report(
+    def generate_report(
         self, 
         start_date: datetime, 
         end_date: datetime, 
@@ -406,8 +406,8 @@ class ActivityReportService(ReportService):
         ).order_by('-total_bookings')
         
         # Статистика по дням недели
-        daily_activity = bookings.extra(
-            select={'day_of_week': "EXTRACT(dow FROM start_time)"}
+        daily_activity = bookings.annotate(
+            day_of_week=ExtractWeekDay('start_time')
         ).values('day_of_week').annotate(
             total_bookings=Count('id'),
             completed_bookings=Count('id', filter=Q(status__name='completed'))
@@ -434,7 +434,7 @@ class ActivityReportService(ReportService):
 class PaymentReportService(ReportService):
     """Сервис для генерации отчетов по платежам."""
     
-    def generate_payment_report(
+    def generate_report(
         self, 
         start_date: datetime, 
         end_date: datetime, 
@@ -457,13 +457,10 @@ class PaymentReportService(ReportService):
         
         # Получаем платежи за период
         # Фильтруем через provider_location или provider (legacy)
-        from providers.models import ProviderLocation
-        location_ids = ProviderLocation.objects.filter(provider_id__in=provider_ids).values_list('id', flat=True)
-        
         payments = Payment.objects.filter(
-            Q(booking__provider_location__in=location_ids) | Q(booking__provider_id__in=provider_ids),
+            provider_id__in=provider_ids,
             created_at__range=(start_date, end_date)
-        ).select_related('booking__provider', 'booking__provider_location', 'booking__provider_location__provider', 'booking__service')
+        ).select_related('provider')
         
         # Получаем счета за период (Invoice связан напрямую с Provider)
         invoices = Invoice.objects.filter(
@@ -478,9 +475,9 @@ class PaymentReportService(ReportService):
             successful_payments=Count('id', filter=Q(status='completed'))
         ).order_by('-total_amount')
         
-        # Статистика по провайдерам (через provider_location или provider legacy)
+        # Статистика по провайдерам
         provider_payment_stats = payments.annotate(
-            provider_name=Coalesce('booking__provider_location__provider__name', 'booking__provider__name')
+            provider_name=Coalesce('provider__name', 'invoice__provider__name')
         ).values('provider_name').annotate(
             total_received=Sum('amount', filter=Q(status='completed')),
             total_expected=Sum('amount'),
@@ -578,7 +575,7 @@ class PaymentReportService(ReportService):
 class CancellationReportService(ReportService):
     """Сервис для генерации отчетов по отменам бронирований."""
     
-    def generate_cancellation_report(
+    def generate_report(
         self, 
         start_date: datetime, 
         end_date: datetime, 
@@ -624,8 +621,8 @@ class CancellationReportService(ReportService):
         ).order_by('-count')
         
         # Статистика по месяцам
-        monthly_stats = cancellations.extra(
-            select={'month': "EXTRACT(month FROM created_at)"}
+        monthly_stats = cancellations.annotate(
+            month=ExtractMonth('created_at')
         ).values('month').annotate(
             total_cancellations=Count('id'),
             client_cancellations=Count('id', filter=Q(cancelled_by__user_types__name='pet_owner')),

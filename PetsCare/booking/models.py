@@ -891,7 +891,7 @@ class AbuseRule(models.Model):
         cancellations = BookingCancellation.objects.filter(
             booking__user=user,
             created_at__gte=start_date,
-            is_abuse=True
+            cancelled_by_side=CANCELLED_BY_CLIENT
         ).count()
 
         return cancellations >= self.max_cancellations

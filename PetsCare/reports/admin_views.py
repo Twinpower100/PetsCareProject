@@ -17,6 +17,7 @@ from django.contrib.auth.decorators import login_required
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib import messages
+from django.utils import timezone
 from datetime import datetime, timedelta
 from typing import Dict, Any, List
 import json
@@ -41,7 +42,6 @@ class ReportsAdminView:
     def __init__(self):
         self.report_services = {
             'income': IncomeReportService,
-            'workload': EmployeeWorkloadReportService,
             'debt': DebtReportService,
             'activity': ActivityReportService,
             'payment': PaymentReportService,
@@ -51,11 +51,11 @@ class ReportsAdminView:
     def get_urls(self):
         """Возвращает URL patterns для админских views."""
         return [
-            path('', self.dashboard_view, name='reports-dashboard'),
-            path('generate/', self.generate_report_view, name='generate-report'),
-            path('export/', self.export_report_view, name='export-report'),
-            path('templates/', self.templates_view, name='report-templates'),
-            path('schedule/', self.schedule_view, name='report-schedule'),
+            path('dashboard/', self.dashboard_view, name='reports-dashboard'),
+            path('generate/', self.generate_report_view, name='reports-generate'),
+            path('export/', self.export_report_view, name='reports-export'),
+            path('templates/', self.templates_view, name='reports-templates'),
+            path('schedule/', self.schedule_view, name='reports-schedule'),
         ]
     
     @method_decorator(login_required)
@@ -69,12 +69,6 @@ class ReportsAdminView:
                     'name': _('Income Report'),
                     'description': _('Report on income through the booking system'),
                     'icon': '💰'
-                },
-                {
-                    'id': 'workload',
-                    'name': _('Employee Workload Report'),
-                    'description': _('Report on employee workload and efficiency'),
-                    'icon': '👥'
                 },
                 {
                     'id': 'debt',
@@ -107,6 +101,7 @@ class ReportsAdminView:
             'providers': Provider.objects.all()[:20],  # Ограничиваем для производительности
         }
         
+        context.update(custom_admin_site.each_context(request))
         return render(request, 'admin/reports/dashboard.html', context)
     
     @method_decorator(login_required)
@@ -133,7 +128,27 @@ class ReportsAdminView:
             ]
         }
         
+        context.update(custom_admin_site.each_context(request))
         return render(request, 'admin/reports/generate.html', context)
+    
+    @method_decorator(login_required)
+    def export_report_view(self, request):
+        """Быстрый экспорт отчета за текущий месяц."""
+        report_type = request.GET.get('type', 'income')
+        start_date, end_date = self._get_date_range('month')
+        
+        service_class = self.report_services.get(report_type)
+        if not service_class:
+            messages.error(request, _('Invalid report type'))
+            return redirect('admin:reports-dashboard')
+            
+        try:
+            service = service_class(request.user)
+            report_data = service.generate_report(start_date, end_date, None)
+            return self._export_to_excel(report_data, report_type)
+        except Exception as e:
+            messages.error(request, _('Error exporting report: {error}').format(error=str(e)))
+            return redirect('admin:reports-dashboard')
     
     def _handle_report_generation(self, request):
         """Обрабатывает генерацию отчета."""
@@ -147,8 +162,8 @@ class ReportsAdminView:
             
             # Определяем даты
             if date_range == 'custom':
-                start_date = datetime.strptime(start_date, '%Y-%m-%d')
-                end_date = datetime.strptime(end_date, '%Y-%m-%d')
+                start_date = timezone.make_aware(datetime.strptime(start_date, '%Y-%m-%d'))
+                end_date = timezone.make_aware(datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59))
             else:
                 start_date, end_date = self._get_date_range(date_range)
             
@@ -166,12 +181,17 @@ class ReportsAdminView:
             service = service_class(request.user)
             report_data = service.generate_report(start_date, end_date, providers)
             
+            # Сериализуем данные для JSON (datetime, Decimal и др.)
+            import json
+            from django.core.serializers.json import DjangoJSONEncoder
+            safe_report_data = json.loads(json.dumps(report_data, cls=DjangoJSONEncoder))
+            
             # Сохраняем отчет в базе
             report = Report.objects.create(
                 name=f"{report_type.title()} Report",
                 type=report_type,
                 created_by=request.user,
-                data=report_data
+                data=safe_report_data
             )
             
             if format_type == 'excel':
@@ -189,7 +209,7 @@ class ReportsAdminView:
     
     def _get_date_range(self, date_range: str) -> tuple:
         """Возвращает диапазон дат на основе выбранного периода."""
-        now = datetime.now()
+        now = timezone.now()
         
         if date_range == 'today':
             start_date = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -220,7 +240,6 @@ class ReportsAdminView:
         """Экспортирует отчет в Excel."""
         from .api_views import (
             generate_income_excel_report,
-            generate_workload_excel_report,
             generate_debt_excel_report,
             generate_activity_excel_report,
             generate_payment_excel_report,
@@ -229,7 +248,6 @@ class ReportsAdminView:
         
         export_functions = {
             'income': generate_income_excel_report,
-            'workload': generate_workload_excel_report,
             'debt': generate_debt_excel_report,
             'activity': generate_activity_excel_report,
             'payment': generate_payment_excel_report,
@@ -255,6 +273,7 @@ class ReportsAdminView:
             'templates': templates,
         }
         
+        context.update(custom_admin_site.each_context(request))
         return render(request, 'admin/reports/templates.html', context)
     
     def _handle_template_creation(self, request):
@@ -300,6 +319,7 @@ class ReportsAdminView:
             ]
         }
         
+        context.update(custom_admin_site.each_context(request))
         return render(request, 'admin/reports/schedule.html', context)
     
     def _handle_schedule_creation(self, request):
@@ -327,21 +347,4 @@ class ReportsAdminView:
 
 
 # Регистрируем админские views
-reports_admin = ReportsAdminView()
-
-# Добавляем URL patterns в админский сайт
-custom_admin_site.register_view(
-    path='reports/',
-    view=reports_admin.dashboard_view,
-    name='reports-dashboard',
-    verbose_name=_('Reports')
-)
-
-# Добавляем дополнительные URL patterns
-for url_pattern in reports_admin.get_urls():
-    custom_admin_site.register_view(
-        path=f'reports{url_pattern.pattern}',
-        view=url_pattern.callback,
-        name=f'reports-{url_pattern.name}',
-        verbose_name=url_pattern.name.replace('-', ' ').title()
-    ) 
+reports_admin = ReportsAdminView() 

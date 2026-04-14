@@ -84,7 +84,7 @@ def income_report(request):
         providers = get_providers_from_request(request)
         
         service = IncomeReportService(request.user)
-        report_data = service.generate_income_report(start_date, end_date, providers)
+        report_data = service.generate_report(start_date, end_date, providers)
         
         # Проверяем формат ответа
         response_format = request.GET.get('format', 'json')
@@ -125,7 +125,7 @@ def employee_workload_report(request):
         providers = get_providers_from_request(request)
         
         service = EmployeeWorkloadReportService(request.user)
-        report_data = service.generate_workload_report(start_date, end_date, providers)
+        report_data = service.generate_report(start_date, end_date, providers)
         
         response_format = request.GET.get('format', 'json')
         
@@ -165,7 +165,7 @@ def debt_report(request):
         providers = get_providers_from_request(request)
         
         service = DebtReportService(request.user)
-        report_data = service.generate_debt_report(start_date, end_date, providers)
+        report_data = service.generate_report(start_date, end_date, providers)
         
         response_format = request.GET.get('format', 'json')
         
@@ -205,7 +205,7 @@ def activity_report(request):
         providers = get_providers_from_request(request)
         
         service = ActivityReportService(request.user)
-        report_data = service.generate_activity_report(start_date, end_date, providers)
+        report_data = service.generate_report(start_date, end_date, providers)
         
         response_format = request.GET.get('format', 'json')
         
@@ -245,7 +245,7 @@ def payment_report(request):
         providers = get_providers_from_request(request)
         
         service = PaymentReportService(request.user)
-        report_data = service.generate_payment_report(start_date, end_date, providers)
+        report_data = service.generate_report(start_date, end_date, providers)
         
         response_format = request.GET.get('format', 'json')
         
@@ -285,7 +285,7 @@ def cancellation_report(request):
         providers = get_providers_from_request(request)
         
         service = CancellationReportService(request.user)
-        report_data = service.generate_cancellation_report(start_date, end_date, providers)
+        report_data = service.generate_report(start_date, end_date, providers)
         
         response_format = request.GET.get('format', 'json')
         
@@ -473,7 +473,7 @@ def generate_debt_excel_report(report_data: Dict[str, Any]) -> HttpResponse:
     
     # Лист по провайдерам
     ws_providers = wb.create_sheet("По провайдерам")
-    headers = ['Провайдер', 'Задолженность', 'Дни просрочки', 'Номер договора', 'Статус договора']
+    headers = ['Провайдер', 'Задолженность', 'Дни просрочки', 'Версия оферты', 'Статус провайдера']
     for col, header in enumerate(headers, 1):
         cell = ws_providers.cell(row=1, column=col, value=header)
         cell.font = Font(bold=True)
@@ -483,8 +483,8 @@ def generate_debt_excel_report(report_data: Dict[str, Any]) -> HttpResponse:
         ws_providers.cell(row=row, column=1, value=provider['provider_name'])
         ws_providers.cell(row=row, column=2, value=float(provider['total_debt']))
         ws_providers.cell(row=row, column=3, value=provider['overdue_days'])
-        ws_providers.cell(row=row, column=4, value=provider['contract_number'])
-        ws_providers.cell(row=row, column=5, value=provider['contract_status'])
+        ws_providers.cell(row=row, column=4, value=provider.get('offer_version', ''))
+        ws_providers.cell(row=row, column=5, value=provider.get('provider_status', ''))
     
     # Настройка ширины столбцов
     for ws in [ws_summary, ws_providers]:

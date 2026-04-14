@@ -56,21 +56,20 @@ class CustomAdminSite(AdminSite):
         Добавляет URL-паттерны админки.
         """
         from django.urls import path
+        from reports.admin_views import reports_admin
+        
         urls = super().get_urls()
-        custom_urls = [
-            path('reports/dashboard/', self.admin_view(self.reports_dashboard), name='reports-dashboard'),
-        ]
-        return custom_urls + urls
-
-    def reports_dashboard(self, request):
-        """
-        Представление для дашборда отчетов.
-        """
-        context = dict(
-            self.each_context(request),
-            title=_('Reports Dashboard'),
-        )
-        return render(request, 'admin/reports/dashboard.html', context)
+        
+        # Получаем URL паттерны из reports_admin, оборачивая их в admin_view для проверки прав
+        reports_urls = []
+        for url in reports_admin.get_urls():
+            # URL patterns in templates expect 'reports-dashboard', 'reports-generate'
+            name = f'reports-{url.name}' if not url.name.startswith('reports-') else url.name
+            reports_urls.append(
+                path(f'reports/{url.pattern}', self.admin_view(url.callback), name=name)
+            )
+            
+        return reports_urls + urls
     
     def index(self, request, extra_context=None):
         """

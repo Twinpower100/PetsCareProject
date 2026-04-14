@@ -64,4 +64,14 @@ class ReportSchedule(models.Model):
         ordering = ['-next_run']
 
     def __str__(self):
-        return f"{self.report.name} ({self.frequency})" 
+        return f"{self.report.name} ({self.frequency})"
+
+
+class ReportsDashboardProxy(models.Model):
+    """
+    Фиктивная модель для вывода ссылки на дашборд отчетов в боковом меню админки.
+    """
+    class Meta:
+        managed = False
+        verbose_name = _('Reports Dashboard')
+        verbose_name_plural = _('Reports Dashboard')

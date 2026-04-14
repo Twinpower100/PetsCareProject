@@ -1141,7 +1141,7 @@ class Provider(models.Model):
             provider_currency = self.invoice_currency or booking_currency
         
         # Конвертируем сумму в валюту провайдера, если нужно
-        if booking_currency != provider_currency:
+        if booking_currency and provider_currency and booking_currency != provider_currency:
             booking_amount = booking_currency.convert_amount(booking_amount, provider_currency)
         
         # Рассчитываем комиссию
