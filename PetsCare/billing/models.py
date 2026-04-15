@@ -424,6 +424,16 @@ class Payment(models.Model):
 
             PaymentAllocationService().apply_payment(self)
 
+    def delete(self, *args, **kwargs):
+        """
+        Удаляет платеж. Если он был проведен, предварительно отменяет его проводку.
+        """
+        if self.status == 'completed' and self.applied_at is not None:
+            from billing.payment_services import PaymentAllocationService
+            PaymentAllocationService().revert_payment(self)
+            
+        super().delete(*args, **kwargs)
+
 
 def get_default_currency():
     from billing.models import Currency
@@ -1008,6 +1018,19 @@ class PaymentHistory(models.Model):
             max_collectible_amount,
         )
         self.payment_date = payment_date or timezone.now().date()
+        self.save()
+
+    def revert_payment(self, amount):
+        """Отменяет часть проведенной оплаты по счету."""
+        amount = quantize_money(amount)
+        if amount <= Decimal('0.00'):
+            raise ValidationError(_('Revert amount must be greater than zero'))
+        if amount > self.paid_amount:
+            raise ValidationError(_('Revert amount cannot exceed paid amount'))
+
+        self.paid_amount = quantize_money(self.paid_amount - amount)
+        if self.paid_amount == Decimal('0.00'):
+            self.payment_date = None
         self.save()
 
     def apply_refund(self, amount):

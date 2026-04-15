@@ -79,6 +79,59 @@ class PaymentAllocationService:
         locked_payment.notes = notes
         return locked_payment
 
+    @transaction.atomic
+    def revert_payment(self, payment):
+        """
+        Отменяет проводку платежа и обновляет связанные счета.
+        """
+        locked_payment = (
+            Payment.objects.select_for_update()
+            .get(pk=payment.pk)
+        )
+
+        if locked_payment.applied_at is None:
+            return locked_payment
+        if locked_payment.provider_id is None:
+            raise ValidationError(_('Payment provider is required'))
+
+        remaining_amount = quantize_money(locked_payment.amount)
+
+        if locked_payment.invoice_id is not None:
+            invoice = (
+                Invoice.objects.select_for_update()
+                .get(pk=locked_payment.invoice_id)
+            )
+            if invoice.provider_id != locked_payment.provider_id:
+                raise ValidationError(_('Selected invoice does not belong to the payment provider'))
+            remaining_amount -= self._revert_from_invoice(invoice, remaining_amount)
+        else:
+            paid_invoices = (
+                Invoice.objects.select_for_update()
+                .filter(
+                    provider=locked_payment.provider,
+                )
+                .exclude(status__in=['draft', 'cancelled'])
+                .order_by('-issued_at', '-created_at', '-id')
+            )
+            for invoice in paid_invoices:
+                if remaining_amount <= Decimal('0.00'):
+                    break
+                remaining_amount -= self._revert_from_invoice(invoice, remaining_amount)
+
+        notes = locked_payment.notes or ''
+        if notes:
+            notes += '\n'
+        notes += str(_('Payment allocation was reverted.'))
+
+        Payment.objects.filter(pk=locked_payment.pk).update(
+            applied_at=None,
+            notes=notes,
+            updated_at=timezone.now(),
+        )
+        locked_payment.applied_at = None
+        locked_payment.notes = notes
+        return locked_payment
+
     def _apply_to_invoice(self, invoice, amount, payment_date):
         """
         Проводит часть суммы в конкретный счет и возвращает использованную сумму.
@@ -90,6 +143,18 @@ class PaymentAllocationService:
 
         payment_record.apply_payment(amount_to_apply, payment_date=payment_date)
         return amount_to_apply
+
+    def _revert_from_invoice(self, invoice, amount):
+        """
+        Отменяет часть суммы из конкретного счета и возвращает отмененную сумму.
+        """
+        payment_record = self._get_payment_record(invoice)
+        amount_to_revert = min(payment_record.paid_amount, quantize_money(amount))
+        if amount_to_revert <= Decimal('0.00'):
+            return Decimal('0.00')
+
+        payment_record.revert_payment(amount_to_revert)
+        return amount_to_revert
 
     def _get_payment_record(self, invoice):
         """
