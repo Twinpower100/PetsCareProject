@@ -83,6 +83,7 @@ MIDDLEWARE = [
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'users.middleware.PreferredLanguageMiddleware',
+    'custom_admin.middleware.ForceAdminEnglishMiddleware',
     'allauth.account.middleware.AccountMiddleware',
     'billing.middleware.ProviderBlockingMiddleware',
     'billing.middleware.BlockingLoggingMiddleware',
@@ -116,18 +117,22 @@ CACHES = {
     }
 }
 
-# Настройки GDAL для OSGeo4W
+# Настройки GDAL для OSGeo4W (только для Windows-разработки)
+# В Linux/Docker Django GIS находит GDAL/GEOS/PROJ автоматически через пакеты gdal-bin, libproj-dev
 import os
-# Пути к библиотекам GDAL (можно изменить на C:\OSGeo4W если установлен туда)
-OSGEO4W_ROOT = os.environ.get('OSGEO4W_ROOT', r'C:\Users\andre\AppData\Local\Programs\OSGeo4W')
-if not os.path.exists(OSGEO4W_ROOT):
-    # Fallback на стандартный путь OSGeo4W
-    OSGEO4W_ROOT = r'C:\OSGeo4W'
+import sys
 
-GDAL_LIBRARY_PATH = os.path.join(OSGEO4W_ROOT, 'bin', 'gdal312.dll')
-GEOS_LIBRARY_PATH = os.path.join(OSGEO4W_ROOT, 'bin', 'geos_c.dll')
-PROJ_LIB = os.path.join(OSGEO4W_ROOT, 'share', 'proj')
-GDAL_DATA = os.path.join(OSGEO4W_ROOT, 'share', 'gdal')
+if sys.platform == 'win32':
+    # Пути к библиотекам GDAL (можно изменить на C:\OSGeo4W если установлен туда)
+    OSGEO4W_ROOT = os.environ.get('OSGEO4W_ROOT', r'C:\Users\andre\AppData\Local\Programs\OSGeo4W')
+    if not os.path.exists(OSGEO4W_ROOT):
+        # Fallback на стандартный путь OSGeo4W
+        OSGEO4W_ROOT = r'C:\OSGeo4W'
+
+    GDAL_LIBRARY_PATH = os.path.join(OSGEO4W_ROOT, 'bin', 'gdal312.dll')
+    GEOS_LIBRARY_PATH = os.path.join(OSGEO4W_ROOT, 'bin', 'geos_c.dll')
+    PROJ_LIB = os.path.join(OSGEO4W_ROOT, 'share', 'proj')
+    GDAL_DATA = os.path.join(OSGEO4W_ROOT, 'share', 'gdal')
 
 # Настройки времени
 USE_TZ = True
