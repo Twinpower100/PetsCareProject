@@ -62,7 +62,7 @@ class MessageEncryption:
             encrypted_data = self.fernet.encrypt(text.encode('utf-8'))
             return base64.urlsafe_b64encode(encrypted_data).decode('utf-8')
         except Exception as e:
-            logger.error(f"Error encrypting message: {str(e)}")
+            logger.error("Error encrypting message: %s", type(e).__name__, exc_info=True)
             raise
     
     def decrypt(self, encrypted_text: str) -> str:
@@ -83,7 +83,15 @@ class MessageEncryption:
             decrypted_data = self.fernet.decrypt(encrypted_data)
             return decrypted_data.decode('utf-8')
         except Exception as e:
-            logger.error(f"Error decrypting message: {str(e)}")
+            # У cryptography.fernet.InvalidToken пустое сообщение, поэтому пишем
+            # тип исключения и длину входа — иначе в логах оставались "голые" строки
+            # вида "Error decrypting message: ".
+            logger.warning(
+                "Error decrypting message: %s (input_len=%d, ciphertext_prefix=%r)",
+                type(e).__name__,
+                len(encrypted_text or ''),
+                (encrypted_text or '')[:16],
+            )
             raise
 
 

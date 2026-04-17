@@ -6,6 +6,7 @@ import logging
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
+from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
 from django.utils.translation import gettext as _
@@ -19,6 +20,19 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Короткий TTL-кэш результата проверки блокировки на провайдера.
+# Снимает нагрузку с middleware, который дёргает 4–5 запросов к БД на каждый
+# API-запрос (calculate_debt, get_max_overdue_days, get_blocking_thresholds,
+# has_active_offer_acceptance, ProviderBlocking lookup). 10 секунд достаточно
+# мало, чтобы пользователь не видел залежавшийся баннер после оплаты долга.
+BLOCKING_CHECK_CACHE_TTL = 10
+BLOCKING_CHECK_CACHE_KEY = "billing:blocking_check:provider:{provider_id}"
+
+
+def invalidate_provider_blocking_cache(provider_id: int) -> None:
+    """Сбрасывает кэш проверки блокировки. Вызывать при оплате/изменении статуса."""
+    cache.delete(BLOCKING_CHECK_CACHE_KEY.format(provider_id=provider_id))
 
 
 class MultiLevelBlockingService:
@@ -35,10 +49,24 @@ class MultiLevelBlockingService:
     def __init__(self):
         self.settings = BlockingSystemSettings.get_settings()
 
-    def check_provider_blocking(self, provider: Provider) -> Dict[str, Any]:
+    def check_provider_blocking(self, provider: Provider, *, use_cache: bool = True) -> Dict[str, Any]:
         """
         Возвращает нормализованный результат проверки блокировки провайдера.
+
+        Параметр ``use_cache`` включает локальный TTL-кэш (10 секунд) для горячего
+        пути middleware. Hot-path (apply_blocking, ручные пересчёты) проходят с
+        ``use_cache=False``.
         """
+        cache_key = BLOCKING_CHECK_CACHE_KEY.format(provider_id=provider.id)
+        cached_payload = cache.get(cache_key) if use_cache else None
+        if cached_payload is not None:
+            # Кэшируем только сериализуемую часть; provider/active_blocking подцепляем заново.
+            active_blocking = ProviderBlocking.objects.filter(
+                provider=provider,
+                status='active',
+            ).only('id', 'blocking_level', 'status', 'blocked_at').order_by('-blocked_at').first()
+            return {**cached_payload, 'provider': provider, 'active_blocking': active_blocking}
+
         if provider.exclude_from_blocking_checks:
             return {
                 'provider': provider,
@@ -78,7 +106,7 @@ class MultiLevelBlockingService:
             status='active',
         ).order_by('-blocked_at').first()
 
-        return {
+        result = {
             'provider': provider,
             'should_block': blocking_level > 0,
             'blocking_level': blocking_level,
@@ -89,6 +117,15 @@ class MultiLevelBlockingService:
             'thresholds': thresholds,
             'active_blocking': active_blocking,
         }
+
+        if use_cache:
+            cacheable = {k: v for k, v in result.items() if k not in ('provider', 'active_blocking')}
+            try:
+                cache.set(cache_key, cacheable, timeout=BLOCKING_CHECK_CACHE_TTL)
+            except Exception as exc:
+                logger.debug("Failed to cache blocking check for provider=%s: %s", provider.id, exc)
+
+        return result
 
     def _resolve_blocking_level(
         self,
@@ -245,6 +282,7 @@ class MultiLevelBlockingService:
                 overdue_days,
             )
 
+        invalidate_provider_blocking_cache(provider.id)
         return blocking
 
     @transaction.atomic
@@ -261,6 +299,8 @@ class MultiLevelBlockingService:
             blocking.resolve(notes=notes or 'Billing debt resolved')
             self._create_resolution_notification(blocking)
             resolved_count += 1
+        if resolved_count:
+            invalidate_provider_blocking_cache(provider.id)
         return resolved_count
 
     def check_all_providers(self) -> Dict[str, Any]:

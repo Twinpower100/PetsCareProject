@@ -424,15 +424,24 @@ class Payment(models.Model):
 
             PaymentAllocationService().apply_payment(self)
 
+            if self.provider_id:
+                from billing.services import invalidate_provider_blocking_cache
+                invalidate_provider_blocking_cache(self.provider_id)
+
     def delete(self, *args, **kwargs):
         """
         Удаляет платеж. Если он был проведен, предварительно отменяет его проводку.
         """
+        provider_id = self.provider_id
         if self.status == 'completed' and self.applied_at is not None:
             from billing.payment_services import PaymentAllocationService
             PaymentAllocationService().revert_payment(self)
-            
+
         super().delete(*args, **kwargs)
+
+        if provider_id:
+            from billing.services import invalidate_provider_blocking_cache
+            invalidate_provider_blocking_cache(provider_id)
 
 
 def get_default_currency():
