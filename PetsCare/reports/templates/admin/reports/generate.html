@@ -91,16 +91,6 @@
         background-color: #dcdcde;
     }
     
-    .format-options {
-        display: flex;
-        gap: 15px;
-    }
-    
-    .format-option {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-    }
 </style>
 {% endblock %}
 
@@ -173,18 +163,8 @@
             <small>{% trans "Leave empty to include all providers" %}</small>
         </div>
         
-        <div class="form-group">
-            <label>{% trans "Output Format" %}</label>
-            <div class="format-options">
-                <div class="format-option">
-                    <input type="radio" name="format" value="json" id="format_json" checked>
-                    <label for="format_json">{% trans "JSON" %}</label>
-                </div>
-                <div class="format-option">
-                    <input type="radio" name="format" value="excel" id="format_excel">
-                    <label for="format_excel">{% trans "Excel" %}</label>
-                </div>
-            </div>
+        <div class="form-group" style="display: none;">
+            <input type="hidden" name="format" value="excel">
         </div>
         
         <div class="form-group">

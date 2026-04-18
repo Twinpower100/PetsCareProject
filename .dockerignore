@@ -1,0 +1,23 @@
+# Исключаем из docker образа ненужные файлы
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.git/
+.gitignore
+.env
+.env.*
+!.env.example
+logs/
+*.log
+.pytest_cache/
+.ruff_cache/
+.vscode/
+.idea/
+media/
+staticfiles/
+osgeo4w-setup.exe
+*.backup
+Credentials.md

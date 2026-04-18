@@ -11,8 +11,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Настройки безопасности
 # Используем строго ключ из .env, так как компромиссы и "срезание углов" недопустимы.
 SECRET_KEY = config('SECRET_KEY')
-DEBUG = True
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', 'testserver']
+DEBUG = config('DEBUG', default=True, cast=bool)
+ALLOWED_HOSTS = [h.strip() for h in config(
+    'ALLOWED_HOSTS',
+    default='localhost,127.0.0.1,testserver'
+).split(',') if h.strip()]
 
 # Кастомная модель пользователя
 AUTH_USER_MODEL = 'users.User'
@@ -206,15 +209,20 @@ SIMPLE_JWT = {
 # Настройки ручного бронирования и emergency override.
 BOOKING_EMERGENCY_TIME_WINDOW_HOURS = config('BOOKING_EMERGENCY_TIME_WINDOW_HOURS', default=4, cast=int)
 
-# CORS настройки (основной фронт + Provider Admin App)
-CORS_ALLOWED_ORIGINS = [
+# CORS настройки (основной фронт + Provider Admin App).
+# Можно переопределить через переменную окружения CORS_ALLOWED_ORIGINS
+# (значения через запятую), иначе применяются дефолты для локальной разработки.
+_default_cors = ",".join([
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5174",
-]
+])
+CORS_ALLOWED_ORIGINS = [h.strip() for h in config(
+    'CORS_ALLOWED_ORIGINS', default=_default_cors
+).split(',') if h.strip()]
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'api-version',
 ]
@@ -223,11 +231,12 @@ CORS_EXPOSE_HEADERS = [
     'X-Provider-Blocking-Detail',
 ]
 
-# CSRF настройки
-CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-]
+# CSRF настройки (допустимые origin'ы для не-GET запросов).
+# Переопределяется через CSRF_TRUSTED_ORIGINS в переменных окружения.
+_default_csrf = "http://localhost:8000,http://127.0.0.1:8000"
+CSRF_TRUSTED_ORIGINS = [h.strip() for h in config(
+    'CSRF_TRUSTED_ORIGINS', default=_default_csrf
+).split(',') if h.strip()]
 CSRF_COOKIE_SECURE = False  # Для разработки (в продакшене должно быть True)
 CSRF_COOKIE_HTTPONLY = True  # Защита от XSS атак
 SESSION_COOKIE_SECURE = False  # Для разработки (в продакшене должно быть True)
