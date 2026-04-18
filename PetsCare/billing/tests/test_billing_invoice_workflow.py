@@ -23,6 +23,7 @@ from billing.models import (
     Invoice,
     InvoiceLine,
     Payment,
+    Refund,
     PlatformCompany,
     VATRate,
 )
@@ -118,6 +119,148 @@ class BillingInvoiceWorkflowTest(TestCase):
             new_invoice.outstanding_amount,
             second_outstanding_before - Decimal('1.00'),
         )
+
+    def test_completed_refund_reopens_invoice_ledger_for_applied_amount(self):
+        """
+        Refund по проведенной сумме обновляет PaymentHistory и снова открывает счет.
+        """
+        provider = Provider.objects.get(name='Provider_FullyPaid')
+        self._reset_provider_invoices(provider)
+        booking = self._create_online_completed_booking(
+            provider=provider,
+            price=Decimal('140.00'),
+            completed_days_ago=2,
+        )
+        invoice = InvoiceGenerationService().generate_for_provider(
+            provider=provider,
+            start_date=booking.completed_at.date(),
+            end_date=booking.completed_at.date(),
+        )
+
+        self.assertIsNotNone(invoice)
+        assert invoice is not None
+
+        payment = Payment.objects.create(
+            provider=provider,
+            invoice=invoice,
+            amount=invoice.amount,
+            status='completed',
+            payment_method='bank_transfer',
+        )
+        refund = Refund.objects.create(
+            payment=payment,
+            amount=Decimal('5.00'),
+            status='completed',
+            reason='QA partial refund',
+        )
+
+        invoice.refresh_from_db()
+        payment.refresh_from_db()
+        payment_history = invoice.payment_record
+        assert payment_history is not None
+        payment_history.refresh_from_db()
+
+        self.assertEqual(refund.status, 'completed')
+        self.assertEqual(payment.status, 'completed')
+        self.assertEqual(invoice.status, 'partially_paid')
+        self.assertEqual(payment_history.refunded_amount, Decimal('5.00'))
+        self.assertEqual(payment_history.outstanding_amount, Decimal('5.00'))
+
+    def test_completed_refund_consumes_unapplied_remainder_before_reopening_invoice(self):
+        """
+        Возврат переплаты сначала гасит неразнесенный остаток, не открывая закрытый invoice.
+        """
+        provider = Provider.objects.get(name='Provider_Level2')
+        self._reset_provider_invoices(provider)
+        booking = self._create_online_completed_booking(
+            provider=provider,
+            price=Decimal('140.00'),
+            completed_days_ago=1,
+        )
+        invoice = InvoiceGenerationService().generate_for_provider(
+            provider=provider,
+            start_date=booking.completed_at.date(),
+            end_date=booking.completed_at.date(),
+        )
+
+        self.assertIsNotNone(invoice)
+        assert invoice is not None
+
+        payment = Payment.objects.create(
+            provider=provider,
+            amount=invoice.amount + Decimal('7.00'),
+            status='completed',
+            payment_method='bank_transfer',
+        )
+        refund = Refund.objects.create(
+            payment=payment,
+            amount=Decimal('7.00'),
+            status='completed',
+            reason='QA overpayment return',
+        )
+
+        invoice.refresh_from_db()
+        payment.refresh_from_db()
+        payment_history = invoice.payment_record
+        assert payment_history is not None
+        payment_history.refresh_from_db()
+
+        self.assertEqual(refund.status, 'completed')
+        self.assertEqual(invoice.status, 'paid')
+        self.assertEqual(invoice.outstanding_amount, Decimal('0.00'))
+        self.assertEqual(payment_history.refunded_amount, Decimal('0.00'))
+        self.assertEqual(payment.status, 'completed')
+
+    def test_refund_approve_api_applies_ledger_changes(self):
+        """
+        approve action проводит refund через ledger, а не только меняет payment.status.
+        """
+        provider = Provider.objects.get(name='Provider_FullyPaid')
+        self._reset_provider_invoices(provider)
+        booking = self._create_online_completed_booking(
+            provider=provider,
+            price=Decimal('150.00'),
+            completed_days_ago=3,
+        )
+        invoice = InvoiceGenerationService().generate_for_provider(
+            provider=provider,
+            start_date=booking.completed_at.date(),
+            end_date=booking.completed_at.date(),
+        )
+
+        self.assertIsNotNone(invoice)
+        assert invoice is not None
+
+        payment = Payment.objects.create(
+            provider=provider,
+            invoice=invoice,
+            amount=invoice.amount,
+            status='completed',
+            payment_method='bank_transfer',
+        )
+        refund = Refund.objects.create(
+            payment=payment,
+            amount=Decimal('10.00'),
+            status='pending',
+            reason='API refund approval',
+        )
+
+        self.client.force_login(self.admin_user)
+        response = self.client.post(f'/api/v1/refunds/{refund.pk}/approve/')
+
+        self.assertEqual(response.status_code, 200)
+        refund.refresh_from_db()
+        payment.refresh_from_db()
+        invoice.refresh_from_db()
+        payment_history = invoice.payment_record
+        assert payment_history is not None
+        payment_history.refresh_from_db()
+
+        self.assertEqual(refund.status, 'approved')
+        self.assertEqual(payment.status, 'completed')
+        self.assertEqual(invoice.status, 'partially_paid')
+        self.assertEqual(payment_history.refunded_amount, Decimal('10.00'))
+        self.assertEqual(payment_history.outstanding_amount, Decimal('10.00'))
 
     def test_platform_company_is_seeded_by_migration(self):
         """

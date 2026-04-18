@@ -9,7 +9,10 @@
 5. Ценообразования услуг
 """
 
-from django.db import models
+import re
+
+from django.db import models, transaction
+from django.db.models import Sum
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
 from providers.models import Provider
@@ -373,6 +376,13 @@ class Payment(models.Model):
         blank=True,
         help_text=_('Internal notes for reconciliation')
     )
+    unapplied_amount = models.DecimalField(
+        _('Unapplied Amount'),
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('0.00'),
+        help_text=_('Part of the payment that stayed unapplied after invoice allocation')
+    )
     applied_at = models.DateTimeField(
         _('Applied At'),
         null=True,
@@ -393,9 +403,54 @@ class Payment(models.Model):
         verbose_name_plural = _('Payments')
         ordering = ['-created_at']
 
+    UNAPPLIED_REMAINDER_RE = re.compile(
+        r'Unapplied remainder after invoice allocation:\s*(?P<amount>-?\d+(?:\.\d+)?)'
+    )
+
     def __str__(self):
         subject = self.invoice or self.provider
         return f"{subject} - {self.amount}"
+
+    @property
+    def unapplied_remainder_amount(self):
+        """Возвращает исходный неразнесенный остаток из reconciliation notes."""
+        if self.unapplied_amount and self.unapplied_amount > Decimal('0.00'):
+            return quantize_money(self.unapplied_amount)
+
+        if not self.notes:
+            return Decimal('0.00')
+
+        match = self.UNAPPLIED_REMAINDER_RE.search(self.notes)
+        if match is None:
+            return Decimal('0.00')
+
+        try:
+            return quantize_money(match.group('amount'))
+        except Exception:
+            return Decimal('0.00')
+
+    def effective_refund_total(self, *, exclude_refund_id=None):
+        """
+        Возвращает сумму уже проведенных refund-записей по платежу.
+        """
+        queryset = self.refunds.filter(status__in=['approved', 'completed'])
+        if exclude_refund_id is not None:
+            queryset = queryset.exclude(pk=exclude_refund_id)
+        total = queryset.aggregate(total=Sum('amount')).get('total') or Decimal('0.00')
+        return quantize_money(total)
+
+    def sync_status_from_refunds(self, *, exclude_refund_id=None):
+        """
+        Синхронизирует статус платежа после применения/отмены возвратов.
+        """
+        effective_refund_total = self.effective_refund_total(exclude_refund_id=exclude_refund_id)
+        next_status = 'refunded' if effective_refund_total >= self.amount else 'completed'
+        if self.status != next_status:
+            self.status = next_status
+            Payment.objects.filter(pk=self.pk).update(
+                status=next_status,
+                updated_at=timezone.now(),
+            )
 
     def save(self, *args, **kwargs):
         """
@@ -844,8 +899,60 @@ class Refund(models.Model):
         verbose_name_plural = _('Refunds')
         ordering = ['-created_at']
 
+    EFFECTIVE_STATUSES = {'approved', 'completed'}
+
     def __str__(self):
         return f"{self.payment} - {self.amount}"
+
+    def save(self, *args, **kwargs):
+        """
+        Сохраняет refund и синхронизирует ledger при переходе в applied-статус.
+        """
+        previous_status = None
+        previous_amount = None
+        previous_payment_id = None
+        if self.pk:
+            previous_refund = (
+                Refund.objects.filter(pk=self.pk)
+                .values('status', 'amount', 'payment_id')
+                .first()
+            )
+            if previous_refund is not None:
+                previous_status = previous_refund['status']
+                previous_amount = previous_refund['amount']
+                previous_payment_id = previous_refund['payment_id']
+
+        was_effective = previous_status in self.EFFECTIVE_STATUSES
+        is_effective = self.status in self.EFFECTIVE_STATUSES
+        if was_effective and is_effective:
+            if previous_amount != self.amount or previous_payment_id != self.payment_id:
+                raise ValidationError(
+                    _('Applied refunds cannot change amount or payment. Revert the status first.')
+                )
+
+        with transaction.atomic():
+            super().save(*args, **kwargs)
+
+            if not was_effective and is_effective:
+                from billing.refund_services import PaymentRefundService
+
+                PaymentRefundService().apply_refund(self)
+            elif was_effective and not is_effective:
+                from billing.refund_services import PaymentRefundService
+
+                PaymentRefundService().revert_refund(self)
+
+    def delete(self, *args, **kwargs):
+        """
+        Удаляет refund, откатывая ledger-effect для проведенных возвратов.
+        """
+        was_effective = self.status in self.EFFECTIVE_STATUSES
+        with transaction.atomic():
+            if was_effective:
+                from billing.refund_services import PaymentRefundService
+
+                PaymentRefundService().revert_refund(self)
+            super().delete(*args, **kwargs)
 
 
 class PaymentHistory(models.Model):
@@ -1051,6 +1158,17 @@ class PaymentHistory(models.Model):
             raise ValidationError(_('Refund amount cannot exceed paid amount'))
 
         self.refunded_amount = quantize_money(self.refunded_amount + amount)
+        self.save()
+
+    def revert_refund(self, amount):
+        """Откатывает ранее примененный возврат."""
+        amount = quantize_money(amount)
+        if amount <= Decimal('0.00'):
+            raise ValidationError(_('Refund revert amount must be greater than zero'))
+        if amount > self.refunded_amount:
+            raise ValidationError(_('Refund revert amount cannot exceed refunded amount'))
+
+        self.refunded_amount = quantize_money(self.refunded_amount - amount)
         self.save()
 
     def convert_to_currency(self, target_currency):

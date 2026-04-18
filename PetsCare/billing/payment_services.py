@@ -73,10 +73,12 @@ class PaymentAllocationService:
         Payment.objects.filter(pk=locked_payment.pk).update(
             applied_at=applied_at,
             notes=notes,
+            unapplied_amount=remaining_amount,
             updated_at=applied_at,
         )
         locked_payment.applied_at = applied_at
         locked_payment.notes = notes
+        locked_payment.unapplied_amount = remaining_amount
         return locked_payment
 
     @transaction.atomic
@@ -126,10 +128,12 @@ class PaymentAllocationService:
         Payment.objects.filter(pk=locked_payment.pk).update(
             applied_at=None,
             notes=notes,
+            unapplied_amount=Decimal('0.00'),
             updated_at=timezone.now(),
         )
         locked_payment.applied_at = None
         locked_payment.notes = notes
+        locked_payment.unapplied_amount = Decimal('0.00')
         return locked_payment
 
     def _apply_to_invoice(self, invoice, amount, payment_date):

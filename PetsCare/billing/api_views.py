@@ -329,10 +329,6 @@ class RefundViewSet(viewsets.ModelViewSet):
             
             refund.status = 'approved'
             refund.save()
-            
-            # Обновляем статус платежа
-            refund.payment.status = 'refunded'
-            refund.payment.save()
         
         return Response({'status': _('refund approved')})
 
