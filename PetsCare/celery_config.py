@@ -23,6 +23,7 @@ app = Celery('PetsCare')
 
 # Загрузка настроек из Django settings
 app.config_from_object('django.conf:settings', namespace='CELERY')
+app.conf.broker_connection_retry_on_startup = True
 
 # Автоматическое обнаружение и регистрация задач из приложений
 app.autodiscover_tasks(lambda: settings.INSTALLED_APPS)

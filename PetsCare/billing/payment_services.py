@@ -42,7 +42,7 @@ class PaymentAllocationService:
 
         if locked_payment.invoice_id is not None:
             invoice = (
-                Invoice.objects.select_for_update()
+                Invoice.objects.select_for_update(of=('self',))
                 .get(pk=locked_payment.invoice_id)
             )
             if invoice.provider_id != locked_payment.provider_id:
@@ -50,7 +50,7 @@ class PaymentAllocationService:
             remaining_amount -= self._apply_to_invoice(invoice, remaining_amount, payment_date)
         else:
             open_invoices = (
-                Invoice.objects.select_for_update()
+                Invoice.objects.select_for_update(of=('self',))
                 .filter(
                     provider=locked_payment.provider,
                     status__in=['sent', 'partially_paid', 'overdue'],
@@ -100,7 +100,7 @@ class PaymentAllocationService:
 
         if locked_payment.invoice_id is not None:
             invoice = (
-                Invoice.objects.select_for_update()
+                Invoice.objects.select_for_update(of=('self',))
                 .get(pk=locked_payment.invoice_id)
             )
             if invoice.provider_id != locked_payment.provider_id:
@@ -108,7 +108,7 @@ class PaymentAllocationService:
             remaining_amount -= self._revert_from_invoice(invoice, remaining_amount)
         else:
             paid_invoices = (
-                Invoice.objects.select_for_update()
+                Invoice.objects.select_for_update(of=('self',))
                 .filter(
                     provider=locked_payment.provider,
                 )

@@ -13,6 +13,7 @@ from django.template.loader import render_to_string
 from django.test import RequestFactory
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import translation
 from django.utils import timezone
 from openpyxl import load_workbook
 
@@ -295,8 +296,9 @@ class BillingInvoiceWorkflowTest(TestCase):
 
         pdf_service = InvoicePdfService()
         context = pdf_service._build_context(invoice, invoice.platform_company)
-        html_content = render_to_string(pdf_service.template_name, context)
-        fallback_text = '\n'.join(pdf_service._build_fallback_lines(context))
+        with translation.override('en'):
+            html_content = render_to_string(pdf_service.template_name, context)
+            fallback_text = '\n'.join(pdf_service._build_fallback_lines(context))
 
         self.assertIn('Completed online bookings', html_content)
         self.assertIn(str(invoice.start_date), html_content)

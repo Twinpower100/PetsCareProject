@@ -128,13 +128,13 @@ class PaymentRefundService:
     def _get_refundable_invoices(self, payment):
         if payment.invoice_id is not None:
             invoice = (
-                Invoice.objects.select_for_update()
+                Invoice.objects.select_for_update(of=('self',))
                 .get(pk=payment.invoice_id)
             )
             return [invoice]
 
         return list(
-            Invoice.objects.select_for_update()
+            Invoice.objects.select_for_update(of=('self',))
             .filter(provider=payment.provider)
             .exclude(status__in=['draft', 'cancelled'])
             .order_by('-issued_at', '-created_at', '-id')

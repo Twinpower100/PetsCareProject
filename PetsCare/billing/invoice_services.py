@@ -410,7 +410,7 @@ class InvoicePdfService:
         Генерирует PDF-файл счета и сохраняет его в модель Invoice.
         """
         locked_invoice = (
-            Invoice.objects.select_for_update()
+            Invoice.objects.select_for_update(of=('self',))
             .prefetch_related('lines__booking')
             .get(pk=invoice.pk)
         )

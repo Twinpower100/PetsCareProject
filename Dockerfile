@@ -18,6 +18,8 @@ ENV DJANGO_SETTINGS_MODULE=settings
 
 WORKDIR /app
 
+RUN groupadd --system app && useradd --system --gid app --home-dir /app app
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install gunicorn
@@ -25,7 +27,7 @@ RUN pip install gunicorn
 COPY . .
 
 # Создаём директорию для логов (она исключена из .dockerignore)
-RUN mkdir -p /app/logs
+RUN mkdir -p /app/logs && chown -R app:app /app
 
 # Копируем патч миграций в установленные пакеты (для пакетов, у которых в PyPI
 # нет миграций, сгенерированных Django 5.x для BigAutoField).
