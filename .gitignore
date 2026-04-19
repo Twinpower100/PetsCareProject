@@ -75,3 +75,7 @@ image/credentials/
 
 # Development & Data seeding scripts
 scripts/
+
+# Deployment artifacts
+*.tar.gz
+
