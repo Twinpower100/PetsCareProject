@@ -251,8 +251,8 @@ AUTHENTICATION_BACKENDS = [
 ]
 
 # Настройки для allauth
-# SITE_ID указывает на основной Site для админки (localhost:8000)
-SITE_ID = 2  # ID=2 соответствует localhost:8000 (PetCare Admin)
+# SITE_ID указывает на запись django_site, которая задает публичный домен в production.
+SITE_ID = config('SITE_ID', default=2, cast=int)
 
 # Кастомные адаптеры для allauth
 SOCIALACCOUNT_ADAPTER = 'users.adapters.CustomSocialAccountAdapter'
