@@ -985,6 +985,7 @@ class ForgotPasswordAPIView(generics.CreateAPIView):
     """
     serializer_class = ForgotPasswordSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
     
     def create(self, request, *args, **kwargs):
         """
@@ -1070,7 +1071,8 @@ class ForgotPasswordAPIView(generics.CreateAPIView):
         from django.urls import reverse
         
         # Создаем ссылку для сброса пароля
-        reset_url = f"{settings.FRONTEND_URL}/reset-password/{reset_token.token}"
+        frontend_url = (settings.FRONTEND_URL or '').rstrip('/')
+        reset_url = f"{frontend_url}/reset-password/{reset_token.token}"
         
         subject = _('Password Reset Request - PetsCare')
         message = f"""
@@ -1106,6 +1108,7 @@ class ResetPasswordAPIView(generics.CreateAPIView):
     """
     serializer_class = ResetPasswordSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
     
     def create(self, request, *args, **kwargs):
         """

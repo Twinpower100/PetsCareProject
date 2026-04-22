@@ -17,14 +17,14 @@ Tests for the users module.
 
 from datetime import timedelta
 from unittest.mock import patch
-from django.test import TestCase, Client
+from django.test import TestCase, Client, override_settings
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.utils import timezone
 from .models import EmailVerificationToken, User, UserType, ProviderForm
 from .serializers import UserRegistrationSerializer, ProviderAdminRegistrationSerializer, UserSerializer
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
 from providers.models import Provider
 
@@ -132,6 +132,46 @@ class UserFormTest(TestCase):
 
 
 # Removed outdated HTML View/URL tests
+
+
+class PasswordResetAPITest(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email='reset-user@example.com',
+            password='old-password-123',
+            first_name='Reset',
+        )
+
+    @override_settings(FRONTEND_URL='http://178.104.199.240.nip.io')
+    @patch('django.core.mail.send_mail')
+    def test_forgot_password_uses_public_frontend_url(self, mock_send_mail):
+        response = self.client.post(
+            '/api/v1/forgot-password/',
+            {'email': self.user.email},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['success'])
+        self.assertEqual(mock_send_mail.call_count, 1)
+        message = mock_send_mail.call_args.kwargs['message']
+        self.assertIn('http://178.104.199.240.nip.io/reset-password/', message)
+        self.assertNotIn('http://localhost/reset-password/', message)
+
+    @patch('django.core.mail.send_mail')
+    def test_forgot_password_allows_session_cookie_without_csrf_token(self, mock_send_mail):
+        csrf_client = APIClient(enforce_csrf_checks=True)
+        csrf_client.force_login(self.user)
+
+        response = csrf_client.post(
+            '/api/v1/forgot-password/',
+            {'email': self.user.email},
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['success'])
+        self.assertEqual(mock_send_mail.call_count, 1)
 
 
 class UserRegistrationTest(APITestCase):
