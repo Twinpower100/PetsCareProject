@@ -6,14 +6,14 @@ from django.utils.translation import gettext_lazy as _
 from rest_framework import serializers
 
 from .models import EmailVerificationToken, User
+from utils.site_urls import build_public_url
 
 
 def _build_verification_url(token: str) -> str:
     """
     Собирает frontend-ссылку для подтверждения email.
     """
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')
-    return f"{frontend_url}/verify-email?token={token}"
+    return build_public_url(f"/verify-email?token={token}")
 
 
 def send_email_verification_message(verification_token_id: int) -> None:

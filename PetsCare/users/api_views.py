@@ -1067,12 +1067,10 @@ class ForgotPasswordAPIView(generics.CreateAPIView):
         Отправляет email с токеном восстановления пароля.
         """
         from django.core.mail import send_mail
-        from django.conf import settings
-        from django.urls import reverse
+        from utils.site_urls import build_public_url
         
         # Создаем ссылку для сброса пароля
-        frontend_url = (settings.FRONTEND_URL or '').rstrip('/')
-        reset_url = f"{frontend_url}/reset-password/{reset_token.token}"
+        reset_url = build_public_url(f"/reset-password/{reset_token.token}")
         
         subject = _('Password Reset Request - PetsCare')
         message = f"""

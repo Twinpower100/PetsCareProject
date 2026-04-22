@@ -33,6 +33,7 @@ from notifications.models import Notification
 from pets.models import Pet
 from pets.serializers import PetSerializer
 from users.email_verification_permissions import require_verified_email_for_owner_action
+from utils.site_urls import build_public_url
 
 from .models import Conversation, Message, PetSitting, PetSittingAd, PetSittingRequest, PetSittingResponse, SitterProfile, SitterReview
 from .serializers import (
@@ -69,9 +70,7 @@ def _build_frontend_url(path: str) -> str:
     """
     Собирает абсолютную ссылку на публичный frontend.
     """
-    base_url = settings.FRONTEND_URL.rstrip('/')
-    normalized_path = path if path.startswith('/') else f'/{path}'
-    return f'{base_url}{normalized_path}'
+    return build_public_url(path)
 
 
 def _notify_user(

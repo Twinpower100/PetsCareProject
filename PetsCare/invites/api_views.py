@@ -1,7 +1,6 @@
 """
 Единые API-представления для создания, приёма, отклонения и просмотра инвайтов.
 """
-from django.conf import settings
 from django.utils import timezone
 from django.db import transaction
 from django.shortcuts import get_object_or_404
@@ -12,6 +11,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.generics import ListAPIView
 from django.utils.translation import gettext_lazy as _
 from users.email_verification_permissions import require_verified_email_for_owner_action
+from utils.site_urls import build_provider_admin_url, build_public_url
 
 from .models import Invite
 from .serializers import (
@@ -63,18 +63,15 @@ def _can_create_invite(request, invite_type, provider=None, provider_location=No
 
 
 def _get_invite_accept_link(invite: Invite) -> str:
-    provider_admin_url = getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173').rstrip('/')
-    frontend_url = getattr(settings, 'FRONTEND_URL', provider_admin_url).rstrip('/')
-
     if invite.invite_type in (Invite.TYPE_PROVIDER_MANAGER, Invite.TYPE_PROVIDER_ADMIN):
-        return f'{provider_admin_url}/accept-organization-role-invite'
+        return build_provider_admin_url('/accept-organization-role-invite')
     if invite.invite_type == Invite.TYPE_BRANCH_MANAGER:
-        return f'{provider_admin_url}/accept-location-manager-invite'
+        return build_provider_admin_url('/accept-location-manager-invite')
     if invite.invite_type == Invite.TYPE_SPECIALIST:
-        return f'{provider_admin_url}/accept-location-staff-invite'
+        return build_provider_admin_url('/accept-location-staff-invite')
     if invite.invite_type in (Invite.TYPE_PET_CO_OWNER, Invite.TYPE_PET_TRANSFER):
-        return f'{frontend_url}/pet-invite/{invite.token}/'
-    return f'{provider_admin_url}/invite/{invite.token}/'
+        return build_public_url(f'/pet-invite/{invite.token}/')
+    return build_provider_admin_url(f'/invite/{invite.token}/')
 
 
 class InviteListCreateAPIView(APIView):

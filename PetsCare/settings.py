@@ -349,6 +349,15 @@ FRONTEND_URL = config('FRONTEND_URL', default='http://localhost:3000')
 # Provider Admin App (отдельное SPA для админов/персонала провайдеров; в проде — свой домен)
 PROVIDER_ADMIN_URL = config('PROVIDER_ADMIN_URL', default='http://localhost:5173')
 
+# Public URL helpers. In production, links in emails can be managed through
+# Django Sites in /admin/sites/site/; env URLs stay as fallbacks and dev values.
+PUBLIC_SITE_SCHEME = config('PUBLIC_SITE_SCHEME', default='http')
+SITE_URLS_USE_DJANGO_SITE = config('SITE_URLS_USE_DJANGO_SITE', default=not DEBUG, cast=bool)
+SITE_URL = config('SITE_URL', default='')
+PROVIDER_ADMIN_PATH = config('PROVIDER_ADMIN_PATH', default='/provider-admin')
+DJANGO_ADMIN_PATH = config('DJANGO_ADMIN_PATH', default='/admin')
+DJANGO_ADMIN_URL = config('DJANGO_ADMIN_URL', default='')
+
 # Celery настройки
 CELERY_BROKER_URL = config('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')

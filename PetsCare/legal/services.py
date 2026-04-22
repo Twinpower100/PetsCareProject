@@ -449,12 +449,13 @@ class DocumentAcceptanceService:
             except Exception as e:
                 self.logger.warning(f"Error getting billing manager contacts for provider {provider.id}: {e}")
             
+            from utils.site_urls import build_provider_admin_url, build_public_url
+
             # Ссылка на приложение «Админка провайдеров»
-            admin_login_url = getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173')
+            admin_login_url = build_provider_admin_url()
             
             # Получаем URL инструкции на фронте
-            frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
-            setup_guide_url = f"{frontend_url}/provider-setup-guide"
+            setup_guide_url = build_public_url('/provider-setup-guide')
             
             # Получаем комиссию из billing_config документа
             commission_percent = '5.00'

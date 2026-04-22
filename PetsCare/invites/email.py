@@ -8,6 +8,7 @@ from django.utils import translation
 from django.utils.translation import gettext_lazy as _
 
 from .models import Invite
+from utils.site_urls import build_provider_admin_url, build_public_url
 
 
 def send_invite_email(invite: Invite, language: str = 'en'):
@@ -20,12 +21,10 @@ def send_invite_email(invite: Invite, language: str = 'en'):
     if lang not in ('en', 'ru', 'de', 'me'):
         lang = 'en'
     translation.activate(lang)
-    base_url = getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173').rstrip('/')
-    frontend_url = getattr(settings, 'FRONTEND_URL', base_url).rstrip('/')
     code = invite.token
 
     if invite.invite_type in (Invite.TYPE_PROVIDER_MANAGER, Invite.TYPE_PROVIDER_ADMIN):
-        accept_page_url = f'{base_url}/accept-organization-role-invite'
+        accept_page_url = build_provider_admin_url('/accept-organization-role-invite')
         provider_name = invite.provider.name if invite.provider else ''
         role_label = _('Manager') if invite.invite_type == Invite.TYPE_PROVIDER_MANAGER else _('Admin')
         subject = _('Invitation to become %(role)s of the organization "%(name)s"') % {
@@ -37,7 +36,7 @@ def send_invite_email(invite: Invite, language: str = 'en'):
             'Valid for 7 days. If you received this message by mistake, please ignore it.'
         ) % {'role': role_label, 'name': provider_name, 'url': accept_page_url, 'code': code}
     elif invite.invite_type == Invite.TYPE_BRANCH_MANAGER:
-        accept_page_url = f'{base_url}/accept-location-manager-invite'
+        accept_page_url = build_provider_admin_url('/accept-location-manager-invite')
         provider_name = invite.provider_location.provider.name if invite.provider_location else ''
         location_name = invite.provider_location.name if invite.provider_location else ''
         subject = _('Invitation to become the manager of a service location')
@@ -47,7 +46,7 @@ def send_invite_email(invite: Invite, language: str = 'en'):
             'Valid for 7 days. If you received this message by mistake, please ignore it.'
         ) % {'location': location_name, 'provider': provider_name, 'url': accept_page_url, 'code': code}
     elif invite.invite_type == Invite.TYPE_SPECIALIST:
-        accept_page_url = f'{base_url}/accept-location-staff-invite'
+        accept_page_url = build_provider_admin_url('/accept-location-staff-invite')
         provider_name = invite.provider_location.provider.name if invite.provider_location else ''
         location_name = invite.provider_location.name if invite.provider_location else ''
         subject = _('Invitation to join staff at a service location')
@@ -57,7 +56,7 @@ def send_invite_email(invite: Invite, language: str = 'en'):
             'Valid for 7 days. If you received this message by mistake, please ignore it.'
         ) % {'location': location_name, 'provider': provider_name, 'url': accept_page_url, 'code': code}
     elif invite.invite_type in (Invite.TYPE_PET_CO_OWNER, Invite.TYPE_PET_TRANSFER):
-        accept_page_url = f'{frontend_url}/pet-invite/{code}/'
+        accept_page_url = build_public_url(f'/pet-invite/{code}/')
         pet_name = invite.pet.name if invite.pet else ''
         subject = _('Pet ownership invitation')
         body_plain = _(
@@ -66,7 +65,7 @@ def send_invite_email(invite: Invite, language: str = 'en'):
             'Valid for 7 days. If you received this message by mistake, please ignore it.'
         ) % {'pet': pet_name, 'url': accept_page_url, 'code': code}
     else:
-        accept_page_url = f'{base_url}/invite/{code}/'
+        accept_page_url = build_provider_admin_url(f'/invite/{code}/')
         subject = _('Invitation')
         body_plain = _(
             'You have been invited. Open the link and enter the activation code. '

@@ -142,7 +142,7 @@ class PasswordResetAPITest(APITestCase):
             first_name='Reset',
         )
 
-    @override_settings(FRONTEND_URL='http://178.104.199.240.nip.io')
+    @override_settings(FRONTEND_URL='http://178.104.199.240.nip.io', SITE_URLS_USE_DJANGO_SITE=False)
     @patch('django.core.mail.send_mail')
     def test_forgot_password_uses_public_frontend_url(self, mock_send_mail):
         response = self.client.post(

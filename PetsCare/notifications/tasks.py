@@ -232,14 +232,13 @@ def send_email_verification_task(user_id: int, verification_token: str):
     """
     try:
         from django.contrib.auth import get_user_model
-        from django.urls import reverse
-        from django.conf import settings
+        from utils.site_urls import build_public_url
         
         User = get_user_model()
         user = User.objects.get(id=user_id)
         
         # Формируем ссылку для верификации
-        verification_url = f"{settings.SITE_URL}{reverse('verify_email', kwargs={'token': verification_token})}"
+        verification_url = build_public_url(f'/verify-email?token={verification_token}')
         
         notification_service = NotificationService()
         notification_service.send_notification(
@@ -269,14 +268,13 @@ def send_password_reset_task(user_id: int, reset_token: str):
     """
     try:
         from django.contrib.auth import get_user_model
-        from django.urls import reverse
-        from django.conf import settings
+        from utils.site_urls import build_public_url
         
         User = get_user_model()
         user = User.objects.get(id=user_id)
         
         # Формируем ссылку для сброса пароля
-        reset_url = f"{settings.SITE_URL}{reverse('password_reset_confirm', kwargs={'token': reset_token})}"
+        reset_url = build_public_url(f'/reset-password/{reset_token}')
         
         notification_service = NotificationService()
         notification_service.send_notification(

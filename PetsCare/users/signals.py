@@ -650,6 +650,7 @@ def _send_registration_emails(provider, provider_form, admin_user=None):
     from django.utils import translation
     from django.template.loader import render_to_string
     from django.contrib.auth import get_user_model
+    from utils.site_urls import build_provider_admin_url, build_public_url
     UserModel = get_user_model()
 
     # Язык письма: 1) язык из мастера (language), 2) страна регистрации (обязательное поле).
@@ -665,10 +666,8 @@ def _send_registration_emails(provider, provider_form, admin_user=None):
 
     is_activated = provider.activation_status == 'active' and provider.is_active
 
-    base_admin_url = (getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173') or '').rstrip('/')
-    admin_login_url = f"{base_admin_url}/login" if base_admin_url else 'http://localhost:5173/login'
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
-    setup_guide_url = f"{frontend_url}/provider-setup-guide"
+    admin_login_url = build_provider_admin_url('/login')
+    setup_guide_url = build_public_url('/provider-setup-guide')
 
     billing_manager_contacts = []
     if is_activated:

@@ -247,6 +247,7 @@ def _send_activation_email(provider, admin_user, recipient_email=None, is_admin=
     from django.template.loader import render_to_string
     from django.conf import settings
     from billing.models import BillingManagerProvider
+    from utils.site_urls import build_provider_admin_url, build_public_url
     
     # Проверяем, есть ли у пользователя пароль
     has_password = admin_user.has_usable_password()
@@ -255,11 +256,10 @@ def _send_activation_email(provider, admin_user, recipient_email=None, is_admin=
     login_method = 'password' if has_password else 'google'
     
     # Ссылка на приложение «Админка провайдеров» (не Django admin)
-    admin_login_url = getattr(settings, 'PROVIDER_ADMIN_URL', 'http://localhost:5173')
+    admin_login_url = build_provider_admin_url()
     
     # Получаем URL инструкции на фронте
-    frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
-    setup_guide_url = f"{frontend_url}/provider-setup-guide"
+    setup_guide_url = build_public_url('/provider-setup-guide')
     
     # Получаем контакты billing_manager
     billing_manager_contacts = []
