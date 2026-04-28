@@ -989,7 +989,7 @@ class PetSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id', 'main_owner', 'main_owner_id', 'owners', 'created_at', 'updated_at', 'pet_type_name', 'breed_name',
             'main_owner_name', 'main_owner_email', 'records_count', 'last_visit_date',
-            'has_medical_conditions', 'has_special_needs'
+            'has_medical_conditions', 'has_special_needs', 'is_active'
         ]
         extra_kwargs = {
             'special_needs': {'required': False},

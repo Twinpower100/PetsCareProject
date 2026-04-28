@@ -10,11 +10,13 @@
 from django.test import TestCase
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+from django.core.files.uploadedfile import SimpleUploadedFile
 from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
 from django.utils import timezone
 from .models import Pet, PetType, Breed, PetOwner
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
+from io import BytesIO
 
 User = get_user_model()
 
@@ -39,10 +41,77 @@ def _add_coowner(pet, user):
     PetOwner.objects.create(pet=pet, user=user, role='coowner')
 
 
+def _create_test_image_file(name='pet.jpg'):
+    """Создаёт маленький JPEG для multipart-тестов загрузки фото."""
+    from PIL import Image
+
+    buffer = BytesIO()
+    image = Image.new('RGB', (8, 8), color=(120, 180, 90))
+    image.save(buffer, format='JPEG')
+    buffer.seek(0)
+    return SimpleUploadedFile(name, buffer.read(), content_type='image/jpeg')
+
+
 def _data_dict(response):
     """Возвращает response.data как dict для assertIn и доступа по ключу."""
     assert isinstance(response.data, dict)
     return response.data
+
+
+class PetCreateActiveStatusTestCase(APITestCase):
+    """
+    Тесты серверного lifecycle-статуса питомца при создании через owner API.
+    """
+
+    def setUp(self):
+        """Создаёт владельца и справочник типа питомца."""
+        self.owner = User.objects.create_user(
+            email='pet-owner@example.com',
+            password='testpass123',
+            phone_number='+10000001001',
+        )
+        self.pet_type = PetType.objects.create(name='Dog', code='dog')
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def test_create_pet_ignores_client_inactive_status(self):
+        """Проверяет, что JSON-запрос не может создать неактивного питомца."""
+        url = reverse('pets:pet-list')
+        response = self.client.post(
+            url,
+            {
+                'name': 'Active JSON Pet',
+                'pet_type': self.pet_type.id,
+                'weight': '10.0',
+                'is_active': False,
+            },
+            format='json',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        pet = Pet.objects.get(name='Active JSON Pet')
+        self.assertTrue(pet.is_active)
+        self.assertTrue(response.data['is_active'])
+
+    def test_create_pet_with_photo_ignores_client_inactive_status(self):
+        """Проверяет, что multipart-запрос с фото тоже создаёт активного питомца."""
+        url = reverse('pets:pet-list')
+        response = self.client.post(
+            url,
+            {
+                'name': 'Active Photo Pet',
+                'pet_type': str(self.pet_type.id),
+                'weight': '10.0',
+                'is_active': 'false',
+                'photo': _create_test_image_file(),
+            },
+            format='multipart',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        pet = Pet.objects.get(name='Active Photo Pet')
+        self.assertTrue(pet.is_active)
+        self.assertTrue(response.data['is_active'])
 
 
 class CoOwnerRemovalTestCase(APITestCase):
@@ -102,6 +171,7 @@ class CoOwnerRemovalTestCase(APITestCase):
         
         # Настраиваем клиент
         self.client = APIClient()
+        self.client.defaults['HTTP_ACCEPT_LANGUAGE'] = 'en'
     
     def test_successful_coowner_removal(self):
         """Тест успешного снятия обязанностей совладельца."""
@@ -180,7 +250,7 @@ class CoOwnerRemovalTestCase(APITestCase):
         
         # Выполняем запрос
         url = reverse('pets:pet-remove-myself-as-coowner', kwargs={'pk': self.pet.id})
-        response = self.client.post(url)
+        self.client.post(url)
         
         # Проверяем что уведомление было вызвано
         mock_notify.assert_called_once_with(self.pet, self.co_owner)
@@ -193,7 +263,7 @@ class CoOwnerRemovalTestCase(APITestCase):
         
         # Выполняем запрос
         url = reverse('pets:pet-remove-myself-as-coowner', kwargs={'pk': self.pet.id})
-        response = self.client.post(url)
+        self.client.post(url)
         
         # Проверяем что логирование было вызвано
         mock_log.assert_called_once_with(self.pet, self.co_owner)
