@@ -22,6 +22,21 @@ from .routing import RoutingUnavailableError
 from .services import BookingAvailabilityService, BookingDomainError, BookingTransactionService
 
 
+def _get_request_language_code(request):
+    """Возвращает поддерживаемый код языка из query/header/LocaleMiddleware."""
+    language_code = (request.query_params.get('lang') or '').strip()
+    if not language_code:
+        language_code = getattr(request, 'LANGUAGE_CODE', '') or ''
+    if not language_code:
+        raw_header = request.META.get('HTTP_ACCEPT_LANGUAGE', '')
+        language_code = raw_header.split(',')[0].split(';')[0].strip()
+
+    language_code = (language_code or 'en').split('-')[0].lower()
+    if language_code == 'cnr':
+        language_code = 'me'
+    return language_code if language_code in {'en', 'ru', 'me', 'de'} else 'en'
+
+
 def _parse_iso_datetime(value: str):
     """Парсит ISO datetime и приводит его к aware-формату."""
     try:
@@ -182,7 +197,7 @@ class ProviderSearchAPIView(APIView):
             except ValueError:
                 return Response({'error': _('Invalid date format')}, status=status.HTTP_400_BAD_REQUEST)
 
-        language_code = (getattr(request, 'LANGUAGE_CODE', '') or 'en').split('-')[0]
+        language_code = _get_request_language_code(request)
         results = []
 
         try:
