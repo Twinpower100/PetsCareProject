@@ -7,11 +7,15 @@ from django import forms
 from django.shortcuts import render, redirect
 from django.urls import path, reverse
 from django.contrib import messages
-from django.http import JsonResponse
-from django.utils import timezone
 from django.utils.html import format_html
 import datetime
 from custom_admin import custom_admin_site
+from catalog.admin_helpers import (
+    apply_service_tree_labels,
+    get_all_client_facing_leaf_services,
+    get_client_facing_leaf_services_for_categories,
+    get_client_facing_root_categories,
+)
 
 
 def _is_system_admin(user):
@@ -107,17 +111,12 @@ class ProviderAdmin(admin.ModelAdmin):
     
     def get_form(self, request, obj=None, **kwargs):
         """Ограничивает доступные категории - всегда только категории уровня 0"""
-        from catalog.models import Service
-        
         form = super().get_form(request, obj, **kwargs)
         
         # По умолчанию для всех пользователей показываем только категории уровня 0
         if 'available_category_levels' in form.base_fields:
-            # Базовый queryset - только категории уровня 0
-            base_queryset = Service.objects.filter(
-                level=0,
-                parent__isnull=True
-            ).order_by('hierarchy_order', 'name')
+            base_queryset = get_client_facing_root_categories()
+            apply_service_tree_labels(form.base_fields['available_category_levels'])
             
             # Для провайдер-админа ограничиваем категориями из их заявки
             if _has_role(request.user, 'provider_admin'):
@@ -135,7 +134,9 @@ class ProviderAdmin(admin.ModelAdmin):
                             # Получаем только категории уровня 0 из заявки
                             approved_categories = provider_form.selected_categories.filter(
                                 level=0,
-                                parent__isnull=True
+                                parent__isnull=True,
+                                is_active=True,
+                                is_client_facing=True,
                             )
                             category_ids = approved_categories.values_list('id', flat=True)
                             base_queryset = base_queryset.filter(id__in=category_ids)
@@ -239,7 +240,7 @@ class ProviderAdmin(admin.ModelAdmin):
                 provider = Provider.objects.get(pk=object_id)
                 # Добавляем ссылку на VIES сайт
                 if provider.vat_number and provider.country:
-                    vies_url = f"https://ec.europa.eu/taxation_customs/vies/?locale=en#/vat-validation"
+                    vies_url = "https://ec.europa.eu/taxation_customs/vies/?locale=en#/vat-validation"
                     extra_context['vies_url'] = vies_url  # type: ignore[arg-type]
                     extra_context['vat_number'] = provider.vat_number  # type: ignore[arg-type]
                     extra_context['check_vat_id_url'] = reverse('admin:providers_provider_check_vat_id', args=[object_id])  # type: ignore[arg-type]
@@ -1014,6 +1015,29 @@ class ProviderLocationServiceInline(admin.TabularInline):
     verbose_name = _('Location Service')
     verbose_name_plural = _('Location Services')
 
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """Ограничивает услуги локации клиентскими leaf-услугами из категорий провайдера."""
+        if db_field.name == 'service':
+            location_id = request.resolver_match.kwargs.get('object_id') if request.resolver_match else None
+            if location_id:
+                try:
+                    location = ProviderLocation.objects.select_related('provider').get(pk=location_id)
+                    categories = location.provider.available_category_levels.filter(
+                        level=0,
+                        parent__isnull=True,
+                        is_active=True,
+                        is_client_facing=True,
+                    )
+                    kwargs['queryset'] = get_client_facing_leaf_services_for_categories(categories)
+                except ProviderLocation.DoesNotExist:
+                    kwargs['queryset'] = get_all_client_facing_leaf_services()
+            else:
+                kwargs['queryset'] = get_all_client_facing_leaf_services()
+        formfield = super().formfield_for_foreignkey(db_field, request, **kwargs)
+        if db_field.name == 'service' and formfield:
+            apply_service_tree_labels(formfield)
+        return formfield
+
 
 class EmployeeLocationServiceInline(admin.TabularInline):
     """Услуги сотрудников в этой локации (кто какие услуги оказывает в филиале)."""
@@ -1023,6 +1047,26 @@ class EmployeeLocationServiceInline(admin.TabularInline):
     verbose_name = _('Employee service at location')
     verbose_name_plural = _('Employee services at this location')
     autocomplete_fields = ('employee', 'service')
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        """Ограничивает услуги сотрудника клиентскими leaf-услугами локации."""
+        if db_field.name == 'service':
+            location_id = request.resolver_match.kwargs.get('object_id') if request.resolver_match else None
+            if location_id:
+                offered_service_ids = ProviderLocationService.objects.filter(
+                    location_id=location_id,
+                    is_active=True,
+                    service__is_active=True,
+                    service__is_client_facing=True,
+                    service__children__isnull=True,
+                ).values_list('service_id', flat=True)
+                kwargs['queryset'] = get_all_client_facing_leaf_services().filter(id__in=offered_service_ids)
+            else:
+                kwargs['queryset'] = get_all_client_facing_leaf_services()
+        formfield = super().formfield_for_foreignkey(db_field, request, **kwargs)
+        if db_field.name == 'service' and formfield:
+            apply_service_tree_labels(formfield)
+        return formfield
 
 
 class ProviderLocationAdmin(admin.ModelAdmin):
@@ -1215,9 +1259,24 @@ class ProviderLocationServiceAdmin(admin.ModelAdmin):
         """
         Ограничивает доступные локации и услуги для provider_admin.
         """
-        from catalog.models import Service
-        
         form = super().get_form(request, obj, **kwargs)
+        if 'service' in form.base_fields:
+            include_service_id = obj.service_id if obj and obj.service_id else None
+            form.base_fields['service'].queryset = get_all_client_facing_leaf_services(
+                include_service_id=include_service_id
+            )
+            apply_service_tree_labels(form.base_fields['service'])
+            if obj and obj.location:
+                categories = obj.location.provider.available_category_levels.filter(
+                    level=0,
+                    parent__isnull=True,
+                    is_active=True,
+                    is_client_facing=True,
+                )
+                form.base_fields['service'].queryset = get_client_facing_leaf_services_for_categories(
+                    categories,
+                    include_service_id=include_service_id,
+                )
         
         # Provider admin может управлять услугами только для локаций своей организации
         if _has_role(request.user, 'provider_admin'):
@@ -1235,17 +1294,17 @@ class ProviderLocationServiceAdmin(admin.ModelAdmin):
                 # Ограничиваем услуги только теми, которые доступны для организации
                 if obj and obj.location:
                     provider = obj.location.provider
-                    available_categories = provider.available_category_levels.filter(level=0, parent__isnull=True)
-                    from django.db.models import Q
-                    category_ids = available_categories.values_list('id', flat=True)
-                    services_queryset = Service.objects.filter(
-                        Q(id__in=category_ids) | Q(parent_id__in=category_ids)
-                    ).order_by('hierarchy_order', 'name')
+                    available_categories = provider.available_category_levels.filter(
+                        level=0,
+                        parent__isnull=True,
+                        is_active=True,
+                        is_client_facing=True,
+                    )
+                    services_queryset = get_client_facing_leaf_services_for_categories(
+                        available_categories,
+                        include_service_id=obj.service_id,
+                    )
                     form.base_fields['service'].queryset = services_queryset
-                elif not obj:
-                    # При создании новой услуги - показываем все услуги
-                    # (валидация произойдет при сохранении)
-                    pass
         
         return form
     
@@ -1262,19 +1321,18 @@ class ProviderLocationServiceAdmin(admin.ModelAdmin):
         
         # Валидация: услуга должна быть из категорий уровня 0 организации
         provider = obj.location.provider
-        available_categories = provider.available_category_levels.filter(level=0, parent__isnull=True)
-        from catalog.models import Service
-        from django.db.models import Q
-        category_ids = available_categories.values_list('id', flat=True)
+        available_categories = provider.available_category_levels.filter(
+            level=0,
+            parent__isnull=True,
+            is_active=True,
+            is_client_facing=True,
+        )
+        allowed_services = get_client_facing_leaf_services_for_categories(available_categories)
         
-        if not Service.objects.filter(
-            Q(id=obj.service.id) & (
-                Q(id__in=category_ids) | Q(parent_id__in=category_ids)
-            )
-        ).exists():
+        if not allowed_services.filter(id=obj.service_id).exists():
             messages.error(
                 request,
-                _('Service must be from provider\'s available category levels (level 0).')
+                _('Service must be an active client-facing leaf service from provider\'s available category levels.')
             )
             return
         

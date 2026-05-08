@@ -12,6 +12,7 @@ from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.db import transaction
 from .models import Service
+from .admin_helpers import apply_service_tree_labels
 from custom_admin import custom_admin_site
 
 
@@ -229,7 +230,10 @@ class ServiceAdmin(admin.ModelAdmin):
                 kwargs["queryset"] = Service.objects.exclude(pk=object_id)
             else:
                 kwargs["queryset"] = Service.objects.all()
-        return super().formfield_for_foreignkey(db_field, request, **kwargs)
+        formfield = super().formfield_for_foreignkey(db_field, request, **kwargs)
+        if db_field.name == "parent" and formfield:
+            apply_service_tree_labels(formfield)
+        return formfield
     
 
 
