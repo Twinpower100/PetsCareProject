@@ -192,7 +192,7 @@ class ServiceAdmin(admin.ModelAdmin):
             mark_safe(tree_name)
         )
     get_tree_name.short_description = _('Name (Tree)')
-    get_tree_name.admin_order_field = 'name'
+    get_tree_name.admin_order_field = 'hierarchy_order'
     
     def get_full_path(self, obj):
         """

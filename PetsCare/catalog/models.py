@@ -21,6 +21,8 @@ class Service(models.Model):
     Если parent=None, то это категория верхнего уровня.
     Если parent указан, то это либо подкатегория, либо услуга.
     """
+    HIERARCHY_ORDER_SEGMENT_WIDTH = 4
+
     code = models.CharField(
         _('Code'),
         max_length=50,
@@ -282,28 +284,33 @@ class Service(models.Model):
         else:
             return self.description
 
+    @classmethod
+    def format_hierarchy_order_segment(cls, index):
+        """Форматирует сегмент сортировки дерева с запасом для больших каталогов."""
+        return str(index).zfill(cls.HIERARCHY_ORDER_SEGMENT_WIDTH)
+
     def calculate_hierarchy_order(self):
         """
         Вычисляет иерархический порядок для сортировки.
         
         Returns:
-            str: Строка с иерархическим порядком (например, "1", "1_1", "1_2", "2_1")
+            str: Строка с иерархическим порядком (например, "0001", "0001_0001", "0001_0002", "0002_0001")
         """
         if not self.parent:
             # Для корневых элементов - просто порядковый номер
             siblings = Service.objects.filter(parent=None).order_by('id')
             for i, sibling in enumerate(siblings, 1):
                 if sibling.id == self.id:
-                    return str(i)
-            return "1"
+                    return self.format_hierarchy_order_segment(i)
+            return self.format_hierarchy_order_segment(siblings.count() + 1)
         else:
             # Для дочерних элементов - порядок родителя + порядковый номер среди братьев
             parent_order = self.parent.hierarchy_order or self.parent.calculate_hierarchy_order()
             siblings = Service.objects.filter(parent=self.parent).order_by('id')
             for i, sibling in enumerate(siblings, 1):
                 if sibling.id == self.id:
-                    return f"{parent_order}_{i}"
-            return f"{parent_order}_1"
+                    return f"{parent_order}_{self.format_hierarchy_order_segment(i)}"
+            return f"{parent_order}_{self.format_hierarchy_order_segment(siblings.count() + 1)}"
 
     @transaction.atomic
     def save(self, *args, **kwargs):
