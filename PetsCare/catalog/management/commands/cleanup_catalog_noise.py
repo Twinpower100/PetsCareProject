@@ -10,24 +10,8 @@ from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 
 from catalog.models import Service
+from catalog.noise import NOISE_CODE_PREFIXES, NOISE_NAME_FRAGMENTS, build_noise_service_query
 from providers.models import EmployeeLocationService, Provider, ProviderLocationService
-
-
-NOISE_NAME_FRAGMENTS = [
-    "Admin Ops",
-    "Billing Demo",
-    "Billing E2E",
-    "E2E Bath",
-    "Org Pricing",
-]
-
-NOISE_CODE_PREFIXES = [
-    "admin_ops",
-    "billing_demo",
-    "billing_e2e",
-    "e2e_",
-    "org_pricing",
-]
 
 
 class Command(BaseCommand):
@@ -51,12 +35,18 @@ class Command(BaseCommand):
             default=[],
             help="Additional service code prefix to treat as noise. Can be passed multiple times.",
         )
+        parser.add_argument(
+            "--include-archived",
+            action="store_true",
+            help="Also target already archived inactive noise services.",
+        )
 
     def handle(self, *args, **options):
         apply_changes = options["apply"]
         targets = self._get_targets(
             name_fragments=NOISE_NAME_FRAGMENTS + options["name_fragment"],
             code_prefixes=NOISE_CODE_PREFIXES + options["code_prefix"],
+            include_archived=options["include_archived"],
         )
 
         self.stdout.write(f"Matched noise services: {targets.count()}")
@@ -86,13 +76,11 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(f"Cleanup complete. Deleted: {deleted}. Archived: {archived}."))
 
-    def _get_targets(self, *, name_fragments: list[str], code_prefixes: list[str]):
-        query = Q()
-        for fragment in name_fragments:
-            query |= Q(name__icontains=fragment)
-            query |= Q(name_en__icontains=fragment)
-        for prefix in code_prefixes:
-            query |= Q(code__istartswith=prefix)
+    def _get_targets(self, *, name_fragments: list[str], code_prefixes: list[str], include_archived: bool):
+        query = build_noise_service_query(name_fragments=name_fragments, code_prefixes=code_prefixes)
+        if include_archived:
+            return Service.objects.filter(query).order_by("hierarchy_order", "name").distinct()
+
         active_configuration_query = (
             Q(is_active=True)
             | Q(is_client_facing=True)

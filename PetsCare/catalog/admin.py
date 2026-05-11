@@ -11,8 +11,10 @@ from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.db import transaction
+from django.db.models import Q
 from .models import Service
 from .admin_helpers import apply_service_tree_labels
+from .noise import build_noise_service_query
 from custom_admin import custom_admin_site
 
 
@@ -124,7 +126,14 @@ class ServiceAdmin(admin.ModelAdmin):
         Оптимизированный запрос с предзагрузкой родительских категорий.
         Сортировка происходит автоматически по полю hierarchy_order.
         """
-        return super().get_queryset(request).select_related('parent').prefetch_related('allowed_pet_types')
+        archived_noise_query = build_noise_service_query() & Q(is_active=False, is_client_facing=False)
+        return (
+            super()
+            .get_queryset(request)
+            .exclude(archived_noise_query)
+            .select_related('parent')
+            .prefetch_related('allowed_pet_types')
+        )
     
     @transaction.atomic
     def save_model(self, request, obj, form, change):
