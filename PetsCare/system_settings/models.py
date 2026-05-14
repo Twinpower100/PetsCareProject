@@ -1084,3 +1084,194 @@ class PlatformBrandingDomain(models.Model):
             'url': self.absolute_url,
             'is_primary': self.is_primary,
         }
+
+
+class SupportRequest(models.Model):
+    """
+    Обращение в поддержку платформы.
+
+    Модель хранит обращения из публичной формы, а также обращения, которые
+    сотрудники поддержки вручную фиксируют после email или телефонного звонка.
+    """
+
+    STATUS_NEW = 'new'
+    STATUS_IN_PROGRESS = 'in_progress'
+    STATUS_WAITING_CUSTOMER = 'waiting_customer'
+    STATUS_CLOSED = 'closed'
+    STATUS_SPAM = 'spam'
+
+    STATUS_CHOICES = [
+        (STATUS_NEW, _('New')),
+        (STATUS_IN_PROGRESS, _('In progress')),
+        (STATUS_WAITING_CUSTOMER, _('Waiting for customer')),
+        (STATUS_CLOSED, _('Closed')),
+        (STATUS_SPAM, _('Spam')),
+    ]
+
+    SOURCE_CONTACT_FORM = 'contact_form'
+    SOURCE_EMAIL = 'email'
+    SOURCE_PHONE = 'phone'
+    SOURCE_ADMIN = 'admin'
+
+    SOURCE_CHOICES = [
+        (SOURCE_CONTACT_FORM, _('Contact form')),
+        (SOURCE_EMAIL, _('Email')),
+        (SOURCE_PHONE, _('Phone call')),
+        (SOURCE_ADMIN, _('Admin entry')),
+    ]
+
+    PRIORITY_LOW = 'low'
+    PRIORITY_NORMAL = 'normal'
+    PRIORITY_HIGH = 'high'
+    PRIORITY_URGENT = 'urgent'
+
+    PRIORITY_CHOICES = [
+        (PRIORITY_LOW, _('Low')),
+        (PRIORITY_NORMAL, _('Normal')),
+        (PRIORITY_HIGH, _('High')),
+        (PRIORITY_URGENT, _('Urgent')),
+    ]
+
+    source = models.CharField(
+        _('Source'),
+        max_length=32,
+        choices=SOURCE_CHOICES,
+        default=SOURCE_CONTACT_FORM,
+        help_text=_('How this support request was received')
+    )
+    status = models.CharField(
+        _('Status'),
+        max_length=32,
+        choices=STATUS_CHOICES,
+        default=STATUS_NEW,
+        help_text=_('Current support workflow status')
+    )
+    priority = models.CharField(
+        _('Priority'),
+        max_length=16,
+        choices=PRIORITY_CHOICES,
+        default=PRIORITY_NORMAL
+    )
+    subject = models.CharField(
+        _('Subject'),
+        max_length=200,
+        help_text=_('Short summary of the support request')
+    )
+    message = models.TextField(
+        _('Message'),
+        help_text=_('Full support request text')
+    )
+    author = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='support_requests',
+        verbose_name=_('Author'),
+        help_text=_('Registered user who sent the request, if known')
+    )
+    author_name = models.CharField(
+        _('Author name'),
+        max_length=160,
+        blank=True
+    )
+    author_email = models.EmailField(
+        _('Author email'),
+        blank=True
+    )
+    author_phone = models.CharField(
+        _('Author phone'),
+        max_length=64,
+        blank=True
+    )
+    handler = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='handled_support_requests',
+        verbose_name=_('Handler'),
+        help_text=_('Support team member responsible for this request')
+    )
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_support_requests',
+        verbose_name=_('Created by'),
+        help_text=_('Admin user who manually created the request')
+    )
+    status_changed_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='status_changed_support_requests',
+        verbose_name=_('Status changed by')
+    )
+    status_changed_at = models.DateTimeField(
+        _('Status changed at'),
+        null=True,
+        blank=True
+    )
+    language = models.CharField(
+        _('Language'),
+        max_length=16,
+        blank=True,
+        help_text=_('Language selected in the public frontend')
+    )
+    page_url = models.URLField(
+        _('Page URL'),
+        max_length=500,
+        blank=True
+    )
+    ip_address = models.GenericIPAddressField(
+        _('IP address'),
+        null=True,
+        blank=True
+    )
+    user_agent = models.TextField(
+        _('User agent'),
+        blank=True
+    )
+    admin_notes = models.TextField(
+        _('Admin notes'),
+        blank=True,
+        help_text=_('Internal notes visible only in Django admin')
+    )
+    version = models.PositiveIntegerField(
+        _('Version'),
+        default=1,
+        help_text=_('Optimistic locking version for concurrent edits')
+    )
+    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated at'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Support Request')
+        verbose_name_plural = _('Support Requests')
+        db_table = 'support_requests'
+        ordering = ['status', '-created_at']
+        indexes = [
+            models.Index(fields=['status', 'priority', '-created_at'], name='support_req_status_idx'),
+            models.Index(fields=['source', '-created_at'], name='support_req_source_idx'),
+            models.Index(fields=['handler', 'status'], name='support_req_handler_idx'),
+        ]
+
+    def __str__(self):
+        return f'#{self.pk or "new"} {self.subject}'
+
+    def save(self, *args, **kwargs):
+        """Сохраняет обращение атомарно и обновляет версию при изменениях."""
+        with transaction.atomic():
+            if self.pk:
+                current = type(self).objects.select_for_update().get(pk=self.pk)
+                self.version = current.version + 1
+                if current.status != self.status:
+                    self.status_changed_at = timezone.now()
+            elif not self.status_changed_at:
+                self.status_changed_at = timezone.now()
+
+            self.full_clean()
+            super().save(*args, **kwargs)

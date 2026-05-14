@@ -10,6 +10,9 @@ from django.contrib import admin
 from django.utils.translation import gettext_lazy as _
 from django.utils.html import format_html
 from django.core.exceptions import ValidationError, PermissionDenied
+from django.db import transaction
+from django.http import HttpResponseRedirect
+from django.urls import reverse
 from django import forms
 from django.contrib.auth import get_user_model
 import logging
@@ -20,6 +23,7 @@ from .models import (
     BlockingScheduleSettings,
     PlatformBrandingSettings,
     PlatformBrandingDomain,
+    SupportRequest,
 )
 
 User = get_user_model()
@@ -176,9 +180,14 @@ class PlatformBrandingSettingsAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin)
 
     def changelist_view(self, request, extra_context=None):
         """Открывает активный профиль бренда как singleton-настройку."""
-        active_branding = self.model.objects.filter(is_active=True).first()
+        active_branding = self.model.objects.filter(is_active=True).first() or self.model.objects.first()
         if active_branding:
-            return self.response_change(request, active_branding)
+            opts = self.model._meta
+            change_url = reverse(
+                f'{self.admin_site.name}:{opts.app_label}_{opts.model_name}_change',
+                args=(active_branding.pk,),
+            )
+            return HttpResponseRedirect(change_url)
         return self.add_view(request)
 
 
@@ -190,6 +199,121 @@ class PlatformBrandingDomainAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin):
     list_filter = ('app_type', 'scheme', 'is_primary', 'is_active')
     search_fields = ('domain', 'base_path', 'branding__product_name')
     autocomplete_fields = ('branding',)
+
+
+@admin.register(SupportRequest)
+class SupportRequestAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin):
+    """Админский интерфейс для обращений в поддержку."""
+
+    readonly_fields = (
+        'version',
+        'created_at',
+        'updated_at',
+        'status_changed_at',
+        'status_changed_by',
+        'ip_address',
+        'user_agent',
+    )
+    list_display = (
+        'id',
+        'subject',
+        'source',
+        'status',
+        'priority',
+        'author_email',
+        'handler',
+        'created_at',
+    )
+    list_filter = ('status', 'source', 'priority', 'created_at')
+    search_fields = ('subject', 'message', 'author_name', 'author_email', 'author_phone')
+    raw_id_fields = ('author', 'handler', 'created_by', 'status_changed_by')
+    date_hierarchy = 'created_at'
+    actions = ('mark_in_progress', 'mark_waiting_customer', 'mark_closed')
+    save_on_top = True
+
+    fieldsets = (
+        (_('Request'), {
+            'fields': (
+                'source',
+                'status',
+                'priority',
+                'subject',
+                'message',
+            )
+        }),
+        (_('Author'), {
+            'fields': (
+                'author',
+                'author_name',
+                'author_email',
+                'author_phone',
+                'language',
+                'page_url',
+            )
+        }),
+        (_('Handling'), {
+            'fields': (
+                'handler',
+                'admin_notes',
+            )
+        }),
+        (_('Metadata'), {
+            'fields': (
+                'created_by',
+                'status_changed_by',
+                'status_changed_at',
+                'ip_address',
+                'user_agent',
+                'version',
+                'created_at',
+                'updated_at',
+            ),
+            'classes': ('collapse',),
+        }),
+    )
+
+    def save_model(self, request, obj, form, change):
+        """Заполняет системные поля при ручном создании или обработке обращения."""
+        if not change and not obj.created_by_id:
+            obj.created_by = request.user
+        if not change and obj.source == SupportRequest.SOURCE_CONTACT_FORM:
+            obj.source = SupportRequest.SOURCE_ADMIN
+        if 'status' in form.changed_data:
+            obj.status_changed_by = request.user
+            obj.status_changed_at = None
+        super().save_model(request, obj, form, change)
+
+    def _set_status(self, request, queryset, target_status):
+        """Меняет статус выбранных обращений с блокировкой записей."""
+        updated_count = 0
+        with transaction.atomic():
+            locked_requests = SupportRequest.objects.select_for_update().filter(pk__in=queryset.values('pk'))
+            for support_request in locked_requests:
+                support_request.status = target_status
+                support_request.status_changed_by = request.user
+                support_request.status_changed_at = None
+                support_request.save()
+                updated_count += 1
+        self.message_user(
+            request,
+            _('Updated support requests: %(count)s') % {'count': updated_count},
+            level='SUCCESS',
+        )
+
+    @admin.action(description=_('Mark selected requests as in progress'))
+    def mark_in_progress(self, request, queryset):
+        """Переводит выбранные обращения в работу."""
+        self._set_status(request, queryset, SupportRequest.STATUS_IN_PROGRESS)
+
+    @admin.action(description=_('Mark selected requests as waiting for customer'))
+    def mark_waiting_customer(self, request, queryset):
+        """Переводит выбранные обращения в ожидание ответа клиента."""
+        self._set_status(request, queryset, SupportRequest.STATUS_WAITING_CUSTOMER)
+
+    @admin.action(description=_('Mark selected requests as closed'))
+    def mark_closed(self, request, queryset):
+        """Закрывает выбранные обращения."""
+        self._set_status(request, queryset, SupportRequest.STATUS_CLOSED)
 
 
 class SettingsAdminSite(admin.AdminSite):
@@ -849,6 +973,7 @@ try:
 
     custom_admin_site.register(PlatformBrandingSettings, PlatformBrandingSettingsAdmin)
     custom_admin_site.register(PlatformBrandingDomain, PlatformBrandingDomainAdmin)
+    custom_admin_site.register(SupportRequest, SupportRequestAdmin)
     custom_admin_site.register(SecuritySettings, SecuritySettingsAdmin)
     custom_admin_site.register(RatingDecaySettings, RatingDecaySettingsAdmin)
     custom_admin_site.register(BlockingScheduleSettings, BlockingScheduleSettingsAdmin)

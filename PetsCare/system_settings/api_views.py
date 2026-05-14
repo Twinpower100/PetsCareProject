@@ -23,6 +23,7 @@ from django.utils.decorators import method_decorator
 # from users.permissions import IsSystemAdmin  # Заменено на стандартные permissions
 from audit.models import UserAction
 from .models import PlatformBrandingSettings
+from .serializers import SupportRequestCreateSerializer
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,39 @@ class PublicBrandingAPIView(APIView):
                 {'error': _('Failed to get branding settings')},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+
+class PublicSupportRequestCreateAPIView(APIView):
+    """
+    Публичное создание обращения в поддержку из контактной формы.
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        """Создает обращение в поддержку и возвращает его номер."""
+        serializer = SupportRequestCreateSerializer(data=request.data, context={'request': request})
+        serializer.is_valid(raise_exception=True)
+
+        support_request = serializer.save(
+            ip_address=self._get_client_ip(request),
+            user_agent=request.META.get('HTTP_USER_AGENT', '')[:2000],
+        )
+
+        return Response(
+            {
+                'id': support_request.id,
+                'status': support_request.status,
+                'message': _('Support request created successfully'),
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+    def _get_client_ip(self, request):
+        """Возвращает IP клиента с учетом reverse proxy."""
+        forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+        if forwarded_for:
+            return forwarded_for.split(',')[0].strip()
+        return request.META.get('REMOTE_ADDR')
 
 
 class SystemSettingsAPIView(APIView):

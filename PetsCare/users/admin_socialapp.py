@@ -181,9 +181,10 @@ custom_admin_site.register(SocialApp, SocialAppAdmin)
 # custom_admin_site.register(SocialAccount, SocialAccountAdmin)
 # custom_admin_site.register(SocialToken, SocialTokenAdmin)
 
-# Регистрируем модель Site для управления Sites в админке
+# Скрываем отдельный раздел Sites из админки.
+# django.contrib.sites остается в проекте, потому что allauth хранит связи
+# OAuth-приложений с Site, но публичные домены теперь управляются брендингом.
 from django.contrib.sites.models import Site
-from django.contrib.sites.admin import SiteAdmin
 
 # Отменяем регистрацию в стандартной админке, если она есть
 try:
@@ -196,6 +197,4 @@ try:
     custom_admin_site.unregister(Site)
 except admin.sites.NotRegistered:
     pass
-
-custom_admin_site.register(Site, SiteAdmin)
 

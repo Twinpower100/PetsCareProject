@@ -14,6 +14,7 @@ app_name = 'settings'
 
 urlpatterns = [
     path('branding/', api_views.PublicBrandingAPIView.as_view(), name='public-branding'),
+    path('support-requests/', api_views.PublicSupportRequestCreateAPIView.as_view(), name='support-request-create'),
     # Системные настройки
     path('system/', api_views.SystemSettingsAPIView.as_view(), name='system-settings'),
     path('features/', api_views.FeatureSettingsAPIView.as_view(), name='feature-settings'),
