@@ -13,6 +13,7 @@ from . import api_views
 app_name = 'settings'
 
 urlpatterns = [
+    path('branding/', api_views.PublicBrandingAPIView.as_view(), name='public-branding'),
     # Системные настройки
     path('system/', api_views.SystemSettingsAPIView.as_view(), name='system-settings'),
     path('features/', api_views.FeatureSettingsAPIView.as_view(), name='feature-settings'),

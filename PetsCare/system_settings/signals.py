@@ -12,7 +12,12 @@ from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 from django.core.cache import cache
 
-from .models import SecuritySettings, BlockingScheduleSettings
+from .models import (
+    SecuritySettings,
+    BlockingScheduleSettings,
+    PlatformBrandingSettings,
+    PlatformBrandingDomain,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,3 +89,16 @@ def update_celery_schedule_on_blocking_settings_change(sender, instance, created
                 
         except Exception as e:
             logger.error(f"Error updating Celery schedule: {e}") 
+
+
+@receiver(post_save, sender=PlatformBrandingSettings)
+@receiver(post_delete, sender=PlatformBrandingSettings)
+@receiver(post_save, sender=PlatformBrandingDomain)
+@receiver(post_delete, sender=PlatformBrandingDomain)
+def clear_platform_branding_cache(sender, instance, **kwargs):
+    """Очищает кэш брендинга при изменении настроек или доменов."""
+    try:
+        cache.delete('platform_branding_settings')
+        logger.info("Platform branding settings cache cleared")
+    except Exception as e:
+        logger.error(f"Failed to clear platform branding cache: {e}")

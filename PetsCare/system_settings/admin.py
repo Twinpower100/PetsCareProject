@@ -14,7 +14,13 @@ from django import forms
 from django.contrib.auth import get_user_model
 import logging
 
-from .models import SecuritySettings, RatingDecaySettings, BlockingScheduleSettings
+from .models import (
+    SecuritySettings,
+    RatingDecaySettings,
+    BlockingScheduleSettings,
+    PlatformBrandingSettings,
+    PlatformBrandingDomain,
+)
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -87,6 +93,103 @@ class GlobalSettingsAccessMixin:
         if not self._check_global_settings_access(request):
             return self.model.objects.none()
         return super().get_queryset(request)
+
+
+class PlatformBrandingDomainInline(admin.TabularInline):
+    """Inline-форма доменов и путей для фронтов бренда."""
+
+    model = PlatformBrandingDomain
+    extra = 1
+    fields = (
+        'app_type',
+        'scheme',
+        'domain',
+        'base_path',
+        'is_primary',
+        'is_active',
+        'display_order',
+    )
+
+
+@admin.register(PlatformBrandingSettings)
+class PlatformBrandingSettingsAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin):
+    """Админский интерфейс для runtime-настроек бренда платформы."""
+
+    inlines = [PlatformBrandingDomainInline]
+    readonly_fields = ('version', 'created_at', 'updated_at', 'updated_by')
+    list_display = ('product_name', 'public_site_title', 'support_email', 'is_active', 'version', 'updated_at')
+    list_filter = ('is_active',)
+    search_fields = ('product_name', 'short_name', 'support_email')
+    save_on_top = True
+
+    fieldsets = (
+        (_('Brand'), {
+            'fields': (
+                'product_name',
+                'short_name',
+                'public_site_title',
+                'provider_admin_site_title',
+                'legal_footer_name',
+            ),
+            'description': _('Configure user-facing brand names for public and provider admin frontends')
+        }),
+        (_('Support contacts'), {
+            'fields': (
+                'support_email',
+                'support_phone',
+                'contact_path',
+            ),
+            'description': _('Configure support contacts used by contact pages and mail links')
+        }),
+        (_('Assets'), {
+            'fields': (
+                'logo',
+                'favicon',
+            ),
+            'classes': ('collapse',),
+        }),
+        (_('Status and locking'), {
+            'fields': (
+                'is_active',
+                'version',
+            ),
+            'description': _('Only one active branding profile can be used by frontends')
+        }),
+        (_('Metadata'), {
+            'fields': (
+                'created_at',
+                'updated_at',
+                'updated_by',
+            ),
+            'classes': ('collapse',),
+        }),
+    )
+
+    def has_delete_permission(self, request, obj=None):
+        """Запрещает удаление профиля бренда из админки."""
+        return False
+
+    def save_model(self, request, obj, form, change):
+        """Сохраняет пользователя, внесшего изменения."""
+        obj.updated_by = request.user
+        super().save_model(request, obj, form, change)
+
+    def changelist_view(self, request, extra_context=None):
+        """Открывает активный профиль бренда как singleton-настройку."""
+        active_branding = self.model.objects.filter(is_active=True).first()
+        if active_branding:
+            return self.response_change(request, active_branding)
+        return self.add_view(request)
+
+
+@admin.register(PlatformBrandingDomain)
+class PlatformBrandingDomainAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin):
+    """Админский интерфейс для доменов фронтов бренда."""
+
+    list_display = ('app_type', 'domain', 'base_path', 'scheme', 'is_primary', 'is_active', 'branding')
+    list_filter = ('app_type', 'scheme', 'is_primary', 'is_active')
+    search_fields = ('domain', 'base_path', 'branding__product_name')
+    autocomplete_fields = ('branding',)
 
 
 class SettingsAdminSite(admin.AdminSite):
@@ -739,3 +842,15 @@ class BlockingScheduleSettingsAdmin(GlobalSettingsAccessMixin, admin.ModelAdmin)
             'all': ('admin/css/blocking_schedule_settings.css',)
         }
         js = ('admin/js/blocking_schedule_settings.js',) 
+
+
+try:
+    from custom_admin import custom_admin_site
+
+    custom_admin_site.register(PlatformBrandingSettings, PlatformBrandingSettingsAdmin)
+    custom_admin_site.register(PlatformBrandingDomain, PlatformBrandingDomainAdmin)
+    custom_admin_site.register(SecuritySettings, SecuritySettingsAdmin)
+    custom_admin_site.register(RatingDecaySettings, RatingDecaySettingsAdmin)
+    custom_admin_site.register(BlockingScheduleSettings, BlockingScheduleSettingsAdmin)
+except admin.sites.AlreadyRegistered:
+    pass

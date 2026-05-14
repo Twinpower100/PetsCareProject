@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     'user_analytics',
     'custom_admin',
     'invites',
+    'system_settings.apps.SystemSettingsConfig',
 ]
 
 # Middleware

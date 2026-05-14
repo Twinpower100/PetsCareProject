@@ -8,4 +8,4 @@
 4. API для системных настроек
 """
 
-default_app_config = 'settings.apps.SettingsConfig' 
+default_app_config = 'system_settings.apps.SystemSettingsConfig' 

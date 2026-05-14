@@ -17,11 +17,35 @@ from rest_framework.response import Response
 from django.core.cache import cache
 from django.db import transaction
 from django.utils import timezone
+from django.views.decorators.cache import cache_control
+from django.utils.decorators import method_decorator
 
 # from users.permissions import IsSystemAdmin  # Заменено на стандартные permissions
 from audit.models import UserAction
+from .models import PlatformBrandingSettings
 
 logger = logging.getLogger(__name__)
+
+
+@method_decorator(cache_control(public=True, max_age=300), name='dispatch')
+class PublicBrandingAPIView(APIView):
+    """
+    Публичный runtime-конфиг бренда для всех фронтов.
+    """
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        """Возвращает активные настройки бренда, домены и контакты поддержки."""
+        try:
+            branding = PlatformBrandingSettings.get_active()
+            return Response(branding.as_public_dict(request=request))
+        except Exception as e:
+            logger.error(f"Failed to get public branding settings: {e}")
+            return Response(
+                {'error': _('Failed to get branding settings')},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
 
 class SystemSettingsAPIView(APIView):

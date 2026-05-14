@@ -9,7 +9,7 @@
 from datetime import time
 from decimal import Decimal
 
-from django.db import models
+from django.db import models, transaction
 from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils.translation import gettext_lazy as _
 from django.contrib.auth import get_user_model
@@ -773,3 +773,314 @@ class BlockingScheduleSettings(models.Model):
         elif self.frequency == 'custom':
             return _('Every {} hours').format(self.custom_interval_hours)
         return _('Unknown schedule') 
+
+
+class PlatformBrandingSettings(models.Model):
+    """
+    Настройки публичного бренда платформы.
+
+    Модель отделяет продуктовый бренд, домены и контакты поддержки от
+    юридических реквизитов PlatformCompany, которые используются в биллинге.
+    """
+
+    product_name = models.CharField(
+        _('Product name'),
+        max_length=120,
+        default='PetCare',
+        help_text=_('Main product brand shown in user-facing interfaces')
+    )
+    short_name = models.CharField(
+        _('Short name'),
+        max_length=60,
+        default='PetCare',
+        help_text=_('Short brand name for compact UI areas')
+    )
+    public_site_title = models.CharField(
+        _('Public site title'),
+        max_length=160,
+        default='PetsCare',
+        help_text=_('Browser title for the public frontend')
+    )
+    provider_admin_site_title = models.CharField(
+        _('Provider admin site title'),
+        max_length=160,
+        default='PetCare - Provider Admin',
+        help_text=_('Browser title for the provider admin frontend')
+    )
+    legal_footer_name = models.CharField(
+        _('Legal footer name'),
+        max_length=160,
+        default='PetCare',
+        help_text=_('Name used in legal footer copy')
+    )
+    support_email = models.EmailField(
+        _('Support email'),
+        default='support@petcare.com',
+        help_text=_('Support email used by public contact forms and links')
+    )
+    support_phone = models.CharField(
+        _('Support phone'),
+        max_length=64,
+        default='+1 (555) 123-4567',
+        blank=True,
+        help_text=_('Support phone shown on public contact pages')
+    )
+    contact_path = models.CharField(
+        _('Contact path'),
+        max_length=120,
+        default='/contact',
+        help_text=_('Public contact page path')
+    )
+    logo = models.ImageField(
+        _('Logo'),
+        upload_to='branding/logos/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        help_text=_('Optional brand logo')
+    )
+    favicon = models.ImageField(
+        _('Favicon'),
+        upload_to='branding/favicons/%Y/%m/%d/',
+        null=True,
+        blank=True,
+        help_text=_('Optional browser favicon')
+    )
+    is_active = models.BooleanField(
+        _('Is active'),
+        default=True,
+        help_text=_('Whether this branding profile is used by frontends')
+    )
+    version = models.PositiveIntegerField(
+        _('Version'),
+        default=1,
+        help_text=_('Optimistic locking version for concurrent edits')
+    )
+    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated at'), auto_now=True)
+    updated_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='updated_platform_branding_settings',
+        verbose_name=_('Updated by'),
+        help_text=_('User who last updated these branding settings')
+    )
+
+    class Meta:
+        verbose_name = _('Platform Branding Settings')
+        verbose_name_plural = _('Platform Branding Settings')
+        db_table = 'platform_branding_settings'
+        ordering = ['-is_active', '-updated_at']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['is_active'],
+                condition=models.Q(is_active=True),
+                name='unique_active_platform_branding_settings'
+            )
+        ]
+
+    def __str__(self):
+        return self.product_name
+
+    def clean(self):
+        """Проверяет формат относительного пути контактной страницы."""
+        from django.core.exceptions import ValidationError
+
+        if not self.contact_path.startswith('/'):
+            raise ValidationError({
+                'contact_path': _('Contact path must start with a slash')
+            })
+
+    def save(self, *args, **kwargs):
+        """Сохраняет настройки бренда атомарно и увеличивает версию."""
+        with transaction.atomic():
+            if self.pk:
+                current = type(self).objects.select_for_update().get(pk=self.pk)
+                self.version = current.version + 1
+            if self.is_active:
+                type(self).objects.select_for_update().exclude(pk=self.pk).update(is_active=False)
+
+            self.full_clean()
+            super().save(*args, **kwargs)
+
+    @classmethod
+    def get_active(cls):
+        """Возвращает активный бренд или создает профиль с текущими значениями проекта."""
+        active_branding = cls.objects.prefetch_related('domains').filter(is_active=True).first()
+        if active_branding:
+            return active_branding
+
+        return cls.objects.create(
+            product_name='PetCare',
+            short_name='PetCare',
+            public_site_title='PetsCare',
+            provider_admin_site_title='PetCare - Provider Admin',
+            legal_footer_name='PetCare',
+            support_email='support@petcare.com',
+            support_phone='+1 (555) 123-4567',
+            contact_path='/contact',
+            is_active=True,
+        )
+
+    def _build_media_url(self, request, field):
+        """Возвращает абсолютный URL для медиа-поля, если файл задан."""
+        file_value = getattr(self, field)
+        if not file_value:
+            return ''
+
+        url = file_value.url
+        if request is not None:
+            return request.build_absolute_uri(url)
+        return url
+
+    def as_public_dict(self, request=None):
+        """Сериализует настройки бренда для публичного runtime-конфига фронтов."""
+        domains = [
+            domain.as_public_dict()
+            for domain in self.domains.filter(is_active=True).order_by('app_type', '-is_primary', 'display_order', 'domain')
+        ]
+
+        return {
+            'product_name': self.product_name,
+            'short_name': self.short_name,
+            'public_site_title': self.public_site_title,
+            'provider_admin_site_title': self.provider_admin_site_title,
+            'legal_footer_name': self.legal_footer_name,
+            'support_email': self.support_email,
+            'support_phone': self.support_phone,
+            'contact_path': self.contact_path,
+            'logo_url': self._build_media_url(request, 'logo'),
+            'favicon_url': self._build_media_url(request, 'favicon'),
+            'domains': domains,
+            'version': self.version,
+        }
+
+
+class PlatformBrandingDomain(models.Model):
+    """
+    Домен или путь, на котором доступен один из фронтов платформы.
+
+    Одна и та же доменная зона может обслуживать публичный фронт и provider
+    admin через разные base_path, например / и /provider-admin/.
+    """
+
+    APP_TYPE_PUBLIC = 'public'
+    APP_TYPE_PROVIDER_ADMIN = 'provider_admin'
+
+    APP_TYPE_CHOICES = [
+        (APP_TYPE_PUBLIC, _('Public frontend')),
+        (APP_TYPE_PROVIDER_ADMIN, _('Provider admin frontend')),
+    ]
+
+    SCHEME_CHOICES = [
+        ('http', 'HTTP'),
+        ('https', 'HTTPS'),
+    ]
+
+    branding = models.ForeignKey(
+        PlatformBrandingSettings,
+        on_delete=models.CASCADE,
+        related_name='domains',
+        verbose_name=_('Branding settings')
+    )
+    app_type = models.CharField(
+        _('App type'),
+        max_length=32,
+        choices=APP_TYPE_CHOICES,
+        default=APP_TYPE_PUBLIC
+    )
+    scheme = models.CharField(
+        _('Scheme'),
+        max_length=8,
+        choices=SCHEME_CHOICES,
+        default='https'
+    )
+    domain = models.CharField(
+        _('Domain'),
+        max_length=253,
+        help_text=_('Domain without scheme or path, for example example.com')
+    )
+    base_path = models.CharField(
+        _('Base path'),
+        max_length=120,
+        default='/',
+        help_text=_('Path where the frontend is mounted')
+    )
+    is_primary = models.BooleanField(
+        _('Is primary'),
+        default=False,
+        help_text=_('Primary domain for this frontend')
+    )
+    is_active = models.BooleanField(
+        _('Is active'),
+        default=True
+    )
+    display_order = models.PositiveIntegerField(
+        _('Display order'),
+        default=0
+    )
+    created_at = models.DateTimeField(_('Created at'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated at'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Platform Branding Domain')
+        verbose_name_plural = _('Platform Branding Domains')
+        db_table = 'platform_branding_domains'
+        ordering = ['app_type', '-is_primary', 'display_order', 'domain']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['branding', 'app_type', 'domain', 'base_path'],
+                name='unique_platform_branding_domain'
+            ),
+            models.UniqueConstraint(
+                fields=['branding', 'app_type'],
+                condition=models.Q(is_primary=True, is_active=True),
+                name='unique_primary_platform_branding_domain'
+            ),
+        ]
+
+    def __str__(self):
+        return self.absolute_url
+
+    @property
+    def normalized_base_path(self):
+        """Возвращает base_path с ведущим и завершающим слешем."""
+        if self.base_path == '/':
+            return '/'
+
+        normalized_path = self.base_path
+        if not normalized_path.startswith('/'):
+            normalized_path = f'/{normalized_path}'
+        if not normalized_path.endswith('/'):
+            normalized_path = f'{normalized_path}/'
+        return normalized_path
+
+    @property
+    def absolute_url(self):
+        """Возвращает полный URL домена фронта."""
+        return f'{self.scheme}://{self.domain}{self.normalized_base_path}'
+
+    def clean(self):
+        """Проверяет формат домена и базового пути."""
+        from django.core.exceptions import ValidationError
+
+        if '://' in self.domain or '/' in self.domain:
+            raise ValidationError({
+                'domain': _('Domain must not contain scheme or path')
+            })
+        if not self.base_path.startswith('/'):
+            raise ValidationError({
+                'base_path': _('Base path must start with a slash')
+            })
+
+    def as_public_dict(self):
+        """Сериализует домен для публичного runtime-конфига фронтов."""
+        return {
+            'app_type': self.app_type,
+            'scheme': self.scheme,
+            'domain': self.domain,
+            'base_path': self.normalized_base_path,
+            'url': self.absolute_url,
+            'is_primary': self.is_primary,
+        }
