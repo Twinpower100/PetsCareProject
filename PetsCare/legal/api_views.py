@@ -473,7 +473,8 @@ class CountryOfferForRegistrationAPIView(APIView):
                     )
             
             # Формируем переменные для подстановки
-            variables = {}
+            from system_settings.branding import get_branding_document_variables
+            variables = get_branding_document_variables()
             if global_offer.billing_config:
                 variables['commission_percent'] = str(global_offer.billing_config.commission_percent)
                 variables['payment_deferral_days'] = str(global_offer.billing_config.payment_deferral_days)
@@ -512,7 +513,7 @@ class CountryOfferForRegistrationAPIView(APIView):
                         addendum_translation = addendum.translations.filter(language='en').first()
                     if not addendum_translation:
                         continue
-                    addendum_variables = {}
+                    addendum_variables = get_branding_document_variables()
                     if addendum.variables:
                         addendum_variables.update(addendum.variables)
                     if addendum.change_notification_days:

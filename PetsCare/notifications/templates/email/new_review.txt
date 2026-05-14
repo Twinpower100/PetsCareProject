@@ -1,3 +1,4 @@
+{% load i18n branding_tags %}{% platform_branding as branding %}
 {% trans "New Review Received" %}
 
 {% trans "Hello" %}, {{ user.first_name|default:user.email }}!
@@ -40,7 +41,6 @@
 {% trans "Reviews help other pet owners make informed decisions. Thank you for providing quality service!" %}
 
 ---
-{% trans "PetCare - Professional Pet Care Services" %}
-{% trans "Email" %}: support@petcare.com
-{% trans "Phone" %}: +1 (555) 123-4567
-{% trans "Website" %}: https://petcare.com 
+{{ branding.product_name }} - {% trans "Professional Pet Care Services" %}
+{% trans "Email" %}: {{ branding.support_email }}
+{% if branding.support_phone %}{% trans "Phone" %}: {{ branding.support_phone }}{% endif %}

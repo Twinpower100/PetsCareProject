@@ -198,8 +198,10 @@ class ChangeEmailAPIView(GenericAPIView):
 
         # Отправляем OTP на новый email
         try:
+            from system_settings.branding import get_platform_branding
+            branding = get_platform_branding()
             send_mail(
-                subject=_('PetCare — Email change verification code'),
+                subject=_('%(brand_name)s — Email change verification code') % {'brand_name': branding.product_name},
                 message=_(
                     'Your verification code: %(otp)s\n\n'
                     'The code is valid for 10 minutes.\n'

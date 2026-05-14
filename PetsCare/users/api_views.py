@@ -1068,15 +1068,17 @@ class ForgotPasswordAPIView(generics.CreateAPIView):
         """
         from django.core.mail import send_mail
         from utils.site_urls import build_public_url
+        from system_settings.branding import get_platform_branding
+        branding = get_platform_branding()
         
         # Создаем ссылку для сброса пароля
         reset_url = build_public_url(f"/reset-password/{reset_token.token}")
         
-        subject = _('Password Reset Request - PetsCare')
+        subject = _('Password Reset Request - %(brand_name)s') % {'brand_name': branding.product_name}
         message = f"""
         Hello {user.first_name or user.email},
         
-        You have requested to reset your password for your PetsCare account.
+        You have requested to reset your password for your {branding.product_name} account.
         
         To reset your password, please click the link below:
         {reset_url}
@@ -1086,7 +1088,7 @@ class ForgotPasswordAPIView(generics.CreateAPIView):
         If you did not request this password reset, please ignore this email.
         
         Best regards,
-        PetsCare Team
+        {branding.product_name} Team
         """
         
         send_mail(

@@ -1,3 +1,4 @@
+{% load i18n branding_tags %}{% platform_branding as branding %}
 {% trans "Pet Sitting Update" %}
 
 {% trans "Hello" %}, {{ user.first_name|default:user.email }}!
@@ -39,10 +40,9 @@
 {% trans "Phone" %}: {{ sitter.phone|default:"Not specified" }}
 {% trans "Email" %}: {{ sitter.email }}
 
-{% trans "If you have any questions, contact PetCare support." %}
+{% blocktrans with brand_name=branding.product_name %}If you have any questions, contact {{ brand_name }} support.{% endblocktrans %}
 
 ---
-{% trans "PetCare - Professional Pet Care Services" %}
-{% trans "Email" %}: support@petcare.com
-{% trans "Phone" %}: +1 (555) 123-4567
-{% trans "Website" %}: https://petcare.com 
+{{ branding.product_name }} - {% trans "Professional Pet Care Services" %}
+{% trans "Email" %}: {{ branding.support_email }}
+{% if branding.support_phone %}{% trans "Phone" %}: {{ branding.support_phone }}{% endif %}

@@ -1,3 +1,4 @@
+{% load i18n branding_tags %}{% platform_branding as branding %}
 {% trans "Service Price Change" %}
 
 {% trans "Hello" %}, {{ user.first_name|default:user.email }}!
@@ -35,12 +36,11 @@
 {% trans "If you have questions about the price change:" %}
 • {% trans "Contact the provider directly" %}: {{ provider.phone|default:"Not specified" }}
 • {% trans "Email the provider" %}: {{ provider.email|default:"Not specified" }}
-• {% trans "Contact PetCare support" %}: support@petcare.com
+• {% blocktrans with brand_name=branding.product_name %}Contact {{ brand_name }} support{% endblocktrans %}: {{ branding.support_email }}
 
-{% trans "Thank you for choosing PetCare for your pet care needs." %}
+{% blocktrans with brand_name=branding.product_name %}Thank you for choosing {{ brand_name }} for your pet care needs.{% endblocktrans %}
 
 ---
-{% trans "PetCare - Professional Pet Care Services" %}
-{% trans "Email" %}: support@petcare.com
-{% trans "Phone" %}: +1 (555) 123-4567
-{% trans "Website" %}: https://petcare.com 
+{{ branding.product_name }} - {% trans "Professional Pet Care Services" %}
+{% trans "Email" %}: {{ branding.support_email }}
+{% if branding.support_phone %}{% trans "Phone" %}: {{ branding.support_phone }}{% endif %}

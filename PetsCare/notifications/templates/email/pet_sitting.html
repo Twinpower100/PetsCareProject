@@ -1,20 +1,21 @@
-{% extends "notifications/templates/email/base.html" %}
+{% extends "email/base.html" %}
+{% load i18n %}
 
 {% block content %}
 <div class="notification-title">{% trans "Pet Sitting Update" %}</div>
 
 <div class="notification-message">
     <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
-    
+
     <p>{% trans "Update regarding your pet sitting request." %}</p>
-    
+
     <div class="pet-info">
         <h3>🐾 {% trans "Pet" %}</h3>
         <p><strong>{% trans "Name" %}:</strong> {{ pet.name }}</p>
         <p><strong>{% trans "Species" %}:</strong> {{ pet.species }}</p>
         <p><strong>{% trans "Breed" %}:</strong> {{ pet.breed|default:"Not specified" }}</p>
     </div>
-    
+
     <div class="booking-details">
         <h3>📋 {% trans "Sitting Details" %}</h3>
         <p><strong>{% trans "Status" %}:</strong> {{ status|title }}</p>
@@ -25,7 +26,7 @@
         <p><strong>{% trans "Address" %}:</strong> {{ address }}</p>
         {% endif %}
     </div>
-    
+
     {% if status == 'confirmed' %}
     <div class="info-box">
         <h3>✅ {% trans "Confirmed!" %}</h3>
@@ -50,23 +51,23 @@
         {% endif %}
     </div>
     {% endif %}
-    
+
     <div style="text-align: center; margin: 30px 0;">
         <a href="{{ sitting_url }}" class="button">{% trans "View Details" %}</a>
         {% if status == 'completed' %}
         <a href="{{ review_url }}" class="button" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); margin-left: 15px;">{% trans "Leave Review" %}</a>
         {% endif %}
     </div>
-    
+
     <div class="info-box">
         <h3>📞 {% trans "Contact Information" %}</h3>
         <p><strong>{% trans "Sitter" %}:</strong> {{ sitter.get_full_name|default:sitter.email }}</p>
         <p><strong>{% trans "Phone" %}:</strong> {{ sitter.phone|default:"Not specified" }}</p>
         <p><strong>{% trans "Email" %}:</strong> {{ sitter.email }}</p>
     </div>
-    
+
     <p style="margin-top: 20px; font-size: 14px; color: #666;">
-        {% trans "If you have any questions, contact PetCare support." %}
+        {% blocktrans with brand_name=branding.product_name %}If you have any questions, contact {{ brand_name }} support.{% endblocktrans %}
     </p>
 </div>
-{% endblock %} 
+{% endblock %}

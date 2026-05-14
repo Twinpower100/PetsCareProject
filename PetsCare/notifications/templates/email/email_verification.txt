@@ -1,8 +1,9 @@
+{% load i18n branding_tags %}{% platform_branding as branding %}
 {% trans "Verify Your Email Address" %}
 
 {% trans "Hello" %}, {{ user.first_name|default:user.email }}!
 
-{% trans "Welcome to PetCare! To complete your registration and activate your account, please verify your email address." %}
+{% blocktrans with brand_name=branding.product_name %}Welcome to {{ brand_name }}! To complete your registration and activate your account, please verify your email address.{% endblocktrans %}
 
 {% trans "Your email" %}: {{ user.email }}
 {% trans "Registration date" %}: {{ user.date_joined|date:"d.m.Y H:i" }}
@@ -12,8 +13,8 @@
 
 {% trans "If the link doesn't work, copy and paste it into your browser." %}
 
-{% trans "The link is valid for 24 hours. If you didn't register for PetCare, simply ignore this email." %}
+{% blocktrans with brand_name=branding.product_name %}The link is valid for 24 hours. If you didn't register for {{ brand_name }}, simply ignore this email.{% endblocktrans %}
 
 ---
-© 2024 PetCare. {% trans "All rights reserved." %}
-{% trans "This is an automatic notification. Please do not reply to this email." %} 
+© 2024 {{ branding.legal_footer_name }}. {% trans "All rights reserved." %}
+{% trans "This is an automatic notification. Please do not reply to this email." %}

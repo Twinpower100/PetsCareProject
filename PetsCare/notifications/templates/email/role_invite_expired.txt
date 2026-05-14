@@ -1,3 +1,4 @@
+{% load i18n branding_tags %}{% platform_branding as branding %}
 {% trans "Role Invitation Expired" %}
 
 {% trans "Hello" %}, {{ user.first_name|default:user.email }}!
@@ -28,10 +29,9 @@
 {% trans "Email" %}: {{ invitee.email }}
 {% if invitee.phone %}{% trans "Phone" %}: {{ invitee.phone }}{% endif %}
 
-{% trans "If you need help managing roles and invitations, contact PetCare support." %}
+{% blocktrans with brand_name=branding.product_name %}If you need help managing roles and invitations, contact {{ brand_name }} support.{% endblocktrans %}
 
 ---
-{% trans "PetCare - Professional Pet Care Services" %}
-{% trans "Email" %}: support@petcare.com
-{% trans "Phone" %}: +1 (555) 123-4567
-{% trans "Website" %}: https://petcare.com 
+{{ branding.product_name }} - {% trans "Professional Pet Care Services" %}
+{% trans "Email" %}: {{ branding.support_email }}
+{% if branding.support_phone %}{% trans "Phone" %}: {{ branding.support_phone }}{% endif %}

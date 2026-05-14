@@ -7,6 +7,7 @@ from rest_framework import serializers
 
 from .models import EmailVerificationToken, User
 from utils.site_urls import build_public_url
+from system_settings.branding import get_platform_branding
 
 
 def _build_verification_url(token: str) -> str:
@@ -33,20 +34,21 @@ def send_email_verification_message(verification_token_id: int) -> None:
     user_lang = verification_token.user.preferred_language or 'en'
     
     with translation.override(user_lang):
+        branding = get_platform_branding()
         verification_url = _build_verification_url(verification_token.token)
         subject = _('Verify your email address')
         message = _(
-            'Welcome to PetCare.\n\n'
+            'Welcome to {brand_name}.\n\n'
             'Please verify your email address to continue using owner actions:\n'
             '{verification_url}\n\n'
             'If you did not create this account, you can ignore this email.'
-        ).format(verification_url=verification_url)
+        ).format(brand_name=branding.product_name, verification_url=verification_url)
         html_message = _(
-            '<p>Welcome to PetCare.</p>'
+            '<p>Welcome to {brand_name}.</p>'
             '<p>Please verify your email address to continue using owner actions.</p>'
             '<p><a href="{verification_url}">{verification_url}</a></p>'
             '<p>If you did not create this account, you can ignore this email.</p>'
-        ).format(verification_url=verification_url)
+        ).format(brand_name=branding.product_name, verification_url=verification_url)
 
         send_mail(
             subject=str(subject),

@@ -1,13 +1,14 @@
-{% extends "notifications/templates/email/base.html" %}
+{% extends "email/base.html" %}
+{% load i18n %}
 
 {% block content %}
 <div class="notification-title">{% trans "Booking Reminder" %}</div>
 
 <div class="notification-message">
     <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
-    
+
     <p>{% trans "Reminder about your upcoming visit to" %} <strong>{{ provider.name }}</strong>.</p>
-    
+
     <div class="booking-details">
         <h3>📅 {% trans "Your Booking" %}</h3>
         <p><strong>{% trans "Service" %}:</strong> {{ service.name }}</p>
@@ -15,7 +16,7 @@
         <p><strong>{% trans "Duration" %}:</strong> {{ service.duration }} {% trans "minutes" %}</p>
         <p><strong>{% trans "Address" %}:</strong> {{ provider.structured_address.formatted_address|default:provider.structured_address }}</p>
     </div>
-    
+
     {% if pet %}
     <div class="pet-info">
         <h3>🐾 {% trans "Pet" %}</h3>
@@ -23,17 +24,17 @@
         <p><strong>{% trans "Species" %}:</strong> {{ pet.species }}</p>
     </div>
     {% endif %}
-    
+
     <div style="text-align: center; margin: 30px 0;">
         <a href="{{ booking_url }}" class="button">{% trans "View Details" %}</a>
         <a href="{{ cancel_url }}" class="button" style="background: linear-gradient(135deg, #dc3545 0%, #e74c3c 100%); margin-left: 15px;">{% trans "Cancel Booking" %}</a>
     </div>
-    
+
     <div class="info-box">
         <h3>⏰ {% trans "Time until appointment" %}: {{ time_until }}</h3>
         <p>{% trans "Make sure you have everything needed for the visit." %}</p>
     </div>
-    
+
     <div class="info-box">
         <h3>📋 {% trans "Preparing for the visit" %}</h3>
         <p>• {% trans "Pet's veterinary passport" %}</p>
@@ -42,15 +43,15 @@
         <p>• {% trans "Leash and muzzle (if required)" %}</p>
         <p>• {% trans "Arrive 5-10 minutes before the scheduled time" %}</p>
     </div>
-    
+
     <p style="margin-top: 20px; font-size: 14px; color: #666;">
         <strong>{% trans "Contact information" %}:</strong><br>
         {% trans "Phone" %}: {{ provider.phone_number|default:"Not specified" }}<br>
         {% trans "Email" %}: {{ provider.email|default:"Not specified" }}
     </p>
-    
+
     <p style="margin-top: 20px; font-size: 14px; color: #666;">
         {% trans "If you have questions or need to change the time, contact us as soon as possible." %}
     </p>
 </div>
-{% endblock %} 
+{% endblock %}

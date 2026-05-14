@@ -216,7 +216,9 @@ class DocumentGeneratorService:
         2. BillingConfig из документа
         3. Значения по умолчанию
         """
-        variables = {}
+        from system_settings.branding import get_branding_document_variables
+
+        variables = get_branding_document_variables()
         
         # Базовые переменные из BillingConfig документа
         if document.billing_config:

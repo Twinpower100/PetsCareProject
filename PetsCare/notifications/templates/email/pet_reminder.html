@@ -1,20 +1,21 @@
-{% extends "notifications/templates/email/base.html" %}
+{% extends "email/base.html" %}
+{% load i18n %}
 
 {% block content %}
 <div class="notification-title">{% trans "Pet Reminder" %}</div>
 
 <div class="notification-message">
     <p>{% trans "Hello" %}, {{ user.first_name|default:user.email }}!</p>
-    
+
     <p>{% trans "Reminder about an important procedure for your pet." %}</p>
-    
+
     <div class="pet-info">
         <h3>🐾 {% trans "Pet" %}</h3>
         <p><strong>{% trans "Name" %}:</strong> {{ pet.name }}</p>
         <p><strong>{% trans "Species" %}:</strong> {{ pet.species }}</p>
         <p><strong>{% trans "Breed" %}:</strong> {{ pet.breed|default:"Not specified" }}</p>
     </div>
-    
+
     <div class="booking-details">
         <h3>📋 {% trans "Procedure" %}</h3>
         <p><strong>{% trans "Name" %}:</strong> {{ reminder.title }}</p>
@@ -25,11 +26,11 @@
         <p><strong>{% trans "Interval" %}:</strong> {{ reminder.interval_days }} {% trans "days" %}</p>
         {% endif %}
     </div>
-    
+
     <div style="text-align: center; margin: 30px 0;">
         <a href="{{ booking_url }}" class="button">{% trans "Book Appointment" %}</a>
     </div>
-    
+
     <div class="info-box">
         <h3>💡 {% trans "Importance of the procedure" %}</h3>
         {% if reminder.procedure_type == 'mandatory' %}
@@ -38,17 +39,17 @@
         <p>{% trans "This is a recommended procedure to maintain your pet's health and well-being." %}</p>
         {% endif %}
     </div>
-    
+
     <div class="info-box">
         <h3>🏥 {% trans "Find a veterinarian" %}</h3>
-        <p>{% trans "You can find nearby veterinarians in your area through the PetCare app." %}</p>
+        <p>{% blocktrans with brand_name=branding.product_name %}You can find nearby veterinarians in your area through the {{ brand_name }} app.{% endblocktrans %}</p>
         <p>• {% trans "View ratings and reviews" %}</p>
         <p>• {% trans "Book convenient time" %}</p>
         <p>• {% trans "Online consultations" %}</p>
     </div>
-    
+
     <p style="margin-top: 20px; font-size: 14px; color: #666;">
         {% trans "If you have questions about the procedure, consult with a veterinarian." %}
     </p>
 </div>
-{% endblock %} 
+{% endblock %}
