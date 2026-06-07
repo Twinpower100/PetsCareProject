@@ -101,7 +101,7 @@ class ProviderBlockingMiddleware(MiddlewareMixin):
             except (Provider.DoesNotExist, ValueError, TypeError):
                 return None
 
-        if request.user.is_authenticated:
+        if request.user.is_authenticated and self._uses_authenticated_provider_context(request):
             managed_provider = request.user.get_managed_providers().order_by('id').first()
             if managed_provider is not None:
                 return managed_provider
@@ -114,6 +114,21 @@ class ProviderBlockingMiddleware(MiddlewareMixin):
                 return employee_provider.provider
 
         return None
+
+    def _uses_authenticated_provider_context(self, request) -> bool:
+        """
+        Определяет запросы кабинета провайдера, где провайдера можно брать из роли
+        текущего пользователя. Публичный сайт и личные owner/sitter endpoint не должны
+        блокироваться только потому, что у пользователя есть provider-роль.
+        """
+        normalized_path = (request.path or '').rstrip('/')
+        return (
+            normalized_path in {'/api/v1/profile', '/api/v1/user-roles'}
+            or normalized_path == '/api/v1/providers'
+            or normalized_path.startswith('/api/v1/provider-locations')
+            or normalized_path.startswith('/api/v1/invoices')
+            or normalized_path.endswith('/my-permissions')
+        )
 
     def _extract_provider_id_from_path(self, path):
         """
