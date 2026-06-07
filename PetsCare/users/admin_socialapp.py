@@ -1,7 +1,7 @@
 """
 Настройка админки для SocialApp (django-allauth).
 
-Ограничивает доступ к SocialApp/SocialAccount внутренним администраторам.
+Ограничивает доступ к SocialApp внутренним администраторам.
 """
 from django.contrib import admin
 from allauth.socialaccount.models import SocialApp, SocialAccount, SocialToken
@@ -88,31 +88,6 @@ class SocialAppAdmin(admin.ModelAdmin):
         return _is_internal_admin(request.user)
 
 
-class SocialAccountAdmin(admin.ModelAdmin):
-    """
-    Админка для SocialAccount с доступом для внутренних администраторов.
-    """
-    list_display = ('user', 'provider', 'uid', 'date_joined')
-    list_filter = ('provider', 'date_joined')
-    search_fields = ('user__email', 'user__username', 'uid')
-    readonly_fields = ('date_joined', 'last_login')
-    
-    def has_module_permission(self, request):
-        return _is_internal_admin(request.user)
-    
-    def has_view_permission(self, request, obj=None):
-        return _is_internal_admin(request.user)
-    
-    def has_add_permission(self, request):
-        return False
-    
-    def has_change_permission(self, request, obj=None):
-        return False
-    
-    def has_delete_permission(self, request, obj=None):
-        return getattr(request.user, 'is_superuser', False)
-
-
 class SocialTokenAdmin(admin.ModelAdmin):
     """
     Админка для SocialToken с ограничением доступа только для суперпользователей.
@@ -176,8 +151,7 @@ except admin.sites.NotRegistered:
 # Регистрируем наш кастомный админ с доступом для внутренних администраторов.
 # В кастомной админке, которая используется в проекте
 custom_admin_site.register(SocialApp, SocialAppAdmin)
-# SocialAccount нужен для диагностики связки Google-аккаунтов с пользователями.
-custom_admin_site.register(SocialAccount, SocialAccountAdmin)
+# SocialAccount не регистрируем: фронтовый Google auth не пишет в эту таблицу.
 # SocialToken не регистрируем: он содержит OAuth-токены.
 # custom_admin_site.register(SocialToken, SocialTokenAdmin)
 
