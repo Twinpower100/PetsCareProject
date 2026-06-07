@@ -18,9 +18,11 @@ from .services import MultiLevelBlockingService
 logger = logging.getLogger(__name__)
 PROVIDER_PATH_RE = re.compile(r'^/api/v1/providers/(?P<provider_id>\d+)(?:/|$)')
 BLOCKING_SKIP_PREFIXES = (
+    '/admin',
+    '/accounts',
+    '/api/v1/branding',
     '/api/v1/login',
     '/api/v1/token',
-    '/admin/login',
 )
 
 

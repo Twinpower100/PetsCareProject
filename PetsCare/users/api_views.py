@@ -93,6 +93,7 @@ class UserRegistrationAPIView(generics.CreateAPIView):
     """
     serializer_class = UserRegistrationSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = ()
     
     def create(self, request, *args, **kwargs):
         """
@@ -116,6 +117,7 @@ class UserLoginAPIView(TokenObtainPairView):
     Класс для аутентификации пользователя и получения JWT-токенов.
     """
     permission_classes = [permissions.AllowAny]
+    authentication_classes = ()
     
     def post(self, request, *args, **kwargs):
         """
@@ -156,6 +158,7 @@ class GoogleAuthAPIView(generics.CreateAPIView):
     """
     serializer_class = GoogleAuthSerializer
     permission_classes = [permissions.AllowAny]
+    authentication_classes = ()
 
     def create(self, request, *args, **kwargs):
         """
@@ -240,6 +243,7 @@ class GoogleSignupCompleteAPIView(APIView):
     Завершает Google-регистрацию после ручного ввода обязательного телефона.
     """
     permission_classes = [permissions.AllowAny]
+    authentication_classes = ()
 
     def post(self, request):
         serializer = GoogleSignupCompleteSerializer(data=request.data)

@@ -100,6 +100,19 @@ class CustomSocialAccountAdapter(DefaultSocialAccountAdapter):
         from allauth.socialaccount.models import SocialApp
         from django.contrib.sites.models import Site
         
+        # allauth may resolve the provider during callback without a request.
+        # In this project only the Django admin uses the allauth OAuth flow;
+        # the frontend API reads "PetsCare Frontend" directly in GoogleAuthSerializer.
+        if request is None and provider == 'google':
+            try:
+                return SocialApp.objects.get(
+                    provider='google',
+                    name='PetsCare Admin'
+                )
+            except SocialApp.DoesNotExist:
+                logger.error("SocialApp 'PetsCare Admin' not found in database")
+                return super().get_app(request, provider)
+
         # Проверяем, что request не None
         if request is None:
             # Это нормальная ситуация в некоторых случаях (например, при инициализации)

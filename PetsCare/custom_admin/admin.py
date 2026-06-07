@@ -10,22 +10,24 @@ class CustomAdminSite(AdminSite):
     site_header = _("PetsCare Administration")
     site_title = _("PetsCare Admin")
     index_title = _("Welcome to PetsCare Admin - Custom User & Role Management")
+    admin_access_roles = ('system_admin', 'billing_manager')
 
-    def _is_system_admin(self, user):
-        """Проверка системного администратора (поддержка/админы проекта). Доступ в Django admin только у них и суперпользователей."""
+    def _has_admin_access_role(self, user):
+        """Проверка внутренних ролей сервиса, которым разрешен вход в Django admin."""
         from django.contrib.auth.models import AnonymousUser
         if isinstance(user, AnonymousUser):
             return False
         try:
-            return getattr(user, 'is_system_admin', None) and callable(user.is_system_admin) and user.is_system_admin()
+            has_role = getattr(user, 'has_role', None)
+            return callable(has_role) and any(has_role(role) for role in self.admin_access_roles)
         except (AttributeError, TypeError):
             return False
 
     def has_permission(self, request):
         """
         Проверяет права доступа к админке Django (MVP: только персонал проекта).
-        Доступ только у is_superuser или system_admin (поддержка и админы проекта).
-        Биллинг-менеджеры, администраторы и персонал провайдеров в Django admin не входят.
+        Доступ только у is_superuser или внутренних ролей сервиса.
+        Персонал провайдеров в Django admin не входит.
         """
         from django.contrib.auth.models import AnonymousUser
         if isinstance(request.user, AnonymousUser):
@@ -40,14 +42,14 @@ class CustomAdminSite(AdminSite):
                 return True
         except (AttributeError, TypeError):
             pass
-        if self._is_system_admin(request.user):
+        if self._has_admin_access_role(request.user):
             return True
         return False
     
     def has_module_permission(self, request):
         """
-        Доступ к модулям только у is_superuser или system_admin.
-        Биллинг-менеджеры, админы и персонал провайдеров не входят.
+        Доступ к модулям только у is_superuser или внутренних ролей сервиса.
+        Персонал провайдеров не входит.
         """
         return self.has_permission(request)
 

@@ -1,11 +1,21 @@
 """
 Настройка админки для SocialApp (django-allauth).
 
-Ограничивает доступ к SocialApp только суперпользователям.
+Ограничивает доступ к SocialApp/SocialAccount внутренним администраторам.
 """
 from django.contrib import admin
 from allauth.socialaccount.models import SocialApp, SocialAccount, SocialToken
 from django.utils.translation import gettext_lazy as _
+
+
+def _is_internal_admin(user):
+    if getattr(user, 'is_superuser', False):
+        return True
+    has_role = getattr(user, 'has_role', None)
+    return callable(has_role) and any(
+        has_role(role)
+        for role in ('system_admin', 'billing_manager')
+    )
 
 
 class SocialAppAdmin(admin.ModelAdmin):
@@ -63,29 +73,24 @@ class SocialAppAdmin(admin.ModelAdmin):
     get_sites.short_description = _('Sites')
     
     def has_module_permission(self, request):
-        """Только суперпользователь может видеть SocialApp."""
-        return request.user.is_superuser
+        return _is_internal_admin(request.user)
     
     def has_view_permission(self, request, obj=None):
-        """Только суперпользователь может просматривать SocialApp."""
-        return request.user.is_superuser
+        return _is_internal_admin(request.user)
     
     def has_add_permission(self, request):
-        """Только суперпользователь может создавать SocialApp."""
-        return request.user.is_superuser
+        return _is_internal_admin(request.user)
     
     def has_change_permission(self, request, obj=None):
-        """Только суперпользователь может изменять SocialApp."""
-        return request.user.is_superuser
+        return _is_internal_admin(request.user)
     
     def has_delete_permission(self, request, obj=None):
-        """Только суперпользователь может удалять SocialApp."""
-        return request.user.is_superuser
+        return _is_internal_admin(request.user)
 
 
 class SocialAccountAdmin(admin.ModelAdmin):
     """
-    Админка для SocialAccount с ограничением доступа только для суперпользователей.
+    Админка для SocialAccount с доступом для внутренних администраторов.
     """
     list_display = ('user', 'provider', 'uid', 'date_joined')
     list_filter = ('provider', 'date_joined')
@@ -93,24 +98,19 @@ class SocialAccountAdmin(admin.ModelAdmin):
     readonly_fields = ('date_joined', 'last_login')
     
     def has_module_permission(self, request):
-        """Только суперпользователь может видеть SocialAccount."""
-        return request.user.is_superuser
+        return _is_internal_admin(request.user)
     
     def has_view_permission(self, request, obj=None):
-        """Только суперпользователь может просматривать SocialAccount."""
-        return request.user.is_superuser
+        return _is_internal_admin(request.user)
     
     def has_add_permission(self, request):
-        """Только суперпользователь может создавать SocialAccount."""
-        return request.user.is_superuser
+        return False
     
     def has_change_permission(self, request, obj=None):
-        """Только суперпользователь может изменять SocialAccount."""
-        return request.user.is_superuser
+        return False
     
     def has_delete_permission(self, request, obj=None):
-        """Только суперпользователь может удалять SocialAccount."""
-        return request.user.is_superuser
+        return getattr(request.user, 'is_superuser', False)
 
 
 class SocialTokenAdmin(admin.ModelAdmin):
@@ -173,12 +173,12 @@ except admin.sites.NotRegistered:
     # Модели еще не зарегистрированы - это нормально
     pass
 
-# Регистрируем наш кастомный админ с ограничением доступа только для суперпользователей
+# Регистрируем наш кастомный админ с доступом для внутренних администраторов.
 # В кастомной админке, которая используется в проекте
 custom_admin_site.register(SocialApp, SocialAppAdmin)
-# SocialAccount и SocialToken не регистрируем - они используются только внутри django-allauth
-# и не нужны для просмотра в админке
-# custom_admin_site.register(SocialAccount, SocialAccountAdmin)
+# SocialAccount нужен для диагностики связки Google-аккаунтов с пользователями.
+custom_admin_site.register(SocialAccount, SocialAccountAdmin)
+# SocialToken не регистрируем: он содержит OAuth-токены.
 # custom_admin_site.register(SocialToken, SocialTokenAdmin)
 
 # Скрываем отдельный раздел Sites из админки.
