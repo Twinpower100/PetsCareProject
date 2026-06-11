@@ -412,11 +412,12 @@ class ProviderFormAdmin(admin.ModelAdmin):
     Админка для форм учреждений.
     """
     inlines = [ProviderFormDocumentInline]
-    list_display = ('provider_name', 'status', 'get_created_by', 'created_at', 'get_selected_categories', 'has_documents')
-    list_filter = ('status', 'selected_categories')
-    search_fields = ('provider_name', 'provider_address', 'owner_email', 'provider_manager_email', 'admin_email', 'created_by__email', 'created_by__first_name', 'created_by__last_name')
+    list_display = ('provider_name', 'status', 'country', 'organization_type', 'get_created_by', 'created_at', 'get_selected_categories', 'has_documents')
+    list_filter = ('status', 'country', 'organization_type', 'selected_categories')
+    search_fields = ('provider_name', 'provider_address', 'owner_email', 'provider_manager_email', 'admin_email', 'created_by__email', 'created_by__first_name', 'created_by__last_name', 'organization_type__code', 'organization_type__name_en')
     readonly_fields = ('created_at', 'updated_at', 'approved_at', 'approved_by', 'created_by')
     filter_horizontal = ('selected_categories',)
+    autocomplete_fields = ('organization_type',)
     actions = ['approve_and_assign_billing_manager', 'reset_to_pending']
     change_form_template = 'admin/users/providerform/change_form.html'
     
@@ -469,6 +470,23 @@ class ProviderFormAdmin(admin.ModelAdmin):
                 'documents',
             ),
             'description': _('Documents are required only if the institution provides services that require licensing or certification')
+        }),
+        (_('Legal Requisites'), {
+            'fields': (
+                'country',
+                'organization_type',
+                'tax_id',
+                'registration_number',
+                'invoice_currency',
+                'director_name',
+                'is_vat_payer',
+                'vat_number',
+                'kpp',
+                'iban',
+                'swift_bic',
+                'bank_name',
+            ),
+            'description': _('Legal and billing details submitted by the provider.')
         }),
         (_('Status'), {
             'fields': (

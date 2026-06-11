@@ -25,13 +25,14 @@ from .serializers import (
     ProviderRegistrationStep2Serializer,
     ProviderRegistrationStep3Serializer,
     ProviderRegistrationStep4Serializer,
-    ProviderRegistrationWizardSerializer
+    ProviderRegistrationWizardSerializer,
+    resolve_ownership_form,
 )
 from google.oauth2 import id_token
 from google.auth.transport import requests
 from django.conf import settings
 from .models import UserType, ProviderForm, EmployeeSpecialization, PasswordResetToken
-from providers.models import EmployeeProvider
+from providers.models import EmployeeProvider, OwnershipForm
 from rest_framework.views import APIView
 from django.shortcuts import get_object_or_404
 from django.utils.translation import gettext_lazy as _
@@ -1743,6 +1744,36 @@ class ProviderRegistrationStep2HintsAPIView(APIView):
         return Response(hints)
 
 
+class ProviderRegistrationOwnershipFormsAPIView(APIView):
+    """
+    Список активных форм собственности для выбранной страны.
+    GET /api/v1/provider-registration/ownership-forms/?country=DE&lang=de
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        country = (request.query_params.get('country') or '').strip().upper()[:2]
+        if not country:
+            return Response(
+                {'detail': _('Country is required')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        language = (request.query_params.get('lang') or request.META.get('HTTP_ACCEPT_LANGUAGE', '')[:2] or 'en').split('-')[0]
+        ownership_forms = OwnershipForm.objects.filter(
+            country=country,
+            is_active=True,
+        ).order_by('sort_order', 'code')
+        return Response([
+            {
+                'id': ownership_form.id,
+                'country': str(ownership_form.country),
+                'code': ownership_form.code,
+                'name': ownership_form.get_name(language),
+            }
+            for ownership_form in ownership_forms
+        ])
+
+
 class ProviderRegistrationStep3HintsAPIView(APIView):
     """
     Подсказки и плейсхолдеры для полей шага 3 (реквизиты).
@@ -1797,6 +1828,14 @@ class ProviderRegistrationStep3ValidateAPIView(APIView):
 
         is_vat_payer = data.get('is_vat_payer', False)
         organization_type = (data.get('organization_type') or '').strip()
+        try:
+            resolve_ownership_form(country, organization_type)
+        except ValidationError as exc:
+            detail = getattr(exc, 'detail', None)
+            if isinstance(detail, dict) and detail.get('organization_type'):
+                errors['organization_type'] = detail['organization_type'][0]
+            else:
+                errors['organization_type'] = _('Organization type is not available for the selected country')
 
         # Проверка максимальных длин
         for field_name, max_len in STEP3_FIELD_MAX_LENGTHS.items():
@@ -2178,6 +2217,7 @@ class ProviderRegistrationWizardAPIView(APIView):
         
         # Получаем результат проверки VAT ID из контекста сериализатора
         vat_verification_result = serializer.context.get('vat_verification_result')
+        ownership_form = resolve_ownership_form(data['country'], data.get('organization_type'))
         
         # Определяем статус проверки VAT ID
         vat_verification_status = 'pending'
@@ -2210,7 +2250,7 @@ class ProviderRegistrationWizardAPIView(APIView):
             tax_id=data.get('tax_id', ''),
             registration_number=data.get('registration_number', ''),
             invoice_currency=currency,
-            organization_type=data.get('organization_type', ''),
+            organization_type=ownership_form,
             is_vat_payer=data['is_vat_payer'],
             vat_number=data.get('vat_number', ''),
             kpp=data.get('kpp', ''),

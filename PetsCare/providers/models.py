@@ -82,6 +82,64 @@ class ProviderLifecycleSettings(models.Model):
         return settings_obj
 
 
+class OwnershipForm(models.Model):
+    """
+    Справочник форм собственности для страны регистрации.
+
+    Код хранится как стабильное значение API, локализованные названия используются
+    для вывода в интерфейсах на поддерживаемых языках.
+    """
+
+    country = CountryField(
+        _('Country'),
+        db_index=True,
+        help_text=_('Country where this ownership form can be used.'),
+    )
+    code = models.CharField(
+        _('Code'),
+        max_length=50,
+        help_text=_('Stable ownership form code submitted by the frontend.'),
+    )
+    name_en = models.CharField(_('Name EN'), max_length=120)
+    name_ru = models.CharField(_('Name RU'), max_length=120)
+    name_de = models.CharField(_('Name DE'), max_length=120)
+    name_me = models.CharField(_('Name ME'), max_length=120)
+    is_active = models.BooleanField(
+        _('Is Active'),
+        default=True,
+        db_index=True,
+        help_text=_('Inactive forms stay available for historical records but are hidden from registration.'),
+    )
+    sort_order = models.PositiveIntegerField(_('Sort Order'), default=100)
+    created_at = models.DateTimeField(_('Created At'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('Updated At'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('Ownership Form')
+        verbose_name_plural = _('Ownership Forms')
+        ordering = ['country', 'sort_order', 'code']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['country', 'code'],
+                name='providers_ownershipform_country_code_uniq',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['country', 'is_active', 'sort_order']),
+        ]
+
+    def __str__(self):
+        return f'{self.country} - {self.code}'
+
+    def get_name(self, language_code='en'):
+        """
+        Возвращает название формы собственности на выбранном языке.
+        """
+        language = (language_code or 'en').split('-')[0].lower()
+        field_name = f'name_{language}' if language in {'en', 'ru', 'de', 'me'} else 'name_en'
+        return getattr(self, field_name, None) or self.name_en or self.code
+
+
 class Provider(models.Model):
     """
     Модель организации (Provider) - юридическое лицо, предоставляющее услуги.
@@ -319,11 +377,14 @@ class Provider(models.Model):
         db_index=True,
         help_text=_('Automatically set based on country. True if country is in EU. Used for filtering and VAT requirements.')
     )
-    organization_type = models.CharField(
-        _('Organization Type'),
-        max_length=50,
+    organization_type = models.ForeignKey(
+        OwnershipForm,
+        on_delete=models.PROTECT,
+        null=True,
         blank=True,
-        help_text=_('Type of organization: SP, OOO, Corp, LLC, etc.')
+        related_name='providers',
+        verbose_name=_('Ownership Form'),
+        help_text=_('Legal ownership form of the organization.')
     )
     director_name = models.CharField(
         _('Director Name'),
@@ -734,6 +795,14 @@ class Provider(models.Model):
             if not self.registration_number or not self.registration_number.strip():
                 raise ValidationError({
                     'registration_number': _('Registration number is required for providers with status "activation_required" or "active".')
+                })
+            if not self.organization_type_id:
+                raise ValidationError({
+                    'organization_type': _('Organization type is required for providers with status "activation_required" or "active".')
+                })
+            if self.organization_type and self.country and str(self.organization_type.country) != str(self.country):
+                raise ValidationError({
+                    'organization_type': _('Organization type is not available for the selected country')
                 })
             
             # Проверка VAT ID для стран ЕС (если провайдер - плательщик НДС)

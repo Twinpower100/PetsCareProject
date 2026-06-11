@@ -26,7 +26,49 @@ from .models import EmailVerificationToken, User, UserType, ProviderForm
 from .serializers import UserRegistrationSerializer, ProviderAdminRegistrationSerializer, UserSerializer
 from rest_framework.test import APITestCase, APIClient
 from rest_framework import status
-from providers.models import Provider
+from providers.models import OwnershipForm, Provider
+
+
+class ProviderRegistrationOwnershipFormsAPITest(APITestCase):
+    """
+    Тесты публичного справочника форм собственности для мастера регистрации.
+    """
+
+    def test_filters_ownership_forms_by_country_and_language(self):
+        """Проверяет фильтрацию по стране и наличие немецкой формы mbH."""
+        response = self.client.get('/api/v1/provider-registration/ownership-forms/?country=DE&lang=de')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        codes = [item['code'] for item in response.data]
+        self.assertIn('GmbH', codes)
+        self.assertIn('mbH', codes)
+        self.assertNotIn('ООО', codes)
+        mbh_item = next(item for item in response.data if item['code'] == 'mbH')
+        self.assertEqual(mbh_item['name'], 'mit beschränkter Haftung')
+
+    def test_requires_country(self):
+        """Проверяет обязательность страны для справочника."""
+        response = self.client.get('/api/v1/provider-registration/ownership-forms/')
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_inactive_forms_are_hidden(self):
+        """Проверяет, что неактивные формы не попадают в мастер регистрации."""
+        OwnershipForm.objects.create(
+            country='DE',
+            code='TEST',
+            name_en='Hidden test form',
+            name_ru='Hidden test form',
+            name_de='Hidden test form',
+            name_me='Hidden test form',
+            is_active=False,
+            sort_order=1,
+        )
+
+        response = self.client.get('/api/v1/provider-registration/ownership-forms/?country=DE&lang=en')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn('TEST', [item['code'] for item in response.data])
 
 
 class UserModelTest(TestCase):

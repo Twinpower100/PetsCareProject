@@ -431,7 +431,7 @@ def create_provider_on_approval(sender, instance, created, **kwargs):
                         country=instance.country,
                         invoice_currency=instance.invoice_currency,
                         # Дополнительные реквизиты
-                        organization_type=instance.organization_type or '',
+                        organization_type=instance.organization_type,
                         director_name=instance.director_name or '',
                         kpp=instance.kpp or '',
                         is_vat_payer=instance.is_vat_payer or False,

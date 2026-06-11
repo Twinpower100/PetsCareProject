@@ -77,6 +77,7 @@ urlpatterns = [
     
     # Provider registration wizard endpoints
     path('provider-registration/has-application/', api_views.ProviderRegistrationHasApplicationAPIView.as_view(), name='provider-registration-has-application'),
+    path('provider-registration/ownership-forms/', api_views.ProviderRegistrationOwnershipFormsAPIView.as_view(), name='provider-registration-ownership-forms'),
     path('provider-registration/step2-hints/', api_views.ProviderRegistrationStep2HintsAPIView.as_view(), name='provider-registration-step2-hints'),
     path('provider-registration/step3-hints/', api_views.ProviderRegistrationStep3HintsAPIView.as_view(), name='provider-registration-step3-hints'),
     path('provider-registration/step3-validate/', api_views.ProviderRegistrationStep3ValidateAPIView.as_view(), name='provider-registration-step3-validate'),

@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.contrib.admin import widgets as admin_widgets
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
-from .models import Provider, Employee, Schedule, SchedulePattern, PatternDay, EmployeeWorkSlot, EmployeeProvider, LocationSchedule, HolidayShift, ProviderLocation, ProviderLocationService, EmployeeLocationService, ProviderRole, ProviderResource, ProviderRolePermission, ProviderLifecycleSettings, ProviderLifecycleEvent
+from .models import Provider, Employee, Schedule, SchedulePattern, PatternDay, EmployeeWorkSlot, EmployeeProvider, LocationSchedule, HolidayShift, ProviderLocation, ProviderLocationService, EmployeeLocationService, ProviderRole, ProviderResource, ProviderRolePermission, ProviderLifecycleSettings, ProviderLifecycleEvent, OwnershipForm
 from django import forms
 from django.shortcuts import render, redirect
 from django.urls import path, reverse
@@ -91,6 +91,16 @@ class ScheduleInline(admin.TabularInline):
     verbose_name_plural = _('Schedules')
 
 
+class OwnershipFormAdmin(admin.ModelAdmin):
+    """
+    Админка справочника форм собственности по странам.
+    """
+    list_display = ('country', 'code', 'name_en', 'name_ru', 'name_de', 'name_me', 'is_active', 'sort_order')
+    list_filter = ('country', 'is_active')
+    search_fields = ('code', 'name_en', 'name_ru', 'name_de', 'name_me')
+    ordering = ('country', 'sort_order', 'code')
+
+
 class PatternDayInline(admin.TabularInline):
     model = PatternDay
     extra = 1
@@ -103,8 +113,8 @@ class ProviderAdmin(admin.ModelAdmin):
     Админка провайдеров с управлением реквизитами и биллинговыми действиями.
     """
     list_display = ('name', 'email', 'phone_number', 'get_address', 'activation_status', 'is_active', 'get_application_categories', 'created_at')
-    list_filter = ('activation_status', 'is_active', 'created_at', 'vat_verification_status')
-    search_fields = ('name', 'email', 'phone_number', 'tax_id', 'registration_number', 'vat_number')
+    list_filter = ('activation_status', 'is_active', 'created_at', 'vat_verification_status', 'country', 'organization_type')
+    search_fields = ('name', 'email', 'phone_number', 'tax_id', 'registration_number', 'vat_number', 'organization_type__code', 'organization_type__name_en')
     readonly_fields = ('created_at', 'updated_at', 'get_application_categories', 'get_address', 'vat_verification_status_display', 'vat_verification_result_display', 'vat_verification_date', 'vat_verification_manual_by', 'vat_verification_manual_at')
     filter_horizontal = ('available_category_levels',)
     actions = ['check_vat_id_selected', 'generate_invoices_for_period']
@@ -411,7 +421,7 @@ class ProviderAdmin(admin.ModelAdmin):
         """
         Оптимизированный запрос с предзагрузкой связанных данных.
         """
-        queryset = super().get_queryset(request).prefetch_related('available_category_levels').select_related('structured_address')
+        queryset = super().get_queryset(request).prefetch_related('available_category_levels').select_related('structured_address', 'organization_type')
         
         # Биллинг-менеджер видит только назначенных провайдеров через BillingManagerProvider
         if _has_role(request.user, 'billing_manager'):
@@ -1487,6 +1497,7 @@ class ProviderLifecycleEventAdmin(admin.ModelAdmin):
     )
 
 
+custom_admin_site.register(OwnershipForm, OwnershipFormAdmin)
 custom_admin_site.register(Provider, ProviderAdmin)
 custom_admin_site.register(Employee, EmployeeAdmin)
 custom_admin_site.register(Schedule, ScheduleAdmin)

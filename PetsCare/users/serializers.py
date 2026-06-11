@@ -9,10 +9,52 @@ from .requisite_normalize import (
 )
 from django.utils.translation import gettext_lazy as _
 from django.core import signing
-from providers.models import Provider  # noqa: F401
+from providers.models import OwnershipForm, Provider  # noqa: F401
 from django.utils import timezone
 import re
 from .google_signup import load_pending_google_signup_token
+
+
+def _country_code(country):
+    """
+    Возвращает ISO-код страны из строки или django-countries Country.
+    """
+    if not country:
+        return ''
+    return (getattr(country, 'code', None) or str(country)).strip().upper()[:2]
+
+
+def resolve_ownership_form(country, code):
+    """
+    Находит активную форму собственности по стране и коду из API.
+    """
+    country_code = _country_code(country)
+    code_clean = (code or '').strip()
+    if not country_code:
+        raise serializers.ValidationError({'country': _('Country is required')})
+    if not code_clean:
+        raise serializers.ValidationError({'organization_type': _('Organization type is required')})
+    ownership_form = OwnershipForm.objects.filter(
+        country=country_code,
+        code__iexact=code_clean,
+        is_active=True,
+    ).first()
+    if not ownership_form:
+        raise serializers.ValidationError({
+            'organization_type': _('Organization type is not available for the selected country')
+        })
+    return ownership_form
+
+
+class OwnershipFormCodeField(serializers.CharField):
+    """
+    Поле сериализует FK формы собственности как стабильный строковый код.
+    """
+
+    def to_representation(self, value):
+        if isinstance(value, OwnershipForm):
+            return value.code
+        return super().to_representation(value)
 
 
 class UserTypeSerializer(serializers.ModelSerializer):
@@ -285,6 +327,7 @@ class ProviderFormSerializer(serializers.ModelSerializer):
     """
     selected_categories = serializers.SerializerMethodField()
     offer_accepted_ip = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    organization_type = OwnershipFormCodeField(required=True, allow_blank=False)
     
     def get_selected_categories(self, obj):
         """Возвращает ID выбранных категорий"""
@@ -328,6 +371,10 @@ class ProviderFormSerializer(serializers.ModelSerializer):
         """Создает объект с выбранными категориями"""
         selected_categories = getattr(self, '_selected_categories_data', [])
         validated_data.pop('selected_categories', None)  # Убираем из validated_data
+        validated_data['organization_type'] = resolve_ownership_form(
+            validated_data.get('country'),
+            validated_data.get('organization_type'),
+        )
         
         # Валидация выбранных категорий
         if not selected_categories:
@@ -403,6 +450,11 @@ class ProviderFormSerializer(serializers.ModelSerializer):
         # Проверяем, что страна поддерживается (есть VAT Rate)
         country = validated_data.get('country', instance.country)
         self._validate_vat_rate_for_country(country)
+        if 'organization_type' in validated_data:
+            validated_data['organization_type'] = resolve_ownership_form(
+                country,
+                validated_data.get('organization_type'),
+            )
         
         # Валидируем адрес через Google Maps API и сохраняем нормализованный адрес
         provider_address = validated_data.get('provider_address')
@@ -1105,6 +1157,8 @@ class ProviderRegistrationWizardSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'country': _('We do not currently work in this country.')
             })
+        ownership_form = resolve_ownership_form(attrs['country'], attrs.get('organization_type'))
+        attrs['organization_type'] = ownership_form.code
         
         # Валидация из Step2 (таблица валидаций: уникальность при Завершении мастера)
         from providers.models import Provider

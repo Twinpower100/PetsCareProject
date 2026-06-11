@@ -1034,11 +1034,14 @@ class ProviderForm(models.Model):
     )
     
     # ДОПОЛНИТЕЛЬНЫЕ РЕКВИЗИТЫ (из вашего списка)
-    organization_type = models.CharField(
-        _('Organization Type'),
-        max_length=50,
+    organization_type = models.ForeignKey(
+        'providers.OwnershipForm',
+        on_delete=models.PROTECT,
+        null=True,
         blank=True,
-        help_text=_('Type of organization: SP, OOO, Corp, LLC, etc. (required)')
+        related_name='provider_forms',
+        verbose_name=_('Ownership Form'),
+        help_text=_('Legal ownership form of the organization (required)')
     )
     director_name = models.CharField(
         _('Director Name'),
@@ -1257,8 +1260,10 @@ class ProviderForm(models.Model):
             raise ValidationError({'invoice_currency': _('Invoice currency is required')})
         
         # Проверяем обязательные поля из вашего списка
-        if not self.organization_type or not self.organization_type.strip():
+        if not self.organization_type_id:
             raise ValidationError({'organization_type': _('Organization type is required')})
+        if self.organization_type and self.country and str(self.organization_type.country) != str(self.country):
+            raise ValidationError({'organization_type': _('Organization type is not available for the selected country')})
         
         if not self.director_name or not self.director_name.strip():
             raise ValidationError({'director_name': _('Director name is required')})
@@ -1272,7 +1277,8 @@ class ProviderForm(models.Model):
         # Условная валидация для РФ
         if self.country == 'RU':
             # For RU LLCs, KPP is required
-            if self.organization_type and any(token in self.organization_type for token in ['OOO', 'ООО']):
+            organization_type_code = self.organization_type.code if self.organization_type else ''
+            if organization_type_code and any(token in organization_type_code for token in ['OOO', 'ООО']):
                 if not self.kpp or not self.kpp.strip():
                     raise ValidationError({'kpp': _('KPP is required for Russian LLCs')})
         
