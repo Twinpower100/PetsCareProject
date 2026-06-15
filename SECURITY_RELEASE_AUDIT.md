@@ -33,6 +33,6 @@
 | 25 | Запустить `python manage.py check --deploy` в production-like env и устранить оставшиеся warnings, которые применимы к текущей архитектуре за Caddy. | Перед релизом | False |
 | 26 | Проверить, что локальная версия, локальный Docker и сервер используют один commit/tag backend, public web и provider admin. | Перед выкладкой | False |
 | 27 | Зафиксировать процедуру секретов: `.env.example` без реальных значений, локальные `.env*` не трекаются, серверные секреты обновляются через защищенный канал. | Перед релизом | False |
-| 28 | Добавить автоматическую secret-scan проверку в CI/pre-commit для трех репозиториев. | После текущего hardening, до релиза | False |
+| 28 | Добавить автоматическую secret-scan проверку в CI/pre-commit для трех репозиториев. | После текущего hardening, до релиза | True |
 | 29 | Проверить HTTP response headers на local Docker и сервере (`curl -I`): HSTS, nosniff, frame deny, referrer policy, permissions policy. | После деплоя | True |
 | 30 | Проверить, что API docs возвращают 404 на production/pre-release при `ENABLE_API_DOCS=False`. | После деплоя | True |
