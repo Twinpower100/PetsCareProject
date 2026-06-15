@@ -11,7 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Настройки безопасности
 # Используем строго ключ из .env, так как компромиссы и "срезание углов" недопустимы.
 SECRET_KEY = config('SECRET_KEY')
-DEBUG = config('DEBUG', default=True, cast=bool)
+DEBUG = config('DEBUG', default=False, cast=bool)
 ALLOWED_HOSTS = [h.strip() for h in config(
     'ALLOWED_HOSTS',
     default='localhost,127.0.0.1,testserver'
@@ -238,11 +238,21 @@ _default_csrf = "http://localhost:8000,http://127.0.0.1:8000"
 CSRF_TRUSTED_ORIGINS = [h.strip() for h in config(
     'CSRF_TRUSTED_ORIGINS', default=_default_csrf
 ).split(',') if h.strip()]
-CSRF_COOKIE_SECURE = False  # Для разработки (в продакшене должно быть True)
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=not DEBUG, cast=bool)
 CSRF_COOKIE_HTTPONLY = True  # Защита от XSS атак
-SESSION_COOKIE_SECURE = False  # Для разработки (в продакшене должно быть True)
+CSRF_COOKIE_SAMESITE = config('CSRF_COOKIE_SAMESITE', default='Lax')
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=not DEBUG, cast=bool)
 SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = config('SESSION_COOKIE_SAMESITE', default='Lax')
 CSRF_USE_SESSIONS = False
+
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = config('X_FRAME_OPTIONS', default='DENY')
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=False, cast=bool)
+SECURE_HSTS_SECONDS = config('SECURE_HSTS_SECONDS', default=0 if DEBUG else 31536000, cast=int)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = config('SECURE_HSTS_INCLUDE_SUBDOMAINS', default=not DEBUG, cast=bool)
+SECURE_HSTS_PRELOAD = config('SECURE_HSTS_PRELOAD', default=False, cast=bool)
+REFERRER_POLICY = config('REFERRER_POLICY', default='strict-origin-when-cross-origin')
 
 # Доверяем схеме, переданной reverse proxy, чтобы абсолютные media/API URL
 # на HTTPS-домене не сериализовались как http://... внутри Docker-сети.
@@ -528,6 +538,7 @@ CKEDITOR_5_CONFIGS = {
 }
 
 # Настройки Swagger/OpenAPI (drf-yasg)
+ENABLE_API_DOCS = config('ENABLE_API_DOCS', default=DEBUG, cast=bool)
 SWAGGER_SETTINGS = {
     'SECURITY_DEFINITIONS': {
         'Bearer': {
@@ -539,7 +550,7 @@ SWAGGER_SETTINGS = {
     },
     'USE_SESSION_AUTH': False,
     'JSON_EDITOR': True,
-    'SUPPORTED_SUBMIT_METHODS': ['get', 'post', 'put', 'delete', 'patch'],
+    'SUPPORTED_SUBMIT_METHODS': ['get', 'post', 'put', 'delete', 'patch'] if DEBUG else ['get'],
     'OPERATIONS_SORTER': 'alpha',
     'TAGS_SORTER': 'alpha',
     'DOC_EXPANSION': 'none',

@@ -56,3 +56,10 @@
 - Все шаблоны должны быть обернуты в функцию _() для мультиязычности.
 
 Frontend: mobile first, responsive design, responsive images
+
+# КИБЕРБЕЗОПАСНОСТЬ
+- Никогда не коммитить реальные секреты, токены, пароли, cookie, OAuth client secret, Gmail token, private keys, `.env*`, `Credentials.md`, `token.json`, дампы БД и deploy-архивы. В Git допустимы только `.env.example` с placeholder-значениями.
+- Любые новые настройки безопасности должны быть env-driven: локальная разработка не ломается, production/pre-release получает `DEBUG=False`, secure cookies, HTTPS/HSTS, строгие `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`.
+- Новые публичные endpoint с `AllowAny` разрешены только при явной бизнес-необходимости; в коде/PR нужно указать почему endpoint публичный и какие данные он не раскрывает.
+- Не логировать access/refresh tokens, cookies, authorization headers, пароли, email verification codes, invite codes и OAuth payloads. Ошибки для пользователя остаются на английском и через `_()` для 4 языков: en, ru, me/cnr, de.
+- Перед релизом проверять: `manage.py check --deploy`, отсутствие секретов в tracked files, отсутствие API docs в production без явного `ENABLE_API_DOCS=True`, корректные cookie/security headers.

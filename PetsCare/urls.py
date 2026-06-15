@@ -193,17 +193,6 @@ urlpatterns = [
     # Административный интерфейс
     path('admin/', custom_admin_site.urls),  # Используем кастомный админ-сайт
     
-    # Документация API
-    path('docs/', api_docs_view, name='api-docs'),
-    
-    # Документация API (Swagger/ReDoc)
-    path('swagger.<str:format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
-    path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
-    path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
-    # Альтернативный путь для схемы (если Swagger запрашивает через query параметр)
-    path('swagger.json', schema_view.without_ui(cache_timeout=0), name='schema-json-alt'),
-    path('swagger.yaml', schema_view.without_ui(cache_timeout=0), name='schema-yaml-alt'),
-    
     # Корневой API endpoint
     path('api/', api_root, name='api-root'),
     
@@ -235,6 +224,20 @@ urlpatterns = [
     # CKEditor 5 (WYSIWYG редактор для юридических документов)
     path('ckeditor5/', include('django_ckeditor_5.urls')),
 ]
+
+if settings.ENABLE_API_DOCS:
+    urlpatterns += [
+        # Документация API
+        path('docs/', api_docs_view, name='api-docs'),
+
+        # Документация API (Swagger/ReDoc)
+        path('swagger.<str:format>/', schema_view.without_ui(cache_timeout=0), name='schema-json'),
+        path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
+        path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),
+        # Альтернативный путь для схемы (если Swagger запрашивает через query параметр)
+        path('swagger.json', schema_view.without_ui(cache_timeout=0), name='schema-json-alt'),
+        path('swagger.yaml', schema_view.without_ui(cache_timeout=0), name='schema-yaml-alt'),
+    ]
 
 # Статические и медиа файлы в режиме разработки
 if settings.DEBUG:
