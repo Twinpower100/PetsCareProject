@@ -23,6 +23,7 @@ BLOCKING_SKIP_PREFIXES = (
     '/api/v1/branding',
     '/api/v1/login',
     '/api/v1/token',
+    '/api/v1/email-verification/confirm',
 )
 
 

@@ -308,6 +308,7 @@ class EmailVerificationConfirmAPIView(APIView):
     Подтверждает email пользователя по токену.
     """
     permission_classes = [permissions.AllowAny]
+    authentication_classes = []
 
     def post(self, request):
         serializer = EmailVerificationConfirmSerializer(data=request.data)

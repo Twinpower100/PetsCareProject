@@ -293,6 +293,29 @@ class EmailVerificationFlowTest(APITestCase):
         self.assertTrue(token.used)
         self.assertEqual(response.data['code'], 'email_verified')
 
+    def test_confirm_endpoint_allows_session_cookie_without_csrf_token(self):
+        user = User.objects.create_user(
+            email='confirm-csrf@example.com',
+            password='Secret123!',
+            first_name='Confirm',
+            last_name='Cookie',
+            phone_number='+12125550006',
+            email_verified=False,
+            email_verified_at=None,
+        )
+        token = EmailVerificationToken.create_for_user(user)
+        csrf_client = APIClient(enforce_csrf_checks=True)
+        csrf_client.force_login(user)
+
+        response = csrf_client.post(self.confirm_url, {'token': token.token}, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        user.refresh_from_db()
+        token.refresh_from_db()
+        self.assertTrue(user.email_verified)
+        self.assertTrue(token.used)
+        self.assertEqual(response.data['code'], 'email_verified')
+
     def test_resend_is_throttled_inside_cooldown(self):
         user = User.objects.create_user(
             email='resend-email@example.com',
