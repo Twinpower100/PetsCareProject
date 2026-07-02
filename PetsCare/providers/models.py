@@ -34,11 +34,12 @@ from datetime import date, timedelta
 from calendar import monthrange
 import uuid
 from django.core.exceptions import ValidationError
-from django.core.validators import RegexValidator, MinLengthValidator
+from django.core.validators import MinLengthValidator
 from users.models import User
 from django.contrib.gis.db import models as gis_models
 from django.contrib.gis.geos import Point
 from django_countries.fields import CountryField
+from utils.validators import LettersDigitsSpacesHyphensValidator
 
 
 class ProviderLifecycleSettings(models.Model):
@@ -281,8 +282,7 @@ class Provider(models.Model):
         null=True,
         blank=True,
         validators=[
-            RegexValidator(
-                regex=r'^[a-zA-Zа-яА-ЯёЁ0-9\s-]+$',
+            LettersDigitsSpacesHyphensValidator(
                 message=_('Tax ID can only contain letters, digits, spaces, and hyphens.')
             ),
             MinLengthValidator(3, message=_('Tax ID must be at least 3 characters long.'))
@@ -296,8 +296,7 @@ class Provider(models.Model):
         null=True,
         blank=True,
         validators=[
-            RegexValidator(
-                regex=r'^[a-zA-Zа-яА-ЯёЁ0-9\s-]+$',
+            LettersDigitsSpacesHyphensValidator(
                 message=_('Registration number can only contain letters, digits, spaces, and hyphens.')
             ),
             MinLengthValidator(3, message=_('Registration number must be at least 3 characters long.'))

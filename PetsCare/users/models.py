@@ -19,7 +19,8 @@ from phonenumber_field.modelfields import PhoneNumberField
 from django.conf import settings
 from datetime import timedelta
 from django_countries.fields import CountryField
-from django.core.validators import RegexValidator, MinLengthValidator
+from django.core.validators import MinLengthValidator
+from utils.validators import LettersDigitsSpacesHyphensValidator
 
 
 class UserManager(BaseUserManager):
@@ -987,8 +988,7 @@ class ProviderForm(models.Model):
         null=True,
         blank=True,
         validators=[
-            RegexValidator(
-                regex=r'^[a-zA-Zа-яА-ЯёЁ0-9\s-]+$',
+            LettersDigitsSpacesHyphensValidator(
                 message=_('Tax ID can only contain letters, digits, spaces, and hyphens.')
             ),
             MinLengthValidator(3, message=_('Tax ID must be at least 3 characters long.'))
@@ -1001,8 +1001,7 @@ class ProviderForm(models.Model):
         null=True,
         blank=True,
         validators=[
-            RegexValidator(
-                regex=r'^[a-zA-Zа-яА-ЯёЁ0-9\s-]+$',
+            LettersDigitsSpacesHyphensValidator(
                 message=_('Registration number can only contain letters, digits, spaces, and hyphens.')
             ),
             MinLengthValidator(3, message=_('Registration number must be at least 3 characters long.'))
